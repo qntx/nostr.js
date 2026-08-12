@@ -177,6 +177,9 @@ export {
 } from "./storage/index.ts";
 export {
   createLoaders,
+  createOutboxFeed,
+  OutboxFeed,
+  groupAuthorsByOutboxRelay,
   bareNostrUser,
   DataLoader,
   LoaderContext,
@@ -186,5 +189,7 @@ export {
   type NostrUser,
   type MutedEntity,
   type LoadStyle,
+  type OutboxBound,
+  type OutboxFeedOptions,
 } from "./loaders/index.ts";
 export { Gossip, type BrokenDownFilters, type PubkeyRoutes } from "./gossip/index.ts";

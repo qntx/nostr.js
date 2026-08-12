@@ -6,7 +6,12 @@ import { EventBuilder } from "../core/builder.ts";
 import type { NostrSigner } from "../signer/types.ts";
 import { Pool, type PoolPublishResult } from "../relay/pool.ts";
 import type { WebSocketConstructor } from "../relay/websocket.ts";
-import { createLoaders, type Loaders } from "../loaders/index.ts";
+import {
+  createLoaders,
+  createOutboxFeed,
+  type Loaders,
+  type OutboxFeed,
+} from "../loaders/index.ts";
 import { Gossip } from "../gossip/index.ts";
 import type { EventStore } from "../storage/types.ts";
 import { MemoryEventStore } from "../storage/memory.ts";
@@ -214,6 +219,31 @@ export class Client {
         if (result.event) this.observe(result.event);
       }),
     );
+  }
+
+  /**
+   * Create an outbox-model feed for the given authors (NIP-65 write relays).
+   * Events are ingested via {@link observe}. Call `feed.hydrate()` / `sync()` / `startLive()`.
+   */
+  outbox(opts: {
+    authors: readonly string[];
+    kinds?: readonly number[];
+    onEvent?: (event: Event) => void;
+    maxRelaysPerAuthor?: number;
+  }): OutboxFeed {
+    this.#assertAlive();
+    return createOutboxFeed({
+      pool: this.pool,
+      gossip: this.gossip,
+      storage: this.storage,
+      discoveryRelays: this.#relays,
+      authors: opts.authors,
+      kinds: opts.kinds,
+      onEvent: opts.onEvent,
+      maxRelaysPerAuthor: opts.maxRelaysPerAuthor,
+      observe: (event) => this.observe(event),
+      hydrate: (pubkeys) => this.hydrateGossip(pubkeys),
+    });
   }
 
   async getPublicKey(): Promise<string> {

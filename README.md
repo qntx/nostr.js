@@ -37,10 +37,18 @@ await client.publish(EventBuilder.textNote("via outbox"), { gossip: true });
 
 // Local-first read
 const cached = await client.fetchEvents({ kinds: [1], limit: 20 }, { localFirst: true });
+
+// Outbox feed (NIP-65 write relays)
+const feed = client.outbox({ authors: follows.items.slice(0, 50) });
+const history = await feed.sync({ limit: 30 });
+const live = feed.startLive();
 void profile;
 void cached;
+void history;
 
 await client.shutdown();
+live.close();
+feed.close();
 ```
 
 Node without global `WebSocket`:
