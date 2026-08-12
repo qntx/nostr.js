@@ -1,0 +1,9 @@
+name: Publish to npm
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+jobs:
+  publish:
+    uses: qntx/workflows/.github/workflows/publish-npm-bun.yml@main
