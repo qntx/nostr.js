@@ -21,17 +21,24 @@ const keys = Keys.generate();
 const client = Client.builder()
   .signer(new KeysSigner(keys))
   .relays(["wss://relay.damus.io"])
+  // optional: .storage(new IndexedDbEventStore()) after await store.open()
   .build();
 
 await client.connect();
 await client.publish(EventBuilder.textNote("hello from @qntx/nostr"));
+// publish/fetch/subscribe auto-observe into MemoryEventStore + gossip/loader cache
 
 const profile = await client.loaders.profile(keys.publicKey);
 const follows = await client.loaders.follows(keys.publicKey);
 
-const relayList = await client.loaders.relayList(keys.publicKey);
-if (relayList.event) client.observe(relayList.event);
+// Load NIP-65 lists into gossip routing (explicit, predictable)
+await client.hydrateGossip(follows.items.slice(0, 50));
 await client.publish(EventBuilder.textNote("via outbox"), { gossip: true });
+
+// Local-first read
+const cached = await client.fetchEvents({ kinds: [1], limit: 20 }, { localFirst: true });
+void profile;
+void cached;
 
 await client.shutdown();
 ```

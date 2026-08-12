@@ -1,6 +1,8 @@
 import type { NostrSigner } from "../signer/types.ts";
 import type { PoolOptions } from "../relay/pool.ts";
 import type { WebSocketConstructor } from "../relay/websocket.ts";
+import type { EventStore } from "../storage/types.ts";
+import type { Gossip } from "../gossip/gossip.ts";
 import { Client } from "./client.ts";
 
 export type ClientBuilderOptions = {
@@ -12,6 +14,9 @@ export type ClientBuilderOptions = {
   publishTimeoutMs?: number;
   automaticAuth?: boolean;
   enableReconnect?: boolean;
+  storage?: EventStore;
+  persistEvents?: boolean;
+  gossip?: Gossip;
 };
 
 /** Fluent constructor for {@link Client}. */
@@ -23,6 +28,9 @@ export class ClientBuilder {
   #publishTimeoutMs: number | undefined;
   #automaticAuth: boolean | undefined;
   #enableReconnect: boolean | undefined;
+  #storage: EventStore | undefined;
+  #persistEvents: boolean | undefined;
+  #gossip: Gossip | undefined;
 
   signer(signer: NostrSigner): this {
     this.#signer = signer;
@@ -64,6 +72,22 @@ export class ClientBuilder {
     return this;
   }
 
+  storage(store: EventStore): this {
+    this.#storage = store;
+    return this;
+  }
+
+  /** When false, Client will not auto-write events to storage. Default true. */
+  persistEvents(enabled: boolean): this {
+    this.#persistEvents = enabled;
+    return this;
+  }
+
+  gossip(gossip: Gossip): this {
+    this.#gossip = gossip;
+    return this;
+  }
+
   build(): Client {
     return new Client({
       signer: this.#signer,
@@ -73,6 +97,9 @@ export class ClientBuilder {
       publishTimeoutMs: this.#publishTimeoutMs,
       automaticAuth: this.#automaticAuth,
       enableReconnect: this.#enableReconnect,
+      storage: this.#storage,
+      persistEvents: this.#persistEvents,
+      gossip: this.#gossip,
     });
   }
 }
