@@ -120,10 +120,11 @@
   "scripts": {
     "build": "vp pack && node scripts/fix-exports.mjs",
     "dev": "vp pack --watch",
-    "test": "vp test",
+    "test": "bun test tests",
     "check": "vp check",
     "prepublishOnly": "vp run build",
-    "prepare": "vp config"
+    "prepare": "vp config",
+    "test:vp": "vp test"
   },
   "dependencies": {
     "@noble/ciphers": "2.1.1",

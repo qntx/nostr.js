@@ -1,8 +1,9 @@
 /**
  * Optional live-relay smoke tests.
- * Enable with: NOSTR_LIVE_RELAY=wss://… vp test tests/live-relay.test.ts
+ * Enable with: NOSTR_LIVE_RELAY=wss://… bun test tests/live-relay.test.ts
  *
  * Skipped by default so CI stays deterministic without network.
+ * Uses describe.skip (not describe.runIf) for bun:test + vite-plus compatibility.
  */
 import { describe, expect, test } from "vite-plus/test";
 import {
@@ -14,20 +15,22 @@ import {
 } from "../src/index.ts";
 
 const LIVE = process.env.NOSTR_LIVE_RELAY?.trim();
+const describeLive = LIVE ? describe : describe.skip;
 
 async function ensureNodeWebSocket(): Promise<void> {
   if (typeof globalThis.WebSocket !== "undefined") return;
   try {
-    // Optional peer; types may be absent.
-    // @ts-expect-error — no @types/ws required for this optional smoke path
-    const mod = (await import("ws")) as { default: unknown };
-    useWebSocketImplementation(mod.default as never);
+    // Optional peer; avoid static resolve of `ws` types in typecheck.
+    const mod = (await import(/* @vite-ignore */ "ws" as string)) as {
+      default: Parameters<typeof useWebSocketImplementation>[0];
+    };
+    useWebSocketImplementation(mod.default);
   } catch {
     throw new Error("NOSTR_LIVE_RELAY set but no global WebSocket and `ws` is not installed");
   }
 }
 
-describe.runIf(Boolean(LIVE))("live relay", () => {
+describeLive("live relay", () => {
   test("connect publish fetch against NOSTR_LIVE_RELAY", async () => {
     await ensureNodeWebSocket();
     const url = LIVE!;
