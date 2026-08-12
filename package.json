@@ -138,6 +138,14 @@
     "vite": "npm:@voidzero-dev/vite-plus-core@0.2.8",
     "vite-plus": "^0.2.4"
   },
+  "peerDependencies": {
+    "ws": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "ws": {
+      "optional": true
+    }
+  },
   "overrides": {
     "vite": "npm:@voidzero-dev/vite-plus-core@0.2.8"
   },

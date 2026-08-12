@@ -85,6 +85,8 @@ export {
   type NostrSigner,
   type WindowNostr,
   type Nip46SignerOptions,
+  type Nip46SubscribeOptions,
+  type Nip46Transport,
 } from "./signer/index.ts";
 
 // --- nips ---

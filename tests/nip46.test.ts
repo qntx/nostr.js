@@ -4,6 +4,7 @@ import {
   Kind,
   Keys,
   Nip46Signer,
+  Pool,
   createNostrConnectURI,
   decodeNip46Request,
   nip44Encrypt,
@@ -24,6 +25,13 @@ import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 const BUNKER_SK = "0000000000000000000000000000000000000000000000000000000000000001";
 const CLIENT_SK = "0000000000000000000000000000000000000000000000000000000000000002";
 const USER_SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
+
+function testPool() {
+  return new Pool({
+    websocketImplementation: MockWebSocketCtor,
+    enableReconnect: true,
+  });
+}
 
 beforeEach(() => {
   MockWebSocket.reset();
@@ -183,7 +191,7 @@ describe("Nip46Signer", () => {
     try {
       const signer = await Nip46Signer.connect(url, {
         clientSecretKey: CLIENT_SK,
-        websocketImplementation: MockWebSocketCtor,
+        createPool: testPool,
         timeoutMs: 3000,
       });
 
@@ -201,5 +209,16 @@ describe("Nip46Signer", () => {
     } finally {
       stop();
     }
+  });
+
+  test("connect requires pool or createPool", async () => {
+    const url = toBunkerURL({
+      pubkey: getPublicKey(BUNKER_SK),
+      relays: ["wss://bunker.example"],
+      secret: null,
+    });
+    await expect(Nip46Signer.connect(url, { clientSecretKey: CLIENT_SK })).rejects.toThrow(
+      /pool or createPool/,
+    );
   });
 });

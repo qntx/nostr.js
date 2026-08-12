@@ -27,3 +27,5 @@ aligned to the QuantX Rust SDK `nula`.
 - Root export re-exports the stable surface; heavy NIPs use `@qntx/nostr/nips/*`.
 - Multi-package monorepo is deferred until a subpath split is forced by
   dependency or size constraints.
+- Cross-layer I/O uses structural injection: e.g. `Nip46Signer` accepts a
+  `Nip46Transport` (satisfied by `Pool`) and never imports `relay`.
