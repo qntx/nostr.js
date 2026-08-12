@@ -162,6 +162,7 @@ export {
   type RelayListItem,
   type RelayMarker,
 } from "./nips/nip65.ts";
+export { dmRelayListEventBuilder, dmRelayListToTags, parseDmRelayList } from "./nips/nip17.ts";
 export {
   BUNKER_REGEX,
   Nip46Error,

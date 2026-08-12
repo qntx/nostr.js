@@ -1,6 +1,7 @@
 export * as nip04 from "./nip04.ts";
 export * as nip05 from "./nip05.ts";
 export * as nip10 from "./nip10.ts";
+export * as nip17 from "./nip17.ts";
 export * as nip19 from "./nip19.ts";
 export * as nip21 from "./nip21.ts";
 export * as nip27 from "./nip27.ts";
