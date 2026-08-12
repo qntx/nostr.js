@@ -70,7 +70,7 @@ useWebSocketImplementation(WebSocket);
 | `@qntx/nostr/client`  | `Client`, `ClientBuilder`                                                   |
 | `@qntx/nostr/storage` | `EventStore`, `MemoryEventStore`, `IndexedDbEventStore`                     |
 | `@qntx/nostr/loaders` | List/profile/event loaders + `OutboxFeed` (instance-scoped)                 |
-| `@qntx/nostr/gossip`  | NIP-65 routing / `breakDownFilter`                                          |
+| `@qntx/nostr/gossip`  | NIP-65 + kind:10050 DM routing / `breakDownFilter`                          |
 | `@qntx/nostr/nips/*`  | nip04, nip05, nip10, nip17, nip19, nip21, nip27, nip42, nip44, nip46, nip65 |
 
 ## Signers
