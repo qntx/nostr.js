@@ -21,6 +21,13 @@ export {
   type ProfileLoader,
 } from "./profile.ts";
 export { createEventLoader, type EventLoader, type EventRef } from "./event.ts";
+export {
+  OutboxFeed,
+  createOutboxFeed,
+  groupAuthorsByOutboxRelay,
+  type OutboxBound,
+  type OutboxFeedOptions,
+} from "./outbox.ts";
 
 import type { ListLoaders } from "./lists.ts";
 import type { ProfileLoader } from "./profile.ts";
