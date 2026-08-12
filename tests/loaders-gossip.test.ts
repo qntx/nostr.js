@@ -7,6 +7,8 @@ import {
   Kind,
   Pool,
   createLoaders,
+  dmRelayListEventBuilder,
+  parseDmRelayList,
   useWebSocketImplementation,
 } from "../src/index.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
@@ -63,6 +65,7 @@ describe("Gossip", () => {
     expect(gossip.ingest(list)).toBe(true);
     expect(gossip.outboxRelays(keys.publicKey).length).toBeGreaterThan(0);
     expect(gossip.inboxRelays(keys.publicKey).length).toBeGreaterThan(0);
+    expect(gossip.dmRelays(keys.publicKey)).toEqual([]);
 
     const broken = gossip.breakDownFilter({
       kinds: [1],
@@ -78,6 +81,39 @@ describe("Gossip", () => {
     }
 
     expect(gossip.breakDownFilter({ kinds: [1] }).type).toBe("generic");
+  });
+
+  test("ingest kind 10050 DM relays without clobbering NIP-65", () => {
+    const keys = Keys.fromSecretKey(SK);
+    const nip65 = EventBuilder.relayList([{ url: "wss://out.example", read: false, write: true }])
+      .createdAt(10)
+      .signWithKeys(keys);
+    const dm = dmRelayListEventBuilder(["wss://dm-a.example", "wss://dm-b.example"])
+      .createdAt(20)
+      .signWithKeys(keys);
+    expect(parseDmRelayList(dm).map((u) => u.replace(/\/$/, ""))).toEqual([
+      "wss://dm-a.example",
+      "wss://dm-b.example",
+    ]);
+
+    const gossip = new Gossip();
+    expect(gossip.ingest(nip65)).toBe(true);
+    expect(gossip.ingest(dm)).toBe(true);
+
+    expect(gossip.outboxRelays(keys.publicKey).some((u) => u.includes("out.example"))).toBe(true);
+    expect(gossip.dmRelays(keys.publicKey).map((u) => u.replace(/\/$/, ""))).toEqual([
+      "wss://dm-a.example",
+      "wss://dm-b.example",
+    ]);
+
+    // older dm list ignored
+    const older = dmRelayListEventBuilder(["wss://old-dm.example"]).createdAt(5).signWithKeys(keys);
+    expect(gossip.ingest(older)).toBe(false);
+    expect(gossip.dmRelays(keys.publicKey).some((u) => u.includes("old-dm"))).toBe(false);
+
+    // NIP-65 still intact after dm update
+    expect(gossip.getRoutes(keys.publicKey)?.updatedAt).toBe(10);
+    expect(gossip.getRoutes(keys.publicKey)?.dmUpdatedAt).toBe(20);
     expect(gossip.breakDownFilter({ authors: [Keys.fromSecretKey(SK2).publicKey] }).type).toBe(
       "orphan",
     );

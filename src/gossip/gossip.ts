@@ -1,15 +1,21 @@
 import type { Event } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
+import { parseDmRelayList } from "../nips/nip17.ts";
 import { parseRelayList, type RelayListItem } from "../nips/nip65.ts";
 import { normalizeURL } from "../core/util.ts";
 
 export type PubkeyRoutes = {
-  /** Relays the user writes to (outbox). */
+  /** Relays the user writes to (outbox). NIP-65. */
   write: string[];
-  /** Relays the user reads from (inbox). */
+  /** Relays the user reads from (inbox). NIP-65. */
   read: string[];
+  /** Relays for NIP-17 gift-wrap delivery. Kind 10050. */
+  dm: string[];
+  /** `created_at` of the last accepted kind:10002 list. */
   updatedAt: number;
+  /** `created_at` of the last accepted kind:10050 list. */
+  dmUpdatedAt: number;
 };
 
 export type BrokenDownFilters =
@@ -22,9 +28,19 @@ export type GossipOptions = {
   maxRelaysPerPubkey?: number;
 };
 
+function emptyRoutes(): PubkeyRoutes {
+  return {
+    write: [],
+    read: [],
+    dm: [],
+    updatedAt: 0,
+    dmUpdatedAt: 0,
+  };
+}
+
 /**
- * NIP-65 routing table.
- * Ingest kind:10002 events (or pre-parsed lists), then break filters into per-relay REQs.
+ * Routing table for NIP-65 (10002) and NIP-17 DM relays (10050).
+ * Ingest replaceable list events, then break filters into per-relay REQs.
  */
 export class Gossip {
   readonly #routes = new Map<string, PubkeyRoutes>();
@@ -34,16 +50,32 @@ export class Gossip {
     this.#maxRelays = opts.maxRelaysPerPubkey ?? 4;
   }
 
-  /** Ingest a kind:10002 event. Returns true if routes updated. */
+  /**
+   * Ingest a routing list event.
+   * - kind:10002 → write/read (NIP-65)
+   * - kind:10050 → dm (NIP-17)
+   * Returns true if routes for that list type were updated.
+   */
   ingest(event: Event): boolean {
-    if (event.kind !== Kind.RelayList) return false;
-    let items: RelayListItem[];
-    try {
-      items = parseRelayList(event);
-    } catch {
-      return false;
+    if (event.kind === Kind.RelayList) {
+      let items: RelayListItem[];
+      try {
+        items = parseRelayList(event);
+      } catch {
+        return false;
+      }
+      return this.setRoutes(event.pubkey, items, event.created_at);
     }
-    return this.setRoutes(event.pubkey, items, event.created_at);
+    if (event.kind === Kind.DirectMessageRelaysList) {
+      let relays: string[];
+      try {
+        relays = parseDmRelayList(event);
+      } catch {
+        return false;
+      }
+      return this.setDmRoutes(event.pubkey, relays, event.created_at);
+    }
+    return false;
   }
 
   setRoutes(
@@ -52,8 +84,8 @@ export class Gossip {
     updatedAt = Math.floor(Date.now() / 1000),
   ): boolean {
     const pk = pubkey.toLowerCase();
-    const prev = this.#routes.get(pk);
-    if (prev && prev.updatedAt > updatedAt) return false;
+    const prev = this.#routes.get(pk) ?? emptyRoutes();
+    if (prev.updatedAt > updatedAt) return false;
 
     const write: string[] = [];
     const read: string[] = [];
@@ -71,7 +103,39 @@ export class Gossip {
     this.#routes.set(pk, {
       write: write.slice(0, this.#maxRelays),
       read: read.slice(0, this.#maxRelays),
+      dm: prev.dm,
       updatedAt,
+      dmUpdatedAt: prev.dmUpdatedAt,
+    });
+    return true;
+  }
+
+  setDmRoutes(
+    pubkey: string,
+    relays: readonly string[],
+    updatedAt = Math.floor(Date.now() / 1000),
+  ): boolean {
+    const pk = pubkey.toLowerCase();
+    const prev = this.#routes.get(pk) ?? emptyRoutes();
+    if (prev.dmUpdatedAt > updatedAt) return false;
+
+    const dm: string[] = [];
+    for (const raw of relays) {
+      let url: string;
+      try {
+        url = normalizeURL(raw);
+      } catch {
+        continue;
+      }
+      if (!dm.includes(url)) dm.push(url);
+    }
+
+    this.#routes.set(pk, {
+      write: prev.write,
+      read: prev.read,
+      dm: dm.slice(0, this.#maxRelays),
+      updatedAt: prev.updatedAt,
+      dmUpdatedAt: updatedAt,
     });
     return true;
   }
@@ -86,6 +150,11 @@ export class Gossip {
 
   inboxRelays(pubkey: string): string[] {
     return this.#routes.get(pubkey.toLowerCase())?.read ?? [];
+  }
+
+  /** NIP-17 kind:10050 delivery relays for gift-wraps. */
+  dmRelays(pubkey: string): string[] {
+    return this.#routes.get(pubkey.toLowerCase())?.dm ?? [];
   }
 
   clear(pubkey?: string): void {
