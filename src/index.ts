@@ -79,10 +79,12 @@ export {
 export {
   KeysSigner,
   Nip07Signer,
+  Nip46Signer,
   getWindowNostr,
   isNip07Available,
   type NostrSigner,
   type WindowNostr,
+  type Nip46SignerOptions,
 } from "./signer/index.ts";
 
 // --- nips ---
@@ -130,6 +132,23 @@ export {
   type RelayListItem,
   type RelayMarker,
 } from "./nips/nip65.ts";
+export {
+  BUNKER_REGEX,
+  Nip46Error,
+  createNostrConnectURI,
+  decodeNip46Request,
+  decodeNip46Response,
+  encodeNip46Request,
+  encodeNip46Response,
+  parseBunkerURL,
+  parseNostrConnectURI,
+  toBunkerURL,
+  type BunkerPointer,
+  type ClientMetadata,
+  type Nip46Request,
+  type Nip46Response,
+  type NostrConnectParams,
+} from "./nips/nip46.ts";
 
 // --- relay ---
 export {

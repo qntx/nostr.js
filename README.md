@@ -63,7 +63,7 @@ useWebSocketImplementation(WebSocket);
 | `@qntx/nostr/storage` | `EventStore`, `MemoryEventStore`                |
 | `@qntx/nostr/loaders` | Batched list/profile/event loaders (no globals) |
 | `@qntx/nostr/gossip`  | NIP-65 routing / `breakDownFilter`              |
-| `@qntx/nostr/nips/*`  | nip04, nip19, nip42, nip44, nip65               |
+| `@qntx/nostr/nips/*`  | nip04, nip19, nip42, nip44, nip46, nip65        |
 
 ## Signers
 
@@ -79,6 +79,10 @@ if (isNip07Available()) {
   // Client.builder().signer(ext) or:
   client.setSigner(ext);
 }
+
+// remote bunker (NIP-46)
+// const remote = await Nip46Signer.connect("bunker://…?relay=wss://…&secret=…")
+// client.setSigner(remote)
 ```
 
 ## Storage
