@@ -124,9 +124,12 @@ if (IndexedDbEventStore.isAvailable()) {
 
 ```bash
 vp install
-vp test
+bun test tests
 vp run build
 vp check
+
+# optional live-relay smoke (requires network + optional peer `ws` on Node):
+# NOSTR_LIVE_RELAY=wss://relay.damus.io bun test tests/live-relay.test.ts
 ```
 
 ## License
