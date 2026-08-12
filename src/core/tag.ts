@@ -1,0 +1,65 @@
+/** A NIP-01 tag: first element is the name, rest are values. */
+export type Tag = readonly [string, ...string[]];
+
+/** Mutable tag builder input. */
+export type TagInput = string[];
+
+export function isTag(value: unknown): value is Tag {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  for (const item of value) {
+    if (typeof item !== "string") return false;
+  }
+  return true;
+}
+
+export function tagName(tag: Tag): string {
+  return tag[0];
+}
+
+export function tagValue(tag: Tag): string | undefined {
+  return tag[1];
+}
+
+/** Construct common tags. */
+export const Tag = {
+  e(id: string, relay?: string, marker?: string, pubkey?: string): Tag {
+    const t: string[] = ["e", id];
+    if (relay !== undefined) t.push(relay);
+    if (marker !== undefined) t.push(marker);
+    if (pubkey !== undefined) t.push(pubkey);
+    return t as unknown as Tag;
+  },
+  p(pubkey: string, relay?: string, petname?: string): Tag {
+    const t: string[] = ["p", pubkey];
+    if (relay !== undefined) t.push(relay);
+    if (petname !== undefined) t.push(petname);
+    return t as unknown as Tag;
+  },
+  a(coordinate: string, relay?: string): Tag {
+    const t: string[] = ["a", coordinate];
+    if (relay !== undefined) t.push(relay);
+    return t as unknown as Tag;
+  },
+  d(identifier: string): Tag {
+    return ["d", identifier];
+  },
+  t(hashtag: string): Tag {
+    return ["t", hashtag];
+  },
+  r(url: string, marker?: string): Tag {
+    const t: string[] = ["r", url];
+    if (marker !== undefined) t.push(marker);
+    return t as unknown as Tag;
+  },
+  k(kind: number | string): Tag {
+    return ["k", String(kind)];
+  },
+} as const;
+
+/** First `d` tag value on an event, if any. */
+export function getDTag(tags: readonly Tag[]): string | undefined {
+  for (const tag of tags) {
+    if (tag[0] === "d" && tag[1] !== undefined) return tag[1];
+  }
+  return undefined;
+}
