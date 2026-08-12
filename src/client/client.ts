@@ -1,5 +1,6 @@
 import type { Event, EventTemplate, UnsignedEvent } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
+import { sortedEvents } from "../core/event.ts";
 import { CryptoError } from "../core/error.ts";
 import { EventBuilder } from "../core/builder.ts";
 import type { NostrSigner } from "../signer/types.ts";
@@ -7,6 +8,8 @@ import { Pool, type PoolPublishResult } from "../relay/pool.ts";
 import type { WebSocketConstructor } from "../relay/websocket.ts";
 import { createLoaders, type Loaders } from "../loaders/index.ts";
 import { Gossip } from "../gossip/index.ts";
+import type { EventStore } from "../storage/types.ts";
+import { MemoryEventStore } from "../storage/memory.ts";
 import { ClientBuilder } from "./builder.ts";
 
 export type ClientOptions = {
@@ -20,23 +23,72 @@ export type ClientOptions = {
   /** When true (default), relays reconnect with backoff after disconnect. */
   enableReconnect?: boolean;
   gossip?: Gossip;
+  /**
+   * Local event store. Defaults to {@link MemoryEventStore}.
+   * Pass a custom store (e.g. IndexedDbEventStore) for persistence.
+   */
+  storage?: EventStore;
+  /**
+   * When true (default), every ingested event is written to storage.
+   * Set false to disable automatic persistence while keeping the store for manual use.
+   */
+  persistEvents?: boolean;
+};
+
+export type FetchEventsOptions = {
+  relays?: string[];
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  gossip?: boolean;
+  /**
+   * When true, query local storage first and merge with network results.
+   * Defaults to false.
+   */
+  localFirst?: boolean;
+  /** When false, skip writing fetched events to storage/observe. Default true. */
+  observe?: boolean;
+};
+
+export type SubscribeOptions = {
+  relays?: string[];
+  onevent?: (event: Event) => void;
+  oneose?: () => void;
+  onclose?: (reason: string) => void;
+  signal?: AbortSignal;
+  id?: string;
+  /** Fan out REQs via NIP-65 gossip routes when available. */
+  gossip?: boolean;
+  /** When false, skip writing received events to storage/observe. Default true. */
+  observe?: boolean;
+};
+
+export type PublishOptions = {
+  relays?: string[];
+  timeoutMs?: number;
+  gossip?: boolean;
+  /** When false, skip writing the published event to storage/observe. Default true. */
+  observe?: boolean;
 };
 
 /**
- * Layer-5 facade: signer + default relays + pool + loaders + gossip.
+ * Layer-5 facade: signer + default relays + pool + loaders + gossip + event store.
  */
 export class Client {
   readonly pool: Pool;
   readonly loaders: Loaders;
   readonly gossip: Gossip;
+  readonly storage: EventStore;
   #signer: NostrSigner | undefined;
   #relays: string[];
   #shutdown = false;
+  #persistEvents: boolean;
 
   constructor(opts: ClientOptions = {}) {
     this.#signer = opts.signer;
     this.#relays = [...(opts.relays ?? [])];
     this.gossip = opts.gossip ?? new Gossip();
+    this.storage = opts.storage ?? new MemoryEventStore();
+    this.#persistEvents = opts.persistEvents ?? true;
     const autoAuth = opts.automaticAuth ?? Boolean(opts.signer);
     this.pool = new Pool({
       websocketImplementation: opts.websocketImplementation,
@@ -118,6 +170,52 @@ export class Client {
     return list;
   }
 
+  /**
+   * Unified ingest pipeline: storage → gossip → replaceable loader cache.
+   * Fire-and-forget storage writes; failures are swallowed so network paths stay resilient.
+   */
+  observe(event: Event): void {
+    this.gossip.ingest(event);
+    if (event.kind === 0 || event.kind === 3 || event.kind === 10000 || event.kind === 10002) {
+      this.loaders.context.cache.putIfNewer(event);
+    }
+    if (this.#persistEvents) {
+      void this.storage.put(event).catch(() => {
+        // storage errors must not break live pipelines
+      });
+    }
+  }
+
+  /** Observe many events (deduped by id order preserved). */
+  observeAll(events: readonly Event[]): void {
+    const seen = new Set<string>();
+    for (const event of events) {
+      if (seen.has(event.id)) continue;
+      seen.add(event.id);
+      this.observe(event);
+    }
+  }
+
+  /**
+   * Explicitly load kind:10002 lists for pubkeys and feed gossip.
+   * Does not background-fetch unknown authors on every subscribe (predictable DX).
+   */
+  async hydrateGossip(
+    pubkeys: readonly string[],
+    opts?: { hints?: string[]; force?: boolean },
+  ): Promise<void> {
+    this.#assertAlive();
+    await Promise.all(
+      pubkeys.map(async (pk) => {
+        const result = await this.loaders.relayList(pk, {
+          hints: opts?.hints,
+          style: opts?.force ? "force" : "default",
+        });
+        if (result.event) this.observe(result.event);
+      }),
+    );
+  }
+
   async getPublicKey(): Promise<string> {
     if (!this.#signer) throw new CryptoError("no signer configured");
     return this.#signer.getPublicKey();
@@ -142,10 +240,11 @@ export class Client {
   /**
    * Sign (if builder) and publish to relays.
    * With `gossip: true`, prefers the author's NIP-65 outbox relays when known.
+   * On any successful OK, observes the event into storage/gossip.
    */
   async publish(
     eventOrBuilder: Event | EventBuilder,
-    opts?: { relays?: string[]; timeoutMs?: number; gossip?: boolean },
+    opts?: PublishOptions,
   ): Promise<PoolPublishResult[]> {
     this.#assertAlive();
     const event =
@@ -158,29 +257,52 @@ export class Client {
       const outbox = this.gossip.outboxRelays(event.pubkey);
       if (outbox.length > 0) relays = outbox;
     }
-    return this.pool.publish(this.#defaultRelays(relays), event, {
+    const results = await this.pool.publish(this.#defaultRelays(relays), event, {
       timeoutMs: opts?.timeoutMs,
     });
+
+    const anyOk = results.some((r) => r.result?.ok);
+    if (anyOk && opts?.observe !== false) {
+      this.observe(event);
+    }
+    return results;
   }
 
   /**
    * Fetch events. With `gossip: true`, breaks filters by NIP-65 routes when possible.
+   * With `localFirst: true`, merges storage hits with network results.
    */
-  async fetchEvents(
-    filter: Filter | Filter[],
-    opts?: { relays?: string[]; timeoutMs?: number; signal?: AbortSignal; gossip?: boolean },
-  ): Promise<Event[]> {
+  async fetchEvents(filter: Filter | Filter[], opts?: FetchEventsOptions): Promise<Event[]> {
     this.#assertAlive();
     const filters = Array.isArray(filter) ? filter : [filter];
+    const shouldObserve = opts?.observe !== false;
+    const byId = new Map<string, Event>();
+
+    if (opts?.localFirst) {
+      try {
+        const local = await this.storage.query(filters);
+        for (const e of local) byId.set(e.id, e);
+      } catch {
+        // ignore local failures
+      }
+    }
+
+    const ingest = (events: Event[]) => {
+      for (const e of events) {
+        byId.set(e.id, e);
+        if (shouldObserve) this.observe(e);
+      }
+    };
 
     if (!opts?.gossip || opts.relays) {
-      return this.pool.fetch(this.#defaultRelays(opts?.relays), filters, {
+      const remote = await this.pool.fetch(this.#defaultRelays(opts?.relays), filters, {
         timeoutMs: opts?.timeoutMs,
         signal: opts?.signal,
       });
+      ingest(remote);
+      return sortedEvents([...byId.values()]);
     }
 
-    const byId = new Map<string, Event>();
     for (const f of filters) {
       const broken = this.gossip.breakDownFilter(f);
       if (broken.type === "per-relay") {
@@ -191,43 +313,48 @@ export class Client {
                 timeoutMs: opts?.timeoutMs,
                 signal: opts?.signal,
               });
-              for (const e of batch) byId.set(e.id, e);
+              ingest(batch);
             } catch {
               // skip failed relay
             }
           }),
         );
       } else {
-        // orphan or generic → fall back to configured relays
         const batch = await this.pool.fetch(this.#defaultRelays(), [f], {
           timeoutMs: opts?.timeoutMs,
           signal: opts?.signal,
         });
-        for (const e of batch) byId.set(e.id, e);
+        ingest(batch);
       }
     }
-    return [...byId.values()];
+    return sortedEvents([...byId.values()]);
+  }
+
+  /**
+   * Query local storage only (no network).
+   */
+  async queryLocal(filter: Filter | Filter[]): Promise<Event[]> {
+    this.#assertAlive();
+    const filters = Array.isArray(filter) ? filter : [filter];
+    return this.storage.query(filters);
   }
 
   subscribe(
     filter: Filter | Filter[],
-    opts?: {
-      relays?: string[];
-      onevent?: (event: Event) => void;
-      oneose?: () => void;
-      onclose?: (reason: string) => void;
-      signal?: AbortSignal;
-      id?: string;
-      /** Fan out REQs via NIP-65 gossip routes when available. */
-      gossip?: boolean;
-    },
+    opts?: SubscribeOptions,
   ): { close: (reason?: string) => void } {
     this.#assertAlive();
     const filters = Array.isArray(filter) ? filter : [filter];
+    const shouldObserve = opts?.observe !== false;
+
+    const wrapEvent = (event: Event) => {
+      if (shouldObserve) this.observe(event);
+      opts?.onevent?.(event);
+    };
 
     if (!opts?.gossip || opts.relays) {
       return this.pool.subscribe(this.#defaultRelays(opts?.relays), filters, {
-        onevent: opts?.onevent,
+        onevent: wrapEvent,
         oneose: opts?.oneose,
         onclose: opts?.onclose,
         signal: opts?.signal,
@@ -259,7 +386,7 @@ export class Client {
               onevent: (event) => {
                 if (seen.has(event.id)) return;
                 seen.add(event.id);
-                opts?.onevent?.(event);
+                wrapEvent(event);
               },
               oneose: maybeEose,
               onclose: opts?.onclose,
@@ -275,7 +402,7 @@ export class Client {
             onevent: (event) => {
               if (seen.has(event.id)) return;
               seen.add(event.id);
-              opts?.onevent?.(event);
+              wrapEvent(event);
             },
             oneose: maybeEose,
             onclose: opts?.onclose,
@@ -293,13 +420,5 @@ export class Client {
         for (const c of closers) c.close(reason);
       },
     };
-  }
-
-  /** Ingest events into gossip routing (kind 10002) and loader caches when applicable. */
-  observe(event: Event): void {
-    this.gossip.ingest(event);
-    if (event.kind === 0 || event.kind === 3 || event.kind === 10000 || event.kind === 10002) {
-      this.loaders.context.cache.putIfNewer(event);
-    }
   }
 }
