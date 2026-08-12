@@ -111,6 +111,16 @@ export {
   type ProfilePointer,
   Nip19Error,
 } from "./nips/nip19.ts";
+export {
+  buildReplyTags,
+  eTag,
+  parseThreadTags,
+  replyTo,
+  type ReplyTagsOptions,
+  type ThreadReferences,
+} from "./nips/nip10.ts";
+export { isNostrURI, NOSTR_URI_REGEX, parseNostrURI, type NostrURI } from "./nips/nip21.ts";
+export { parseContent, parseContentBlocks, type ContentBlock } from "./nips/nip27.ts";
 export { encrypt as nip04Encrypt, decrypt as nip04Decrypt } from "./nips/nip04.ts";
 export { makeAuthEvent, isAuthRequired } from "./nips/nip42.ts";
 export {
