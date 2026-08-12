@@ -1,5 +1,6 @@
 import type { Event, EventTemplate } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
+import type { CountResult } from "../core/message.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayClosedError } from "./error.ts";
 import { Relay, type PublishResult, type RelayOptions, type SubscribeOptions } from "./relay.ts";
@@ -25,6 +26,14 @@ export type PoolOptions = {
 export type PoolPublishResult = {
   url: string;
   result?: PublishResult;
+  error?: string;
+};
+
+export type PoolCountResult = {
+  url: string;
+  count?: number;
+  approximate?: boolean;
+  hll?: string;
   error?: string;
 };
 
@@ -277,6 +286,43 @@ export class Pool {
         return { url: relay.url, result };
       }),
     );
+  }
+
+  /**
+   * NIP-45 COUNT across relays. Per-relay outcomes; failures do not throw.
+   * Counts are not summed — each relay reports independently (may overlap).
+   */
+  async count(
+    relays: string[],
+    filters: Filter[],
+    opts?: { timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<PoolCountResult[]> {
+    const results = await Promise.all(
+      relays.map(async (url): Promise<PoolCountResult> => {
+        if (!this.#allowed(url, "read")) {
+          return { url, error: "not allowed" };
+        }
+        try {
+          const relay = await this.ensureRelay(url, {
+            signal: opts?.signal,
+            timeoutMs: this.#opts.maxWaitForConnectionMs,
+          });
+          const payload: CountResult = await relay.count(filters, {
+            timeoutMs: opts?.timeoutMs,
+            signal: opts?.signal,
+          });
+          return {
+            url: relay.url,
+            count: payload.count,
+            approximate: payload.approximate,
+            hll: payload.hll,
+          };
+        } catch (err) {
+          return { url, error: err instanceof Error ? err.message : String(err) };
+        }
+      }),
+    );
+    return results;
   }
 
   listRelays(): string[] {

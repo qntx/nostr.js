@@ -5,6 +5,7 @@ import {
   encodeClientMessage,
   parseRelayMessage,
   type ClientMessage,
+  type CountResult,
   type SubscriptionId,
 } from "../core/message.ts";
 import { makeAuthEvent } from "../nips/nip42.ts";
@@ -41,8 +42,16 @@ export type PublishResult = {
   message: string;
 };
 
+export type { CountResult };
+
 type PublishWaiter = {
   resolve: (result: PublishResult) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+type CountWaiter = {
+  resolve: (result: CountResult) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 };
@@ -51,7 +60,7 @@ const DEFAULT_BACKOFF = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000, 60_000];
 
 /**
  * Single-relay NIP-01 client.
- * Connection lifecycle, REQ/CLOSE, EVENT publish ACK, AUTH, optional reconnect.
+ * Connection lifecycle, REQ/CLOSE, EVENT publish ACK, AUTH, COUNT, optional reconnect.
  */
 export class Relay {
   readonly url: string;
@@ -60,6 +69,7 @@ export class Relay {
   #connecting: Promise<void> | undefined;
   #subs = new Map<SubscriptionId, Subscription>();
   #publishes = new Map<string, PublishWaiter>();
+  #counts = new Map<string, CountWaiter>();
   #WS: WebSocketConstructor;
   #verify: (event: Event) => boolean;
   #publishTimeoutMs: number;
@@ -251,6 +261,7 @@ export class Relay {
     this.#clearReconnectTimer();
     this.#closeAllSubscriptions("relay closed");
     this.#rejectPublishes(new RelayClosedError("relay closed", this.url));
+    this.#rejectCounts(new RelayClosedError("relay closed", this.url));
     this.#detachSocketHandlers();
     this.#teardownSocket();
     this.#connected = false;
@@ -291,6 +302,14 @@ export class Relay {
     this.#publishes.clear();
   }
 
+  #rejectCounts(err: Error): void {
+    for (const [, waiter] of this.#counts) {
+      clearTimeout(waiter.timer);
+      waiter.reject(err);
+    }
+    this.#counts.clear();
+  }
+
   /**
    * Unexpected socket death. Keep subscriptions if reconnecting.
    */
@@ -301,6 +320,7 @@ export class Relay {
     this.#connected = false;
     this.#ws = undefined;
     this.#rejectPublishes(new RelayClosedError(reason, this.url));
+    this.#rejectCounts(new RelayClosedError(reason, this.url));
 
     const canReconnect =
       this.#enableReconnect &&
@@ -403,6 +423,15 @@ export class Relay {
         clearTimeout(waiter.timer);
         this.#publishes.delete(eventId);
         waiter.resolve({ ok, message });
+        break;
+      }
+      case "COUNT": {
+        const [, countId, payload] = msg;
+        const waiter = this.#counts.get(countId);
+        if (!waiter) return;
+        clearTimeout(waiter.timer);
+        this.#counts.delete(countId);
+        waiter.resolve(payload);
         break;
       }
       case "NOTICE": {
@@ -549,6 +578,65 @@ export class Relay {
     });
 
     return result;
+  }
+
+  /**
+   * NIP-45 COUNT: ask the relay how many events match `filters`.
+   * Resolves with the COUNT payload (count / optional approximate / optional hll).
+   */
+  async count(
+    filters: Filter[],
+    opts?: { id?: string; timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<CountResult> {
+    if (!this.#connected) throw new RelayClosedError("not connected", this.url);
+    if (filters.length === 0) throw new RelayError("COUNT requires at least one filter", this.url);
+    if (opts?.signal?.aborted) {
+      throw new RelayConnectionError("count aborted", this.url);
+    }
+
+    const id = opts?.id ?? this.nextSubId("count");
+    const timeoutMs = opts?.timeoutMs ?? this.#publishTimeoutMs;
+
+    return await new Promise<CountResult>((resolve, reject) => {
+      const cleanup = () => {
+        opts?.signal?.removeEventListener("abort", onAbort);
+      };
+      const fail = (err: Error) => {
+        clearTimeout(timer);
+        this.#counts.delete(id);
+        cleanup();
+        reject(err);
+      };
+      const onAbort = () => fail(new RelayConnectionError("count aborted", this.url));
+
+      const timer = setTimeout(() => {
+        fail(new RelayPublishError("count timed out", this.url));
+      }, timeoutMs);
+
+      this.#counts.set(id, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          this.#counts.delete(id);
+          cleanup();
+          resolve(result);
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          this.#counts.delete(id);
+          cleanup();
+          reject(err);
+        },
+        timer,
+      });
+
+      opts?.signal?.addEventListener("abort", onAbort, { once: true });
+
+      try {
+        this.#send(["COUNT", id, ...filters]);
+      } catch (err) {
+        fail(err instanceof Error ? err : new RelayPublishError("count failed", this.url));
+      }
+    });
   }
 
   /**

@@ -87,6 +87,7 @@ export {
   parseClientMessage,
   parseRelayMessage,
   type ClientMessage,
+  type CountResult,
   type RelayMessage,
   type SubscriptionId,
 } from "./message.ts";

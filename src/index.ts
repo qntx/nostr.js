@@ -71,6 +71,7 @@ export {
   parseClientMessage,
   parseRelayMessage,
   type ClientMessage,
+  type CountResult,
   type RelayMessage,
   type SubscriptionId,
 } from "./core/index.ts";
@@ -189,6 +190,7 @@ export {
   RelayPublishError,
   useWebSocketImplementation,
   type PoolOptions,
+  type PoolCountResult,
   type PoolPublishResult,
   type PublishResult,
   type RelayOptions,
