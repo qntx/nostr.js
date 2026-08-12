@@ -57,6 +57,11 @@
       "import": "./dist/nips/nip04.mjs",
       "default": "./dist/nips/nip04.mjs"
     },
+    "./nips/nip05": {
+      "types": "./dist/nips/nip05.d.mts",
+      "import": "./dist/nips/nip05.mjs",
+      "default": "./dist/nips/nip05.mjs"
+    },
     "./nips/nip10": {
       "types": "./dist/nips/nip10.d.mts",
       "import": "./dist/nips/nip10.mjs",

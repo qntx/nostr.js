@@ -152,6 +152,39 @@ describe("Nip46Signer", () => {
     }
   });
 
+  test("connect via NIP-05 identifier", async () => {
+    const bunkerPk = getPublicKey(BUNKER_SK);
+    const clientPk = getPublicKey(CLIENT_SK);
+    const stop = armBunkerResponder({
+      bunkerSk: BUNKER_SK,
+      userSk: USER_SK,
+      clientPubkey: clientPk,
+    });
+
+    try {
+      const signer = await Nip46Signer.connect("bunker@example.com", {
+        clientSecretKey: CLIENT_SK,
+        createPool: testPool,
+        timeoutMs: 3000,
+        secret: "tok",
+        fetch: async () => ({
+          status: 200,
+          json: async () => ({
+            names: { bunker: bunkerPk },
+            relays: { [bunkerPk]: ["wss://bunker.example"] },
+          }),
+        }),
+      });
+
+      expect(signer.bunker.pubkey).toBe(bunkerPk);
+      expect(signer.bunker.relays.some((r) => r.includes("bunker.example"))).toBe(true);
+      expect(await signer.getPublicKey()).toBe(getPublicKey(USER_SK));
+      await signer.close();
+    } finally {
+      stop();
+    }
+  });
+
   test("fromNostrConnectURI completes handshake", async () => {
     const clientPk = getPublicKey(CLIENT_SK);
     const secret = "hs-secret";
