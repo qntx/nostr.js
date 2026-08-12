@@ -57,10 +57,25 @@
       "import": "./dist/nips/nip04.mjs",
       "default": "./dist/nips/nip04.mjs"
     },
+    "./nips/nip10": {
+      "types": "./dist/nips/nip10.d.mts",
+      "import": "./dist/nips/nip10.mjs",
+      "default": "./dist/nips/nip10.mjs"
+    },
     "./nips/nip19": {
       "types": "./dist/nips/nip19.d.mts",
       "import": "./dist/nips/nip19.mjs",
       "default": "./dist/nips/nip19.mjs"
+    },
+    "./nips/nip21": {
+      "types": "./dist/nips/nip21.d.mts",
+      "import": "./dist/nips/nip21.mjs",
+      "default": "./dist/nips/nip21.mjs"
+    },
+    "./nips/nip27": {
+      "types": "./dist/nips/nip27.d.mts",
+      "import": "./dist/nips/nip27.mjs",
+      "default": "./dist/nips/nip27.mjs"
     },
     "./nips/nip42": {
       "types": "./dist/nips/nip42.d.mts",
