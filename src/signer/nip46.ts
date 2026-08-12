@@ -1,5 +1,6 @@
 import type { Event, EventTemplate, UnsignedEvent } from "../core/event.ts";
 import { validateSignedEvent } from "../core/event.ts";
+import type { Filter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
 import { SecretKey, finalizeEvent, getPublicKey, verifyEvent } from "../core/key.ts";
 import { decrypt, encrypt, getConversationKey } from "../nips/nip44.ts";
@@ -13,16 +14,42 @@ import {
   type ClientMetadata,
   type Nip46Request,
 } from "../nips/nip46.ts";
-import { Pool } from "../relay/pool.ts";
-import type { WebSocketConstructor } from "../relay/websocket.ts";
 import type { NostrSigner } from "./types.ts";
 
+/** Subscribe options used by NIP-46 transport (structural subset of Pool). */
+export type Nip46SubscribeOptions = {
+  signal?: AbortSignal;
+  onevent?: (event: Event) => void;
+  onclose?: (reason: string) => void;
+};
+
+/**
+ * Structural relay transport for NIP-46 RPC.
+ * Satisfied by {@link import("../relay/pool.ts").Pool}; constructed above the signer layer
+ * so `signer` never imports `relay` (ADR-0001).
+ */
+export type Nip46Transport = {
+  subscribe(
+    relays: string[],
+    filters: Filter[],
+    opts?: Nip46SubscribeOptions,
+  ): { close: (reason?: string) => void };
+  publish(relays: string[], event: Event): Promise<unknown>;
+  close(urls?: string[]): void;
+};
+
 export type Nip46SignerOptions = {
-  /** Shared pool; when omitted a private pool is created. */
-  pool?: Pool;
+  /**
+   * Shared transport. When set, the signer does not close it on {@link Nip46Signer.close}.
+   */
+  pool?: Nip46Transport;
+  /**
+   * Factory for a private transport when `pool` is omitted.
+   * Typical: `() => new Pool({ websocketImplementation, enableReconnect: true })`.
+   */
+  createPool?: () => Nip46Transport;
   /** Fallback relays when bunker pointer has none. */
   relays?: string[];
-  websocketImplementation?: WebSocketConstructor;
   /** Local client key used to encrypt RPC (not the remote user key). */
   clientSecretKey?: SecretKey | Uint8Array | string;
   /** Called when bunker returns `auth_url` for a pending request. */
@@ -38,12 +65,21 @@ function resolveClientSecret(key?: SecretKey | Uint8Array | string): SecretKey {
   return SecretKey.fromBytes(key);
 }
 
+function resolveTransport(opts: Nip46SignerOptions): { pool: Nip46Transport; ownsPool: boolean } {
+  if (opts.pool) return { pool: opts.pool, ownsPool: false };
+  if (opts.createPool) return { pool: opts.createPool(), ownsPool: true };
+  throw new Nip46Error(
+    "Nip46Signer requires pool or createPool (inject Pool from @qntx/nostr/relay)",
+  );
+}
+
 /**
  * NIP-46 remote signer (bunker / nostrconnect).
  * Implements {@link NostrSigner}; never holds the remote user's secret key.
+ * Network I/O is injected via {@link Nip46Transport} (no relay import).
  */
 export class Nip46Signer implements NostrSigner {
-  readonly #pool: Pool;
+  readonly #pool: Nip46Transport;
   readonly #ownsPool: boolean;
   readonly #clientSecret: SecretKey;
   readonly #clientPubkey: string;
@@ -69,7 +105,7 @@ export class Nip46Signer implements NostrSigner {
   private constructor(
     clientSecret: SecretKey,
     pointer: BunkerPointer,
-    pool: Pool,
+    pool: Nip46Transport,
     ownsPool: boolean,
     opts: Nip46SignerOptions,
   ) {
@@ -126,13 +162,7 @@ export class Nip46Signer implements NostrSigner {
     pointer = { ...pointer, relays };
 
     const sk = resolveClientSecret(opts.clientSecretKey);
-    const ownsPool = !opts.pool;
-    const pool =
-      opts.pool ??
-      new Pool({
-        websocketImplementation: opts.websocketImplementation,
-        enableReconnect: true,
-      });
+    const { pool, ownsPool } = resolveTransport(opts);
 
     const signer = new Nip46Signer(sk, pointer, pool, ownsPool, opts);
     signer.#startSubscription();
@@ -161,14 +191,7 @@ export class Nip46Signer implements NostrSigner {
       throw new Nip46Error("client secret key does not match nostrconnect client pubkey");
     }
 
-    const ownsPool = !opts.pool;
-    const pool =
-      opts.pool ??
-      new Pool({
-        websocketImplementation: opts.websocketImplementation,
-        enableReconnect: true,
-      });
-
+    const { pool, ownsPool } = resolveTransport(opts);
     const handshakeTimeoutMs = opts.handshakeTimeoutMs ?? 300_000;
 
     return new Promise((resolve, reject) => {

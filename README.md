@@ -8,8 +8,8 @@ Architecture: **nula-aligned layering** + **nostr-tools protocol fidelity** + **
 
 ```bash
 npm install @qntx/nostr
-# peer WebSocket on Node:
-# npm install ws
+# Node without global WebSocket (optional peer):
+npm install ws
 ```
 
 ## Quickstart
@@ -61,17 +61,17 @@ useWebSocketImplementation(WebSocket);
 
 ## Layers & subpaths
 
-| Subpath               | Contents                                        |
-| --------------------- | ----------------------------------------------- |
-| `@qntx/nostr`         | Curated public facade                           |
-| `@qntx/nostr/core`    | Events, keys, filter, messages, EventBuilder    |
-| `@qntx/nostr/signer`  | `NostrSigner`, `KeysSigner`                     |
-| `@qntx/nostr/relay`   | `Relay`, `Pool`, reconnect, AUTH                |
-| `@qntx/nostr/client`  | `Client`, `ClientBuilder`                       |
-| `@qntx/nostr/storage` | `EventStore`, `MemoryEventStore`                |
-| `@qntx/nostr/loaders` | Batched list/profile/event loaders (no globals) |
-| `@qntx/nostr/gossip`  | NIP-65 routing / `breakDownFilter`              |
-| `@qntx/nostr/nips/*`  | nip04, nip19, nip42, nip44, nip46, nip65        |
+| Subpath               | Contents                                                    |
+| --------------------- | ----------------------------------------------------------- |
+| `@qntx/nostr`         | Curated public facade                                       |
+| `@qntx/nostr/core`    | Events, keys, filter, messages, EventBuilder                |
+| `@qntx/nostr/signer`  | `NostrSigner`, `KeysSigner`, `Nip07Signer`, `Nip46Signer`   |
+| `@qntx/nostr/relay`   | `Relay`, `Pool`, reconnect, AUTH                            |
+| `@qntx/nostr/client`  | `Client`, `ClientBuilder`                                   |
+| `@qntx/nostr/storage` | `EventStore`, `MemoryEventStore`, `IndexedDbEventStore`     |
+| `@qntx/nostr/loaders` | List/profile/event loaders + `OutboxFeed` (instance-scoped) |
+| `@qntx/nostr/gossip`  | NIP-65 routing / `breakDownFilter`                          |
+| `@qntx/nostr/nips/*`  | nip04, nip19, nip42, nip44, nip46, nip65                    |
 
 ## Signers
 
@@ -88,8 +88,11 @@ if (isNip07Available()) {
   client.setSigner(ext);
 }
 
-// remote bunker (NIP-46)
-// const remote = await Nip46Signer.connect("bunker://…?relay=wss://…&secret=…")
+// remote bunker (NIP-46) — inject Pool (signer does not import relay)
+// const remote = await Nip46Signer.connect("bunker://…?relay=wss://…&secret=…", {
+//   createPool: () => new Pool({ enableReconnect: true }),
+//   // or: pool: client.pool,
+// })
 // client.setSigner(remote)
 ```
 
@@ -111,9 +114,11 @@ if (IndexedDbEventStore.isAvailable()) {
 - Source maps published with the build (`*.mjs.map`)
 - Tree-shake via subpath imports
 - No module-level client/pool singletons
+- Optional peer `ws` for Node when `globalThis.WebSocket` is absent
 - `SecretKey.zeroize()` for best-effort secret wipe
 - Prefer NIP-44 over NIP-04 for new DMs
 - Prefer `Nip07Signer` / remote signers over shipping secret keys in web apps
+- Layering: `signer` never imports `relay`; NIP-46 takes an injected `Nip46Transport` (`Pool`)
 
 ## Development
 
