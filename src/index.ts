@@ -1,3 +1,171 @@
-export function fn() {
-  return "Hello, tsdown!";
-}
+/**
+ * @qntx/nostr — public facade.
+ *
+ * Prefer layer subpaths for tree-shaking:
+ * `@qntx/nostr/core`, `/signer`, `/relay`, `/client`, `/storage`, `/loaders`, `/gossip`, `/nips/*`
+ */
+
+// --- core (public) ---
+export {
+  EVENT_ID_BYTES,
+  PUBLIC_KEY_BYTES,
+  SECRET_KEY_BYTES,
+  SIGNATURE_BYTES,
+  SUBSCRIPTION_ID_MAX_CHARS,
+  CryptoError,
+  EventValidationError,
+  HexError,
+  MessageError,
+  NostrError,
+  UrlError,
+  bytesToHex,
+  hexToBytes,
+  isHex32,
+  isHex64,
+  normalizeURL,
+  Kind,
+  classifyKind,
+  isAddressableKind,
+  isEphemeralKind,
+  isRegularKind,
+  isReplaceableKind,
+  type KindClassification,
+  type KindName,
+  type KnownKind,
+  Tag,
+  getDTag,
+  isTag,
+  tagName,
+  tagValue,
+  type TagTuple,
+  type TagInput,
+  getEventHash,
+  isMarkedVerified,
+  serializeEvent,
+  sortEvents,
+  sortedEvents,
+  validateEvent,
+  validateSignedEvent,
+  type Event,
+  type EventTemplate,
+  type UnsignedEvent,
+  Keys,
+  SecretKey,
+  finalizeEvent,
+  getPublicKey,
+  publicKeyFromHex,
+  signEvent,
+  verifyEvent,
+  type PublicKey,
+  EventBuilder,
+  type ProfileMetadata,
+  cloneFilter,
+  getFilterLimit,
+  matchFilter,
+  matchFilters,
+  mergeFilters,
+  type Filter,
+  createSubscriptionId,
+  encodeClientMessage,
+  encodeRelayMessage,
+  parseClientMessage,
+  parseRelayMessage,
+  type ClientMessage,
+  type RelayMessage,
+  type SubscriptionId,
+} from "./core/index.ts";
+
+// --- signer ---
+export {
+  KeysSigner,
+  Nip07Signer,
+  getWindowNostr,
+  isNip07Available,
+  type NostrSigner,
+  type WindowNostr,
+} from "./signer/index.ts";
+
+// --- nips ---
+export {
+  Bech32MaxSize,
+  NostrTypeGuard,
+  decode as nip19Decode,
+  decodeNostrURI,
+  naddrEncode,
+  neventEncode,
+  noteEncode,
+  nprofileEncode,
+  npubEncode,
+  nsecEncode,
+  type AddressPointer,
+  type DecodedResult,
+  type EventPointer,
+  type NAddr,
+  type NEvent,
+  type NProfile,
+  type NPub,
+  type NSec,
+  type Note,
+  type ProfilePointer,
+  Nip19Error,
+} from "./nips/nip19.ts";
+export { encrypt as nip04Encrypt, decrypt as nip04Decrypt } from "./nips/nip04.ts";
+export { makeAuthEvent, isAuthRequired } from "./nips/nip42.ts";
+export {
+  calcPaddedLen,
+  decrypt as nip44Decrypt,
+  decryptFromPubkey,
+  encrypt as nip44Encrypt,
+  encryptToPubkey,
+  getConversationKey,
+  v2 as nip44v2,
+} from "./nips/nip44.ts";
+export {
+  markerOf,
+  parseRelayList,
+  readRelays,
+  relayListEventBuilder,
+  relayListToTags,
+  writeRelays,
+  type RelayListItem,
+  type RelayMarker,
+} from "./nips/nip65.ts";
+
+// --- relay ---
+export {
+  Pool,
+  Relay,
+  RelayClosedError,
+  RelayConnectionError,
+  RelayError,
+  RelayPublishError,
+  useWebSocketImplementation,
+  type PoolOptions,
+  type PoolPublishResult,
+  type PublishResult,
+  type RelayOptions,
+  type SubscribeOptions,
+} from "./relay/index.ts";
+
+// --- client / storage / loaders / gossip ---
+export { Client, ClientBuilder, type ClientOptions } from "./client/index.ts";
+export {
+  MemoryEventStore,
+  IndexedDbEventStore,
+  type EventStore,
+  type PutResult,
+  type IndexedDbEventStoreOptions,
+} from "./storage/index.ts";
+export {
+  createLoaders,
+  bareNostrUser,
+  DataLoader,
+  LoaderContext,
+  ReplaceableCache,
+  type Loaders,
+  type ListResult,
+  type NostrUser,
+  type MutedEntity,
+  type LoadStyle,
+} from "./loaders/index.ts";
+export { Gossip, type BrokenDownFilters, type PubkeyRoutes } from "./gossip/index.ts";

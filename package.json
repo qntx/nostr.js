@@ -2,6 +2,14 @@
   "name": "@qntx/nostr",
   "version": "0.0.0",
   "description": "Nostr protocol implementation and SDK in TypeScript",
+  "keywords": [
+    "decentralized",
+    "nip",
+    "nostr",
+    "relay",
+    "sdk",
+    "typescript"
+  ],
   "homepage": "https://github.com/qntx/nostr.js#readme",
   "bugs": {
     "url": "https://github.com/qntx/nostr.js/issues"
@@ -16,20 +24,92 @@
     "dist"
   ],
   "type": "module",
+  "sideEffects": false,
+  "types": "./dist/index.d.mts",
   "exports": {
-    ".": "./dist/index.mjs",
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./client": {
+      "types": "./dist/client.d.mts",
+      "import": "./dist/client.mjs",
+      "default": "./dist/client.mjs"
+    },
+    "./core": {
+      "types": "./dist/core.d.mts",
+      "import": "./dist/core.mjs",
+      "default": "./dist/core.mjs"
+    },
+    "./gossip": {
+      "types": "./dist/gossip.d.mts",
+      "import": "./dist/gossip.mjs",
+      "default": "./dist/gossip.mjs"
+    },
+    "./loaders": {
+      "types": "./dist/loaders.d.mts",
+      "import": "./dist/loaders.mjs",
+      "default": "./dist/loaders.mjs"
+    },
+    "./nips/nip04": {
+      "types": "./dist/nips/nip04.d.mts",
+      "import": "./dist/nips/nip04.mjs",
+      "default": "./dist/nips/nip04.mjs"
+    },
+    "./nips/nip19": {
+      "types": "./dist/nips/nip19.d.mts",
+      "import": "./dist/nips/nip19.mjs",
+      "default": "./dist/nips/nip19.mjs"
+    },
+    "./nips/nip42": {
+      "types": "./dist/nips/nip42.d.mts",
+      "import": "./dist/nips/nip42.mjs",
+      "default": "./dist/nips/nip42.mjs"
+    },
+    "./nips/nip44": {
+      "types": "./dist/nips/nip44.d.mts",
+      "import": "./dist/nips/nip44.mjs",
+      "default": "./dist/nips/nip44.mjs"
+    },
+    "./nips/nip65": {
+      "types": "./dist/nips/nip65.d.mts",
+      "import": "./dist/nips/nip65.mjs",
+      "default": "./dist/nips/nip65.mjs"
+    },
+    "./relay": {
+      "types": "./dist/relay.d.mts",
+      "import": "./dist/relay.mjs",
+      "default": "./dist/relay.mjs"
+    },
+    "./signer": {
+      "types": "./dist/signer.d.mts",
+      "import": "./dist/signer.mjs",
+      "default": "./dist/signer.mjs"
+    },
+    "./storage": {
+      "types": "./dist/storage.d.mts",
+      "import": "./dist/storage.mjs",
+      "default": "./dist/storage.mjs"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build": "vp pack",
+    "build": "vp pack && node scripts/fix-exports.mjs",
     "dev": "vp pack --watch",
     "test": "vp test",
     "check": "vp check",
     "prepublishOnly": "vp run build",
     "prepare": "vp config"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.1.1",
+    "@noble/curves": "2.0.1",
+    "@noble/hashes": "2.0.1",
+    "@scure/base": "2.0.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
@@ -47,5 +127,8 @@
       "version": "1.3.14",
       "onFail": "download"
     }
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

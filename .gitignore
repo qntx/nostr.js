@@ -10,3 +10,6 @@ dist
 .env
 .env.*
 !.env.example
+
+# Local reference checkouts (not published / not required for build)
+3rdparty
