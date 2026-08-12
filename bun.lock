@@ -5,7 +5,7 @@
     "": {
       "name": "@qntx/nostr",
       "dependencies": {
-        "@noble/ciphers": "2.1.1",
+        "@noble/ciphers": "2.3.0",
         "@noble/curves": "2.0.1",
         "@noble/hashes": "2.0.1",
         "@scure/base": "2.0.0",
@@ -17,6 +17,12 @@
         "vite": "npm:@voidzero-dev/vite-plus-core@0.2.8",
         "vite-plus": "^0.2.4",
       },
+      "peerDependencies": {
+        "ws": "^8.0.0",
+      },
+      "optionalPeers": [
+        "ws",
+      ],
     },
   },
   "overrides": {
@@ -33,7 +39,7 @@
 
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 
-    "@noble/ciphers": ["@noble/ciphers@2.1.1", "", {}, "sha512-bysYuiVfhxNJuldNXlFEitTVdNnYUc+XNJZd7Qm2a5j1vZHgY+fazadNFWFaMK/2vye0JVlxV3gHmC0WDfAOQw=="],
+    "@noble/ciphers": ["@noble/ciphers@2.3.0", "", {}, "sha512-Clu/xdfgVTf9o7ngLOURaxePwR0j8sjclKEtVij10/jGulwFsPWCvvRgG/XjUVf8Nei+jLG6uwyXzUTGY1DQrw=="],
 
     "@noble/curves": ["@noble/curves@2.0.1", "", { "dependencies": { "@noble/hashes": "2.0.1" } }, "sha512-vs1Az2OOTBiP4q0pwjW5aF0xp9n4MxVrmkFBxc6EKZc6ddYx5gaZiAsZoq0uRRXWbi3AT/sBqn05eRPtn1JCPw=="],
 
