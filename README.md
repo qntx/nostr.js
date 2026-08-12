@@ -61,17 +61,17 @@ useWebSocketImplementation(WebSocket);
 
 ## Layers & subpaths
 
-| Subpath               | Contents                                                    |
-| --------------------- | ----------------------------------------------------------- |
-| `@qntx/nostr`         | Curated public facade                                       |
-| `@qntx/nostr/core`    | Events, keys, filter, messages, EventBuilder                |
-| `@qntx/nostr/signer`  | `NostrSigner`, `KeysSigner`, `Nip07Signer`, `Nip46Signer`   |
-| `@qntx/nostr/relay`   | `Relay`, `Pool`, reconnect, AUTH                            |
-| `@qntx/nostr/client`  | `Client`, `ClientBuilder`                                   |
-| `@qntx/nostr/storage` | `EventStore`, `MemoryEventStore`, `IndexedDbEventStore`     |
-| `@qntx/nostr/loaders` | List/profile/event loaders + `OutboxFeed` (instance-scoped) |
-| `@qntx/nostr/gossip`  | NIP-65 routing / `breakDownFilter`                          |
-| `@qntx/nostr/nips/*`  | nip04, nip19, nip42, nip44, nip46, nip65                    |
+| Subpath               | Contents                                                             |
+| --------------------- | -------------------------------------------------------------------- |
+| `@qntx/nostr`         | Curated public facade                                                |
+| `@qntx/nostr/core`    | Events, keys, filter, messages, EventBuilder                         |
+| `@qntx/nostr/signer`  | `NostrSigner`, `KeysSigner`, `Nip07Signer`, `Nip46Signer`            |
+| `@qntx/nostr/relay`   | `Relay`, `Pool`, reconnect, AUTH                                     |
+| `@qntx/nostr/client`  | `Client`, `ClientBuilder`                                            |
+| `@qntx/nostr/storage` | `EventStore`, `MemoryEventStore`, `IndexedDbEventStore`              |
+| `@qntx/nostr/loaders` | List/profile/event loaders + `OutboxFeed` (instance-scoped)          |
+| `@qntx/nostr/gossip`  | NIP-65 routing / `breakDownFilter`                                   |
+| `@qntx/nostr/nips/*`  | nip04, nip05, nip10, nip19, nip21, nip27, nip42, nip44, nip46, nip65 |
 
 ## Signers
 
@@ -92,6 +92,11 @@ if (isNip07Available()) {
 // const remote = await Nip46Signer.connect("bunker://…?relay=wss://…&secret=…", {
 //   createPool: () => new Pool({ enableReconnect: true }),
 //   // or: pool: client.pool,
+// })
+// NIP-05 bunker identity:
+// await Nip46Signer.connect("alice@example.com", {
+//   createPool: () => new Pool({ enableReconnect: true }),
+//   secret: "…",
 // })
 // client.setSigner(remote)
 ```
