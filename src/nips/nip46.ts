@@ -61,7 +61,8 @@ export function toBunkerURL(pointer: BunkerPointer): string {
 
 /**
  * Parse a `bunker://` URL into a pointer.
- * Returns null when the input is not a bunker URL (e.g. NIP-05 identifiers need async lookup).
+ * Returns null when the input is not a bunker URL
+ * (use {@link import("./nip05.ts").queryProfile} + {@link Nip46Signer.connect} for NIP-05).
  */
 export function parseBunkerURL(input: string): BunkerPointer | null {
   const match = input.trim().match(BUNKER_REGEX);

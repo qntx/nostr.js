@@ -124,6 +124,23 @@ export {
 export { isNostrURI, NOSTR_URI_REGEX, parseNostrURI, type NostrURI } from "./nips/nip21.ts";
 export { parseContent, parseContentBlocks, type ContentBlock } from "./nips/nip27.ts";
 export { encrypt as nip04Encrypt, decrypt as nip04Decrypt } from "./nips/nip04.ts";
+export {
+  NIP05_REGEX,
+  NIP05_ROOT_LOCAL,
+  WELL_KNOWN_PATH,
+  Nip05Error,
+  isNip05,
+  lookupFromDocument,
+  parseNip05,
+  parseNip05Document,
+  queryProfile,
+  verifyNip05,
+  wellKnownUrl,
+  type Nip05,
+  type Nip05Address,
+  type Nip05Document,
+  type Nip05Fetch,
+} from "./nips/nip05.ts";
 export { makeAuthEvent, isAuthRequired } from "./nips/nip42.ts";
 export {
   calcPaddedLen,

@@ -15,6 +15,7 @@ export default defineConfig({
       loaders: "src/loaders/index.ts",
       gossip: "src/gossip/index.ts",
       "nips/nip04": "src/nips/nip04.ts",
+      "nips/nip05": "src/nips/nip05.ts",
       "nips/nip10": "src/nips/nip10.ts",
       "nips/nip19": "src/nips/nip19.ts",
       "nips/nip21": "src/nips/nip21.ts",
