@@ -18,7 +18,7 @@ export type FakeRelayBusOptions = {
 
 /**
  * In-process NIP-01 relay simulator over {@link MockWebSocket}.
- * Auto-handles EVENT→OK, REQ→matching events+EOSE, CLOSE, AUTH→OK.
+ * Auto-handles EVENT→OK, REQ→matching events+EOSE, COUNT, CLOSE, AUTH→OK.
  * Use for integration tests without a live relay process.
  */
 export class FakeRelayBus {
@@ -144,6 +144,13 @@ export class FakeRelayBus {
       case "CLOSE": {
         const id = msg[1] as string;
         subs.delete(id);
+        return;
+      }
+      case "COUNT": {
+        const id = msg[1] as string;
+        const filters = msg.slice(2) as Filter[];
+        const count = store.filter((e) => matchFilters(filters, e)).length;
+        ws.receive(JSON.stringify(["COUNT", id, { count }]));
         return;
       }
       case "AUTH": {

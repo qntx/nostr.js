@@ -34,7 +34,15 @@ export type RelayMessage =
   | ["CLOSED", SubscriptionId, string]
   | ["NOTICE", string]
   | ["AUTH", string]
-  | ["COUNT", SubscriptionId, { count: number; approximate?: boolean }];
+  | ["COUNT", SubscriptionId, CountResult];
+
+/** NIP-45 COUNT reply payload (HLL is opaque; not computed by this package). */
+export type CountResult = {
+  count: number;
+  approximate?: boolean;
+  /** Optional HyperLogLog sketch from the relay (opaque base64/hex string). */
+  hll?: string;
+};
 
 export function encodeClientMessage(message: ClientMessage): string {
   return JSON.stringify(message);
@@ -156,7 +164,11 @@ export function parseRelayMessage(raw: string): RelayMessage {
       ) {
         throw new MessageError("invalid COUNT relay message");
       }
-      return ["COUNT", data[1], data[2] as { count: number; approximate?: boolean }];
+      const payload = data[2] as { count: number; approximate?: unknown; hll?: unknown };
+      const result: CountResult = { count: payload.count };
+      if (typeof payload.approximate === "boolean") result.approximate = payload.approximate;
+      if (typeof payload.hll === "string") result.hll = payload.hll;
+      return ["COUNT", data[1], result];
     }
     default:
       throw new MessageError(`unknown relay message type: ${type}`);
