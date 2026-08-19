@@ -183,4 +183,60 @@ describe("Loaders", () => {
 
     await client.shutdown();
   });
+
+  test("dmRelayList loader + observe caches 10050", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const dm = dmRelayListEventBuilder(["wss://dm-a.example"]).createdAt(7).signWithKeys(keys);
+
+    const client = Client.builder()
+      .relays(["wss://idx.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .build();
+
+    const p = client.loaders.dmRelayList(keys.publicKey);
+    await respondReplaceables([{ kind: Kind.DirectMessageRelaysList, event: dm }]);
+    const result = await p;
+    expect(result.items.some((u) => u.includes("dm-a.example"))).toBe(true);
+
+    client.observe(dm);
+    expect(client.gossip.dmRelays(keys.publicKey).some((u) => u.includes("dm-a.example"))).toBe(
+      true,
+    );
+    expect(
+      client.loaders.context.cache.get({
+        kind: Kind.DirectMessageRelaysList,
+        pubkey: keys.publicKey,
+      })?.event?.id,
+    ).toBe(dm.id);
+
+    await client.shutdown();
+  });
+
+  test("hydrateGossip loads 10002 and 10050", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const list = EventBuilder.relayList([{ url: "wss://out.example" }])
+      .createdAt(8)
+      .signWithKeys(keys);
+    const dm = dmRelayListEventBuilder(["wss://dm.example"]).createdAt(9).signWithKeys(keys);
+
+    const client = Client.builder()
+      .relays(["wss://idx.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+
+    const hydrateP = client.hydrateGossip([keys.publicKey]);
+    await respondReplaceables([
+      { kind: Kind.RelayList, event: list },
+      { kind: Kind.DirectMessageRelaysList, event: dm },
+    ]);
+    await hydrateP;
+
+    expect(client.gossip.outboxRelays(keys.publicKey).some((u) => u.includes("out.example"))).toBe(
+      true,
+    );
+    expect(client.gossip.dmRelays(keys.publicKey).some((u) => u.includes("dm.example"))).toBe(true);
+
+    await client.shutdown();
+  });
 });

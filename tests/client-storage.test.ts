@@ -153,8 +153,8 @@ describe("Client storage + observe", () => {
         const filter = msg[2] as { kinds?: number[] };
         if (filter.kinds?.includes(Kind.RelayList)) {
           ws.receive(JSON.stringify(["EVENT", subId, list]));
-          ws.receive(JSON.stringify(["EOSE", subId]));
         }
+        ws.receive(JSON.stringify(["EOSE", subId]));
       }
     }
     await hydrateP;

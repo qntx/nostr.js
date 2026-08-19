@@ -1,10 +1,13 @@
 import type { Event } from "../../src/core/event.ts";
 import type { Filter } from "../../src/core/filter.ts";
 import { matchFilters } from "../../src/core/filter.ts";
+import { bytesToHex } from "../../src/core/util.ts";
 import { normalizeURL } from "../../src/core/util.ts";
+import { PROTOCOL_VERSION, Responder, storageFromEvents } from "../../src/nips/nip77.ts";
 import { MockWebSocket } from "./mock-ws.ts";
 
 type Sub = { id: string; filters: Filter[] };
+type NegHandle = { responder: Responder };
 
 export type FakeRelayBusOptions = {
   /**
@@ -26,6 +29,7 @@ export class FakeRelayBus {
   readonly #cursor = new WeakMap<MockWebSocket, number>();
   readonly #subs = new WeakMap<MockWebSocket, Map<string, Sub>>();
   readonly #authed = new WeakSet<MockWebSocket>();
+  readonly #neg = new WeakMap<MockWebSocket, Map<string, NegHandle>>();
   readonly #opts: FakeRelayBusOptions;
   #timer: ReturnType<typeof setInterval> | undefined;
 
@@ -75,6 +79,7 @@ export class FakeRelayBus {
       if (!this.#cursor.has(ws)) {
         this.#cursor.set(ws, 0);
         this.#subs.set(ws, new Map());
+        this.#neg.set(ws, new Map());
         const challenge =
           typeof this.#opts.authChallenge === "function"
             ? this.#opts.authChallenge(ws.url)
@@ -117,10 +122,16 @@ export class FakeRelayBus {
         }
         if (!store.some((e) => e.id === event.id)) store.push(event);
         ws.receive(JSON.stringify(["OK", event.id, true, ""]));
-        // Fan-out to local subscriptions on this socket.
-        for (const sub of subs.values()) {
-          if (matchFilters(sub.filters, event)) {
-            ws.receive(JSON.stringify(["EVENT", sub.id, event]));
+        const url = normalizeURL(ws.url);
+        for (const peer of MockWebSocket.instances) {
+          if (peer.readyState !== MockWebSocket.OPEN) continue;
+          if (normalizeURL(peer.url) !== url) continue;
+          const peerSubs = this.#subs.get(peer);
+          if (!peerSubs) continue;
+          for (const sub of peerSubs.values()) {
+            if (matchFilters(sub.filters, event)) {
+              peer.receive(JSON.stringify(["EVENT", sub.id, event]));
+            }
           }
         }
         return;
@@ -159,6 +170,53 @@ export class FakeRelayBus {
           this.#authed.add(ws);
           ws.receive(JSON.stringify(["OK", event.id, true, ""]));
         }
+        return;
+      }
+      case "NEG-OPEN": {
+        if (msg.length === 5) {
+          ws.receive(JSON.stringify(["NEG-ERR", msg[1], "error: obsolete 5-element NEG-OPEN"]));
+          return;
+        }
+        if (msg.length !== 4 || typeof msg[1] !== "string" || typeof msg[3] !== "string") {
+          const badId = typeof msg[1] === "string" ? msg[1] : "";
+          ws.receive(JSON.stringify(["NEG-ERR", badId, "error: invalid NEG-OPEN"]));
+          return;
+        }
+        const id = msg[1];
+        const filter = msg[2] as Filter;
+        const hex = msg[3];
+        const matched = store.filter((e) => matchFilters([filter], e));
+        const responder = new Responder(storageFromEvents(matched));
+        this.#neg.get(ws)?.set(id, { responder });
+        const out = responder.reconcile(hex);
+        ws.receive(
+          JSON.stringify([
+            "NEG-MSG",
+            id,
+            out.nextMessage ?? bytesToHex(new Uint8Array([PROTOCOL_VERSION])),
+          ]),
+        );
+        return;
+      }
+      case "NEG-MSG": {
+        if (msg.length !== 3 || typeof msg[1] !== "string" || typeof msg[2] !== "string") return;
+        const handle = this.#neg.get(ws)?.get(msg[1]);
+        if (!handle) {
+          ws.receive(JSON.stringify(["NEG-ERR", msg[1], "closed: unknown subscription"]));
+          return;
+        }
+        const out = handle.responder.reconcile(msg[2]);
+        if (out.nextMessage === null) {
+          ws.receive(
+            JSON.stringify(["NEG-MSG", msg[1], bytesToHex(new Uint8Array([PROTOCOL_VERSION]))]),
+          );
+        } else {
+          ws.receive(JSON.stringify(["NEG-MSG", msg[1], out.nextMessage]));
+        }
+        return;
+      }
+      case "NEG-CLOSE": {
+        if (typeof msg[1] === "string") this.#neg.get(ws)?.delete(msg[1]);
         return;
       }
       default:

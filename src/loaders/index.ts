@@ -38,6 +38,7 @@ export type Loaders = {
   follows: ListLoaders["follows"];
   muteList: ListLoaders["muteList"];
   relayList: ListLoaders["relayList"];
+  dmRelayList: ListLoaders["dmRelayList"];
   profile: ProfileLoader["load"];
   event: EventLoader["load"];
 };
@@ -61,6 +62,7 @@ export function createLoaders(opts: CreateLoadersOptions): Loaders {
     follows: (pubkey, o) => lists.follows(pubkey, o),
     muteList: (pubkey, o) => lists.muteList(pubkey, o),
     relayList: (pubkey, o) => lists.relayList(pubkey, o),
+    dmRelayList: (pubkey, o) => lists.dmRelayList(pubkey, o),
     profile: (pubkey, o) => profile.load(pubkey, o),
     event: (ref) => event.load(ref),
   };

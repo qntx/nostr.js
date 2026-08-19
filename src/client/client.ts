@@ -2,6 +2,7 @@ import type { Event, EventTemplate, UnsignedEvent } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { sortedEvents } from "../core/event.ts";
 import { CryptoError } from "../core/error.ts";
+import { Kind } from "../core/kind.ts";
 import { EventBuilder } from "../core/builder.ts";
 import type { NostrSigner } from "../signer/types.ts";
 import { Pool, type PoolPublishResult } from "../relay/pool.ts";
@@ -15,7 +16,79 @@ import {
 import { Gossip } from "../gossip/index.ts";
 import type { EventStore } from "../storage/types.ts";
 import { MemoryEventStore } from "../storage/memory.ts";
+import {
+  isGiftWrapKind,
+  requireNip59Crypto,
+  unwrap,
+  type Nip59Crypto,
+  type Rumor,
+} from "../nips/nip59.ts";
+import {
+  Nip17Error,
+  buildChatMessageRumor,
+  dmRelayListEventBuilder,
+  normalizeRecipients,
+  requireDmRelays,
+  wrapDirectMessage,
+  type Recipient,
+  type ReplyTo,
+} from "../nips/nip17.ts";
+import { storageFromEvents, type NegentropyStorageVector } from "../nips/nip77.ts";
 import { ClientBuilder } from "./builder.ts";
+
+export const SyncDirection = {
+  Up: "up",
+  Down: "down",
+  Both: "both",
+} as const;
+
+export type SyncDirectionName = (typeof SyncDirection)[keyof typeof SyncDirection];
+
+export type SyncOptions = {
+  relays?: readonly string[];
+  direction?: SyncDirectionName;
+  /**
+   * Wall-clock deadline for the Negentropy reconciliation session
+   * (`NEG-OPEN` through `NEG-CLOSE`), in milliseconds.
+   * One clock for the whole session — not reset per `NEG-MSG`.
+   * Default: the relay `publishTimeoutMs`.
+   * Upload/download phases reuse this value as their per-call timeout.
+   */
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  dryRun?: boolean;
+  /** When false, skip observe/storage on downloaded events. Default true. */
+  observe?: boolean;
+};
+
+export type SyncSummary = {
+  local: string[];
+  remote: string[];
+  sent: string[];
+  received: string[];
+  sendFailures: Record<string, string>;
+};
+
+const SYNC_ID_BATCH = 100;
+
+function mergeSyncSummary(into: SyncSummary, other: SyncSummary): SyncSummary {
+  const sendFailures = { ...into.sendFailures, ...other.sendFailures };
+  return {
+    local: uniqueIds([...into.local, ...other.local]),
+    remote: uniqueIds([...into.remote, ...other.remote]),
+    sent: uniqueIds([...into.sent, ...other.sent]),
+    received: uniqueIds([...into.received, ...other.received]),
+    sendFailures,
+  };
+}
+
+function uniqueIds(ids: readonly string[]): string[] {
+  return [...new Set(ids)];
+}
+
+function emptySummary(): SyncSummary {
+  return { local: [], remote: [], sent: [], received: [], sendFailures: {} };
+}
 
 export type ClientOptions = {
   signer?: NostrSigner;
@@ -73,6 +146,45 @@ export type PublishOptions = {
   gossip?: boolean;
   /** When false, skip writing the published event to storage/observe. Default true. */
   observe?: boolean;
+};
+
+export type SendPrivateMessageOptions = {
+  readonly subject?: string;
+  readonly replyTo?: ReplyTo;
+  readonly created_at?: number;
+  readonly timeoutMs?: number;
+  readonly observe?: boolean;
+};
+
+export type PrivateMessageSendResult = {
+  rumor: Rumor;
+  wraps: ReadonlyArray<{
+    recipient: string;
+    wrap: Event;
+    results: PoolPublishResult[];
+  }>;
+};
+
+export type ReceivedPrivateMessage = {
+  wrap: Event;
+  rumor: Rumor;
+};
+
+export type FetchPrivateMessagesOptions = {
+  readonly since?: number;
+  readonly until?: number;
+  readonly timeoutMs?: number;
+  readonly signal?: AbortSignal;
+  readonly observe?: boolean;
+};
+
+export type SubscribePrivateMessagesOptions = {
+  readonly since?: number;
+  readonly onevent?: (msg: ReceivedPrivateMessage) => void;
+  readonly oneose?: () => void;
+  readonly onclose?: (reason: string) => void;
+  readonly signal?: AbortSignal;
+  readonly observe?: boolean;
 };
 
 /**
@@ -181,7 +293,13 @@ export class Client {
    */
   observe(event: Event): void {
     this.gossip.ingest(event);
-    if (event.kind === 0 || event.kind === 3 || event.kind === 10000 || event.kind === 10002) {
+    if (
+      event.kind === Kind.Metadata ||
+      event.kind === Kind.Contacts ||
+      event.kind === Kind.MuteList ||
+      event.kind === Kind.RelayList ||
+      event.kind === Kind.DirectMessageRelaysList
+    ) {
       this.loaders.context.cache.putIfNewer(event);
     }
     if (this.#persistEvents) {
@@ -202,7 +320,7 @@ export class Client {
   }
 
   /**
-   * Explicitly load kind:10002 lists for pubkeys and feed gossip.
+   * Explicitly load kind:10002 and kind:10050 lists for pubkeys and feed gossip.
    * Does not background-fetch unknown authors on every subscribe (predictable DX).
    */
   async hydrateGossip(
@@ -212,11 +330,13 @@ export class Client {
     this.#assertAlive();
     await Promise.all(
       pubkeys.map(async (pk) => {
-        const result = await this.loaders.relayList(pk, {
-          hints: opts?.hints,
-          style: opts?.force ? "force" : "default",
-        });
-        if (result.event) this.observe(result.event);
+        const style = opts?.force ? "force" : "default";
+        const [relayList, dmList] = await Promise.all([
+          this.loaders.relayList(pk, { hints: opts?.hints, style }),
+          this.loaders.dmRelayList(pk, { hints: opts?.hints, style }),
+        ]);
+        if (relayList.event) this.observe(relayList.event);
+        if (dmList.event) this.observe(dmList.event);
       }),
     );
   }
@@ -283,7 +403,9 @@ export class Client {
         : eventOrBuilder;
 
     let relays = opts?.relays;
-    if (!relays && opts?.gossip) {
+    if (!relays && isGiftWrapKind(event.kind)) {
+      relays = this.#giftWrapRelays(event);
+    } else if (!relays && opts?.gossip) {
       const outbox = this.gossip.outboxRelays(event.pubkey);
       if (outbox.length > 0) relays = outbox;
     }
@@ -450,5 +572,260 @@ export class Client {
         for (const c of closers) c.close(reason);
       },
     };
+  }
+
+  #requireNip59Crypto(): Nip59Crypto {
+    if (!this.#signer) throw new CryptoError("no signer configured");
+    return requireNip59Crypto(this.#signer);
+  }
+
+  #throwIfAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) return;
+    if (signal.reason instanceof Error) throw signal.reason;
+    throw new CryptoError("aborted");
+  }
+
+  #giftWrapRelays(event: Event): string[] {
+    const targets: string[] = [];
+    for (const tag of event.tags) {
+      if (tag[0] === "p" && tag[1]) targets.push(tag[1].toLowerCase());
+    }
+    if (targets.length === 0) {
+      throw new Nip17Error("gift wrap has no p-tag recipient");
+    }
+    if (targets.length !== 1) {
+      throw new Nip17Error("gift wrap must have exactly one p-tag recipient");
+    }
+    const relays = this.gossip.dmRelays(targets[0]!);
+    if (relays.length === 0) {
+      throw new Nip17Error("no kind 10050 in gossip; use sendPrivateMessage or pass relays");
+    }
+    return relays;
+  }
+
+  /** Publish a public kind:10050 list (NIP-65 outbox / default relays, not DM relays). */
+  async setDmRelays(
+    relays: readonly string[],
+    opts?: PublishOptions,
+  ): Promise<PoolPublishResult[]> {
+    return this.publish(dmRelayListEventBuilder(relays), { gossip: true, ...opts });
+  }
+
+  async sendPrivateMessage(
+    recipients: string | Recipient | readonly (string | Recipient)[],
+    content: string,
+    opts?: SendPrivateMessageOptions,
+  ): Promise<PrivateMessageSendResult> {
+    this.#assertAlive();
+    const crypto = this.#requireNip59Crypto();
+    const sender = await crypto.getPublicKey();
+    const list = normalizeRecipients(recipients);
+    if (list.length === 0) {
+      throw new Nip17Error("recipients must not be empty");
+    }
+
+    const targets = new Set<string>([sender.toLowerCase(), ...list.map((r) => r.pubkey)]);
+    await this.hydrateGossip([...targets]);
+    for (const pk of targets) {
+      requireDmRelays(pk, this.gossip.dmRelays(pk));
+    }
+
+    const rumor = buildChatMessageRumor(sender, list, content, {
+      created_at: opts?.created_at,
+      subject: opts?.subject,
+      replyTo: opts?.replyTo,
+    });
+    const wraps = await wrapDirectMessage(crypto, list, rumor);
+    const sent: Array<{
+      recipient: string;
+      wrap: Event;
+      results: PoolPublishResult[];
+    }> = [];
+    for (const { recipient, wrap } of wraps) {
+      const relays = requireDmRelays(recipient, this.gossip.dmRelays(recipient));
+      const results = await this.pool.publish(relays, wrap, { timeoutMs: opts?.timeoutMs });
+      const anyOk = results.some((r) => r.result?.ok);
+      if (anyOk && opts?.observe !== false) {
+        this.observe(wrap);
+      }
+      sent.push({ recipient, wrap, results });
+    }
+    return { rumor, wraps: sent };
+  }
+
+  async fetchPrivateMessages(
+    opts?: FetchPrivateMessagesOptions,
+  ): Promise<ReceivedPrivateMessage[]> {
+    this.#assertAlive();
+    const crypto = this.#requireNip59Crypto();
+    const self = await crypto.getPublicKey();
+    this.#throwIfAborted(opts?.signal);
+    await this.hydrateGossip([self]);
+    this.#throwIfAborted(opts?.signal);
+    const relays = requireDmRelays(self, this.gossip.dmRelays(self));
+    const events = await this.pool.fetch(
+      relays,
+      [
+        {
+          kinds: [Kind.GiftWrap],
+          "#p": [self],
+          since: opts?.since,
+          until: opts?.until,
+        },
+      ],
+      { timeoutMs: opts?.timeoutMs, signal: opts?.signal },
+    );
+
+    const byRumor = new Map<string, ReceivedPrivateMessage>();
+    for (const wrap of events) {
+      if (opts?.observe !== false) this.observe(wrap);
+      try {
+        const rumor = await unwrap(crypto, wrap);
+        byRumor.set(rumor.id, { wrap, rumor });
+      } catch {
+        // junk / forgery / key mismatch — NIP-17 allows unreadable wraps
+      }
+    }
+
+    return [...byRumor.values()].sort((a, b) => {
+      if (a.rumor.created_at !== b.rumor.created_at) {
+        return a.rumor.created_at - b.rumor.created_at;
+      }
+      return a.rumor.id.localeCompare(b.rumor.id);
+    });
+  }
+
+  async subscribePrivateMessages(
+    opts?: SubscribePrivateMessagesOptions,
+  ): Promise<{ close: (reason?: string) => void }> {
+    this.#assertAlive();
+    const crypto = this.#requireNip59Crypto();
+    const self = await crypto.getPublicKey();
+    this.#throwIfAborted(opts?.signal);
+    await this.hydrateGossip([self]);
+    this.#throwIfAborted(opts?.signal);
+    const relays = requireDmRelays(self, this.gossip.dmRelays(self));
+
+    const seen = new Set<string>();
+    let tail = Promise.resolve();
+    return this.pool.subscribe(
+      relays,
+      [{ kinds: [Kind.GiftWrap], "#p": [self], since: opts?.since }],
+      {
+        signal: opts?.signal,
+        oneose: opts?.oneose,
+        onclose: opts?.onclose,
+        onevent: (wrap) => {
+          tail = tail
+            .then(async () => {
+              if (opts?.observe !== false) this.observe(wrap);
+              try {
+                const rumor = await unwrap(crypto, wrap);
+                if (seen.has(rumor.id)) return;
+                seen.add(rumor.id);
+                opts?.onevent?.({ wrap, rumor });
+              } catch {
+                // drop
+              }
+            })
+            .catch(() => {
+              // keep the queue alive if a handler throws
+            });
+        },
+      },
+    );
+  }
+
+  /**
+   * NIP-77 sync against one relay: reconcile, then optionally upload
+   * local-only events and/or download remote-only events.
+   */
+  async syncToRelay(
+    url: string,
+    filter: Filter,
+    opts?: Omit<SyncOptions, "relays">,
+  ): Promise<SyncSummary> {
+    this.#assertAlive();
+    this.#throwIfAborted(opts?.signal);
+    const direction = opts?.direction ?? SyncDirection.Down;
+    const localEvents = await this.storage.query([filter]);
+    const storage: NegentropyStorageVector = storageFromEvents(localEvents);
+    const relay = await this.pool.ensureRelay(url, { signal: opts?.signal });
+    const { have, need } = await relay.negReconcile(filter, storage, {
+      timeoutMs: opts?.timeoutMs,
+      signal: opts?.signal,
+    });
+
+    const summary: SyncSummary = {
+      local: have,
+      remote: need,
+      sent: [],
+      received: [],
+      sendFailures: {},
+    };
+
+    if (opts?.dryRun) return summary;
+
+    if (direction === SyncDirection.Up || direction === SyncDirection.Both) {
+      for (const id of have) {
+        const event = await this.storage.get(id);
+        if (!event) {
+          summary.sendFailures[id] = "event not found in local store";
+          continue;
+        }
+        try {
+          const results = await this.pool.publish([url], event, { timeoutMs: opts?.timeoutMs });
+          const ok = results.some((r) => r.result?.ok);
+          if (ok) summary.sent.push(id);
+          else {
+            summary.sendFailures[id] =
+              results[0]?.error ?? results[0]?.result?.message ?? "publish failed";
+          }
+        } catch (error) {
+          summary.sendFailures[id] = error instanceof Error ? error.message : String(error);
+        }
+      }
+    }
+
+    if ((direction === SyncDirection.Down || direction === SyncDirection.Both) && need.length > 0) {
+      const shouldObserve = opts?.observe !== false;
+      for (let i = 0; i < need.length; i += SYNC_ID_BATCH) {
+        const batch = need.slice(i, i + SYNC_ID_BATCH);
+        this.#throwIfAborted(opts?.signal);
+        const events = await this.pool.fetch([url], [{ ids: batch }], {
+          timeoutMs: opts?.timeoutMs,
+          signal: opts?.signal,
+        });
+        for (const event of events) {
+          let stored = false;
+          try {
+            const result = await this.storage.put(event);
+            stored = result !== "rejected";
+          } catch {
+            stored = false;
+          }
+          if (!stored) continue;
+          if (shouldObserve) this.observe(event);
+          summary.received.push(event.id);
+        }
+      }
+    }
+
+    return summary;
+  }
+
+  /**
+   * NIP-77 sync against the given relays (or Client default relays).
+   * Each relay runs an independent session; summaries are merged.
+   */
+  async sync(filter: Filter, opts?: SyncOptions): Promise<SyncSummary> {
+    this.#assertAlive();
+    const urls = this.#defaultRelays(opts?.relays ? [...opts.relays] : undefined);
+    let merged = emptySummary();
+    for (const url of urls) {
+      const part = await this.syncToRelay(url, filter, opts);
+      merged = mergeSyncSummary(merged, part);
+    }
+    return merged;
   }
 }

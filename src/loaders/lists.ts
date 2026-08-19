@@ -1,6 +1,7 @@
 import type { Event } from "../core/event.ts";
 import { Kind } from "../core/kind.ts";
 import { isHex32, normalizeURL } from "../core/util.ts";
+import { parseDmRelayList } from "../nips/nip17.ts";
 import type { RelayListItem } from "../nips/nip65.ts";
 import { parseRelayList } from "../nips/nip65.ts";
 import type { LoaderContext } from "./context.ts";
@@ -32,6 +33,7 @@ export function createListLoaders(ctx: LoaderContext) {
   const followsLoader = createReplaceableLoader(ctx, Kind.Contacts);
   const muteLoader = createReplaceableLoader(ctx, Kind.MuteList);
   const relayListLoader = createReplaceableLoader(ctx, Kind.RelayList);
+  const dmRelayListLoader = createReplaceableLoader(ctx, Kind.DirectMessageRelaysList);
 
   return {
     async follows(
@@ -95,6 +97,22 @@ export function createListLoaders(ctx: LoaderContext) {
           return i;
         }
       });
+      return { event, fresh, items };
+    },
+
+    async dmRelayList(
+      pubkey: string,
+      opts?: { hints?: string[]; style?: LoadStyle },
+    ): Promise<ListResult<string>> {
+      const { event, fresh } = await dmRelayListLoader.load(pubkey, opts);
+      let items: string[] = [];
+      if (event) {
+        try {
+          items = parseDmRelayList(event);
+        } catch {
+          items = [];
+        }
+      }
       return { event, fresh, items };
     },
   };
