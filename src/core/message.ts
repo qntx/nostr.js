@@ -18,13 +18,16 @@ export function createSubscriptionId(id?: string): SubscriptionId {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Client → relay messages (NIP-01 + NIP-42 AUTH + NIP-45 COUNT). */
+/** Client → relay messages (NIP-01 + NIP-42 AUTH + NIP-45 COUNT + NIP-77). */
 export type ClientMessage =
   | ["EVENT", Event]
   | ["REQ", SubscriptionId, ...Filter[]]
   | ["CLOSE", SubscriptionId]
   | ["AUTH", Event]
-  | ["COUNT", SubscriptionId, ...Filter[]];
+  | ["COUNT", SubscriptionId, ...Filter[]]
+  | ["NEG-OPEN", SubscriptionId, Filter, string]
+  | ["NEG-MSG", SubscriptionId, string]
+  | ["NEG-CLOSE", SubscriptionId];
 
 /** Relay → client messages. */
 export type RelayMessage =
@@ -34,7 +37,9 @@ export type RelayMessage =
   | ["CLOSED", SubscriptionId, string]
   | ["NOTICE", string]
   | ["AUTH", string]
-  | ["COUNT", SubscriptionId, CountResult];
+  | ["COUNT", SubscriptionId, CountResult]
+  | ["NEG-MSG", SubscriptionId, string]
+  | ["NEG-ERR", SubscriptionId, string];
 
 /** NIP-45 COUNT reply payload (HLL is opaque; not computed by this package). */
 export type CountResult = {
@@ -95,6 +100,32 @@ export function parseClientMessage(raw: string): ClientMessage {
         throw new MessageError("invalid COUNT client message");
       }
       return ["COUNT", data[1], ...(data.slice(2) as Filter[])];
+    }
+    case "NEG-OPEN": {
+      if (data.length === 5) {
+        throw new MessageError("obsolete 5-element NEG-OPEN; expected [NEG-OPEN, id, filter, hex]");
+      }
+      if (
+        data.length !== 4 ||
+        typeof data[1] !== "string" ||
+        !isFilterObject(data[2]) ||
+        !isNegHex(data[3])
+      ) {
+        throw new MessageError("invalid NEG-OPEN client message");
+      }
+      return ["NEG-OPEN", data[1], data[2], data[3].toLowerCase()];
+    }
+    case "NEG-MSG": {
+      if (data.length !== 3 || typeof data[1] !== "string" || !isNegHex(data[2])) {
+        throw new MessageError("invalid NEG-MSG client message");
+      }
+      return ["NEG-MSG", data[1], data[2].toLowerCase()];
+    }
+    case "NEG-CLOSE": {
+      if (data.length !== 2 || typeof data[1] !== "string") {
+        throw new MessageError("invalid NEG-CLOSE client message");
+      }
+      return ["NEG-CLOSE", data[1]];
     }
     default:
       throw new MessageError(`unknown client message type: ${type}`);
@@ -170,7 +201,31 @@ export function parseRelayMessage(raw: string): RelayMessage {
       if (typeof payload.hll === "string") result.hll = payload.hll;
       return ["COUNT", data[1], result];
     }
+    case "NEG-MSG": {
+      if (data.length !== 3 || typeof data[1] !== "string" || !isNegHex(data[2])) {
+        throw new MessageError("invalid NEG-MSG relay message");
+      }
+      return ["NEG-MSG", data[1], data[2].toLowerCase()];
+    }
+    case "NEG-ERR": {
+      if (data.length !== 3 || typeof data[1] !== "string" || typeof data[2] !== "string") {
+        throw new MessageError("invalid NEG-ERR relay message");
+      }
+      return ["NEG-ERR", data[1], data[2]];
+    }
     default:
       throw new MessageError(`unknown relay message type: ${type}`);
   }
 }
+
+function isFilterObject(value: unknown): value is Filter {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNegHex(value: unknown): value is string {
+  return (
+    typeof value === "string" && value.length > 0 && value.length % 2 === 0 && HEX_RE.test(value)
+  );
+}
+
+const HEX_RE = /^[0-9a-fA-F]+$/;

@@ -162,7 +162,39 @@ export {
   type RelayListItem,
   type RelayMarker,
 } from "./nips/nip65.ts";
-export { dmRelayListEventBuilder, dmRelayListToTags, parseDmRelayList } from "./nips/nip17.ts";
+export {
+  Nip59Error,
+  TWO_DAYS_SECS,
+  createRumor,
+  createSeal,
+  createGiftWrap,
+  wrap as wrapGift,
+  unwrap as unwrapGift,
+  randomPastTimestamp,
+  rumorToJson,
+  eventToJson,
+  isGiftWrapKind,
+  requireNip59Crypto,
+  requireNip44Decryptor,
+  type Rumor,
+  type Nip59Crypto,
+  type Nip44Decryptor,
+  type GiftWrapTimestamps,
+  type WrapOptions,
+} from "./nips/nip59.ts";
+export {
+  dmRelayListEventBuilder,
+  dmRelayListToTags,
+  parseDmRelayList,
+  Nip17Error,
+  normalizeRecipients,
+  buildChatMessageRumor,
+  wrapDirectMessage,
+  requireDmRelays,
+  type Recipient,
+  type ReplyTo,
+  type ChatMessageOptions,
+} from "./nips/nip17.ts";
 export {
   BUNKER_REGEX,
   Nip46Error,
@@ -180,6 +212,19 @@ export {
   type Nip46Response,
   type NostrConnectParams,
 } from "./nips/nip46.ts";
+export {
+  Nip77Error,
+  PROTOCOL_VERSION,
+  DEFAULT_FRAME_SIZE_LIMIT,
+  MAX_NEG_ROUNDS,
+  NegentropyStorageVector,
+  Negentropy,
+  Reconciliation,
+  Responder,
+  storageFromEvents,
+  type NegItem,
+  type ReconcileOutcome,
+} from "./nips/nip77.ts";
 
 // --- relay ---
 export {
@@ -199,7 +244,20 @@ export {
 } from "./relay/index.ts";
 
 // --- client / storage / loaders / gossip ---
-export { Client, ClientBuilder, type ClientOptions } from "./client/index.ts";
+export {
+  Client,
+  ClientBuilder,
+  type ClientOptions,
+  type SendPrivateMessageOptions,
+  type PrivateMessageSendResult,
+  type ReceivedPrivateMessage,
+  type FetchPrivateMessagesOptions,
+  type SubscribePrivateMessagesOptions,
+  SyncDirection,
+  type SyncDirectionName,
+  type SyncOptions,
+  type SyncSummary,
+} from "./client/index.ts";
 export {
   MemoryEventStore,
   IndexedDbEventStore,

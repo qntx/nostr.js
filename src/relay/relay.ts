@@ -8,6 +8,12 @@ import {
   type CountResult,
   type SubscriptionId,
 } from "../core/message.ts";
+import {
+  MAX_NEG_ROUNDS,
+  Nip77Error,
+  Reconciliation,
+  type NegentropyStorageVector,
+} from "../nips/nip77.ts";
 import { makeAuthEvent } from "../nips/nip42.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayClosedError, RelayConnectionError, RelayError, RelayPublishError } from "./error.ts";
@@ -56,11 +62,22 @@ type CountWaiter = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+type NegSession = {
+  queue: string[];
+  waiter:
+    | {
+        resolve: (hex: string) => void;
+        reject: (err: Error) => void;
+      }
+    | undefined;
+  error: Error | undefined;
+};
+
 const DEFAULT_BACKOFF = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000, 60_000];
 
 /**
  * Single-relay NIP-01 client.
- * Connection lifecycle, REQ/CLOSE, EVENT publish ACK, AUTH, COUNT, optional reconnect.
+ * Connection lifecycle, REQ/CLOSE, EVENT publish ACK, AUTH, COUNT, NIP-77, optional reconnect.
  */
 export class Relay {
   readonly url: string;
@@ -70,6 +87,7 @@ export class Relay {
   #subs = new Map<SubscriptionId, Subscription>();
   #publishes = new Map<string, PublishWaiter>();
   #counts = new Map<string, CountWaiter>();
+  #neg = new Map<SubscriptionId, NegSession>();
   #WS: WebSocketConstructor;
   #verify: (event: Event) => boolean;
   #publishTimeoutMs: number;
@@ -262,6 +280,7 @@ export class Relay {
     this.#closeAllSubscriptions("relay closed");
     this.#rejectPublishes(new RelayClosedError("relay closed", this.url));
     this.#rejectCounts(new RelayClosedError("relay closed", this.url));
+    this.#rejectNeg(new RelayClosedError("relay closed", this.url));
     this.#detachSocketHandlers();
     this.#teardownSocket();
     this.#connected = false;
@@ -310,6 +329,15 @@ export class Relay {
     this.#counts.clear();
   }
 
+  #rejectNeg(err: Error): void {
+    for (const session of this.#neg.values()) {
+      session.error = err;
+      session.waiter?.reject(err);
+      session.waiter = undefined;
+    }
+    this.#neg.clear();
+  }
+
   /**
    * Unexpected socket death. Keep subscriptions if reconnecting.
    */
@@ -321,6 +349,7 @@ export class Relay {
     this.#ws = undefined;
     this.#rejectPublishes(new RelayClosedError(reason, this.url));
     this.#rejectCounts(new RelayClosedError(reason, this.url));
+    this.#rejectNeg(new RelayClosedError(reason, this.url));
 
     const canReconnect =
       this.#enableReconnect &&
@@ -432,6 +461,32 @@ export class Relay {
         clearTimeout(waiter.timer);
         this.#counts.delete(countId);
         waiter.resolve(payload);
+        break;
+      }
+      case "NEG-MSG": {
+        const [, negId, hex] = msg;
+        const session = this.#neg.get(negId);
+        if (!session) return;
+        if (session.waiter) {
+          const waiter = session.waiter;
+          session.waiter = undefined;
+          waiter.resolve(hex);
+        } else {
+          session.queue.push(hex);
+        }
+        break;
+      }
+      case "NEG-ERR": {
+        const [, negId, reason] = msg;
+        const session = this.#neg.get(negId);
+        if (!session) return;
+        const err = new Nip77Error(reason);
+        session.error = err;
+        if (session.waiter) {
+          const waiter = session.waiter;
+          session.waiter = undefined;
+          waiter.reject(err);
+        }
         break;
       }
       case "NOTICE": {
@@ -677,6 +732,91 @@ export class Relay {
       return await this.#authPromise;
     } finally {
       this.#authPromise = undefined;
+    }
+  }
+
+  /**
+   * NIP-77: run Negentropy reconciliation against this relay.
+   * Returns the local-only (`have`) and remote-only (`need`) event ids.
+   * Does not upload or download events.
+   *
+   * `timeoutMs` is a single wall-clock deadline for the whole session
+   * (`NEG-OPEN` through the last `NEG-MSG`), not a per-message budget.
+   * Default: {@link RelayOptions.publishTimeoutMs}.
+   */
+  async negReconcile(
+    filter: Filter,
+    storage: NegentropyStorageVector,
+    opts?: { id?: string; timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<{ have: string[]; need: string[] }> {
+    if (!this.#connected) throw new RelayClosedError("not connected", this.url);
+    if (opts?.signal?.aborted) {
+      throw new RelayConnectionError("negentropy aborted", this.url);
+    }
+
+    const id = opts?.id ?? this.nextSubId("neg");
+    const timeoutMs = opts?.timeoutMs ?? this.#publishTimeoutMs;
+    const deadline = Date.now() + timeoutMs;
+    const session: NegSession = { queue: [], waiter: undefined, error: undefined };
+    this.#neg.set(id, session);
+
+    const timedOut = (): RelayPublishError =>
+      new RelayPublishError("negentropy timed out", this.url);
+
+    const remainingMs = (): number => deadline - Date.now();
+
+    const next = (): Promise<string> => {
+      if (session.error) return Promise.reject(session.error);
+      if (remainingMs() <= 0) return Promise.reject(timedOut());
+      const queued = session.queue.shift();
+      if (queued !== undefined) return Promise.resolve(queued);
+      return new Promise<string>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          session.waiter = undefined;
+          reject(timedOut());
+        }, remainingMs());
+        const fail = (err: Error): void => {
+          clearTimeout(timer);
+          session.waiter = undefined;
+          reject(err);
+        };
+        const onAbort = (): void => fail(new RelayConnectionError("negentropy aborted", this.url));
+        session.waiter = {
+          resolve: (hex) => {
+            clearTimeout(timer);
+            opts?.signal?.removeEventListener("abort", onAbort);
+            resolve(hex);
+          },
+          reject: (err) => fail(err),
+        };
+        opts?.signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    };
+
+    const recon = new Reconciliation(storage);
+    const have = new Set<string>();
+    const need = new Set<string>();
+
+    try {
+      this.#send(["NEG-OPEN", id, filter, recon.opening]);
+      for (let round = 0; round < MAX_NEG_ROUNDS; round++) {
+        const incoming = await next();
+        const out = recon.reconcile(incoming);
+        for (const hid of out.have) have.add(hid);
+        for (const nid of out.need) need.add(nid);
+        if (out.nextMessage === null) {
+          return { have: [...have], need: [...need] };
+        }
+        this.#send(["NEG-MSG", id, out.nextMessage]);
+      }
+      throw new Nip77Error("negentropy exceeded max rounds");
+    } finally {
+      this.#neg.delete(id);
+      try {
+        this.#send(["NEG-CLOSE", id]);
+      } catch {
+        // connection already gone
+      }
     }
   }
 

@@ -61,17 +61,17 @@ useWebSocketImplementation(WebSocket);
 
 ## Layers & subpaths
 
-| Subpath               | Contents                                                                    |
-| --------------------- | --------------------------------------------------------------------------- |
-| `@qntx/nostr`         | Curated public facade                                                       |
-| `@qntx/nostr/core`    | Events, keys, filter, messages, EventBuilder                                |
-| `@qntx/nostr/signer`  | `NostrSigner`, `KeysSigner`, `Nip07Signer`, `Nip46Signer`                   |
-| `@qntx/nostr/relay`   | `Relay`, `Pool`, reconnect, AUTH                                            |
-| `@qntx/nostr/client`  | `Client`, `ClientBuilder`                                                   |
-| `@qntx/nostr/storage` | `EventStore`, `MemoryEventStore`, `IndexedDbEventStore`                     |
-| `@qntx/nostr/loaders` | List/profile/event loaders + `OutboxFeed` (instance-scoped)                 |
-| `@qntx/nostr/gossip`  | NIP-65 + kind:10050 DM routing / `breakDownFilter`                          |
-| `@qntx/nostr/nips/*`  | nip04, nip05, nip10, nip17, nip19, nip21, nip27, nip42, nip44, nip46, nip65 |
+| Subpath               | Contents                                                                                  |
+| --------------------- | ----------------------------------------------------------------------------------------- |
+| `@qntx/nostr`         | Curated public facade                                                                     |
+| `@qntx/nostr/core`    | Events, keys, filter, messages, EventBuilder                                              |
+| `@qntx/nostr/signer`  | `NostrSigner`, `KeysSigner`, `Nip07Signer`, `Nip46Signer`                                 |
+| `@qntx/nostr/relay`   | `Relay`, `Pool`, reconnect, AUTH                                                          |
+| `@qntx/nostr/client`  | `Client`, `ClientBuilder`                                                                 |
+| `@qntx/nostr/storage` | `EventStore`, `MemoryEventStore`, `IndexedDbEventStore`                                   |
+| `@qntx/nostr/loaders` | List/profile/event loaders + `OutboxFeed` (instance-scoped)                               |
+| `@qntx/nostr/gossip`  | NIP-65 + kind:10050 DM routing / `breakDownFilter`                                        |
+| `@qntx/nostr/nips/*`  | nip04, nip05, nip10, nip17, nip19, nip21, nip27, nip42, nip44, nip46, nip59, nip65, nip77 |
 
 ## Signers
 
