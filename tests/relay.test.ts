@@ -66,9 +66,62 @@ class NativePingSocket extends MockWebSocket {
     }
     set.add(listener);
   }
+
+  off(event: string, listener: (...args: unknown[]) => void): void {
+    this.#once.get(event)?.delete(listener);
+  }
+
+  pongListenerCount(): number {
+    return this.#once.get("pong")?.size ?? 0;
+  }
+}
+
+class NodeWsPingSocket extends MockWebSocket {
+  pingCalls = 0;
+  pongEnabled = false;
+  #listeners = new Map<string, Set<(...args: unknown[]) => void>>();
+
+  ping(): void {
+    this.pingCalls += 1;
+    if (!this.pongEnabled) return;
+    queueMicrotask(() => {
+      for (const fn of this.#listeners.get("pong") ?? []) fn();
+    });
+  }
+
+  on(event: string, listener: (...args: unknown[]) => void): void {
+    let set = this.#listeners.get(event);
+    if (!set) {
+      set = new Set();
+      this.#listeners.set(event, set);
+    }
+    set.add(listener);
+  }
+
+  once(event: string, listener: (...args: unknown[]) => void): void {
+    const wrap = (...args: unknown[]) => {
+      this.off(event, wrap);
+      listener(...args);
+    };
+    this.on(event, wrap);
+  }
+
+  off(event: string, listener: (...args: unknown[]) => void): void {
+    this.#listeners.get(event)?.delete(listener);
+  }
+
+  pongListenerCount(): number {
+    return this.#listeners.get("pong")?.size ?? 0;
+  }
+}
+
+class NativeTimeoutSocket extends NativePingSocket {
+  pongEnabled = false;
 }
 
 const NativePingCtor = NativePingSocket as unknown as WebSocketConstructor;
+const NativeTimeoutCtor = NativeTimeoutSocket as unknown as WebSocketConstructor;
+const NodeWsPingCtor = NodeWsPingSocket as unknown as WebSocketConstructor;
 
 class PingOnlySocket extends MockWebSocket {
   pingCalls = 0;
@@ -496,17 +549,35 @@ describe("ping", () => {
 
   test("native ping timeout without pong closes the socket", async () => {
     const relay = await Relay.connect("wss://ping-timeout.example", {
-      websocketImplementation: NativePingCtor,
+      websocketImplementation: NativeTimeoutCtor,
       enablePing: true,
       pingIntervalMs: 20,
       pingTimeoutMs: 40,
     });
     try {
-      const ws = MockWebSocket.last() as NativePingSocket;
-      ws.pongEnabled = false;
+      const ws = MockWebSocket.last() as NativeTimeoutSocket;
       await waitUntil(() => ws.pingCalls > 0);
       await waitUntil(() => !relay.connected);
       expect(relay.connected).toBe(false);
+      expect(ws.pongListenerCount()).toBe(0);
+    } finally {
+      relay.close();
+    }
+  });
+
+  test("native ping on node ws uses on/off and timeout drops the pong listener", async () => {
+    const relay = await Relay.connect("wss://ping-ws.example", {
+      websocketImplementation: NodeWsPingCtor,
+      enablePing: true,
+      pingIntervalMs: 20,
+      pingTimeoutMs: 40,
+    });
+    try {
+      const ws = MockWebSocket.last() as NodeWsPingSocket;
+      await waitUntil(() => ws.pingCalls > 0);
+      expect(dummyPingReqs(ws)).toHaveLength(0);
+      await waitUntil(() => !relay.connected);
+      expect(ws.pongListenerCount()).toBe(0);
     } finally {
       relay.close();
     }

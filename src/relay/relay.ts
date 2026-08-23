@@ -126,7 +126,8 @@ export class Relay {
   #pingTimeoutMs: number;
   #pingTimer: ReturnType<typeof setInterval> | undefined;
   #pingWaiters = new Map<SubscriptionId, PingWaiter>();
-  #pingInFlight = false;
+  #pingGen = 0;
+  #nativePing: { abort: () => void } | undefined;
 
   onnotice: ((msg: string) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -879,11 +880,14 @@ export class Relay {
       clearInterval(this.#pingTimer);
       this.#pingTimer = undefined;
     }
-    this.#clearPingWaiters();
-    this.#pingInFlight = false;
+    this.#abortCurrentPing();
   }
 
-  #clearPingWaiters(): void {
+  #abortCurrentPing(): void {
+    this.#pingGen += 1;
+    const native = this.#nativePing;
+    this.#nativePing = undefined;
+    native?.abort();
     for (const waiter of this.#pingWaiters.values()) waiter.resolve(false);
     this.#pingWaiters.clear();
   }
@@ -904,56 +908,63 @@ export class Relay {
   async #pingpong(): Promise<void> {
     const ws = this.#ws;
     if (!ws || ws.readyState !== this.#WS.OPEN) return;
-    if (this.#pingInFlight) return;
-    this.#pingInFlight = true;
-    try {
-      const ok = await new Promise<boolean>((resolve) => {
-        const timer = setTimeout(() => resolve(false), this.#pingTimeoutMs);
-        const ping = canNativePing(ws) ? this.#waitForNativePing(ws) : this.#waitForDummyPing();
-        void ping.then((alive) => {
-          clearTimeout(timer);
-          resolve(alive);
-        });
-      });
-      if (!ok) {
-        this.#clearPingWaiters();
-        if (ws.readyState === this.#WS.OPEN) {
-          try {
-            ws.close();
-          } catch {
-            // ignore
-          }
+    if (this.#nativePing || this.#pingWaiters.size > 0) return;
+
+    const gen = this.#pingGen;
+    const ping = canNativePing(ws) ? this.#waitForNativePing(ws) : this.#waitForDummyPing();
+    const ok = await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const done = (alive: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(alive);
+      };
+      const timer = setTimeout(() => {
+        if (this.#nativePing || this.#pingWaiters.size > 0) done(false);
+      }, this.#pingTimeoutMs);
+      void ping.then(done);
+    });
+
+    if (gen !== this.#pingGen) return;
+
+    if (!ok) {
+      this.#abortCurrentPing();
+      if (ws.readyState === this.#WS.OPEN) {
+        try {
+          ws.close();
+        } catch {
+          // ignore
         }
       }
-    } finally {
-      this.#pingInFlight = false;
     }
   }
 
   #waitForNativePing(ws: WebSocketLike): Promise<boolean> {
     return new Promise((resolve) => {
       let settled = false;
-      const finish = () => {
+      const finish = (alive: boolean) => {
         if (settled) return;
         settled = true;
-        resolve(true);
+        this.#nativePing = undefined;
+        ws.off?.("pong", onPong);
+        resolve(alive);
       };
-      if (typeof ws.once === "function") {
-        ws.once("pong", finish);
+      const onPong = () => finish(true);
+      this.#nativePing = { abort: () => finish(false) };
+
+      // node `ws` once() wraps the listener; off(fn) would miss it.
+      if (typeof ws.on === "function" && typeof ws.off === "function") {
+        ws.on("pong", onPong);
+      } else if (typeof ws.once === "function") {
+        ws.once("pong", onPong);
       } else {
-        const onPong = () => {
-          ws.off?.("pong", onPong);
-          finish();
-        };
         ws.on!("pong", onPong);
       }
       try {
         ws.ping!();
       } catch {
-        if (!settled) {
-          settled = true;
-          resolve(false);
-        }
+        finish(false);
       }
     });
   }
