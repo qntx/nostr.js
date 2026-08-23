@@ -73,7 +73,7 @@ describe("nip98", () => {
     expect(validateAuthEvent(future, URL, METHOD)).toBe(false);
   });
 
-  test("payload tag is sha256 of JSON.stringify(payload)", async () => {
+  test("payload tag hashes objects via JSON.stringify; string/bytes as raw body", async () => {
     const payload = { name: "file.png", size: 12 };
     const expected = bytesToHex(sha256(utf8Encoder.encode(JSON.stringify(payload))));
     const event = unpackEventFromToken(await getToken(URL, METHOD, sign, { payload }));
@@ -85,6 +85,17 @@ describe("nip98", () => {
     expect(validateAuthEvent(event, URL, METHOD, { payload })).toBe(true);
     expect(validateAuthEvent(event, URL, METHOD, { payload: { name: "other" } })).toBe(false);
     expect(validateAuthEvent(event, URL, METHOD)).toBe(true);
+
+    const raw = "raw-body";
+    const rawEvent = unpackEventFromToken(await getToken(URL, METHOD, sign, { payload: raw }));
+    expect(rawEvent.tags[2]).toEqual(["payload", bytesToHex(sha256(utf8Encoder.encode(raw)))]);
+    expect(rawEvent.tags[2]?.[1]).not.toBe(
+      bytesToHex(sha256(utf8Encoder.encode(JSON.stringify(raw)))),
+    );
+
+    const bytes = new Uint8Array([1, 2, 3]);
+    const bytesEvent = unpackEventFromToken(await getToken(URL, METHOD, sign, { payload: bytes }));
+    expect(bytesEvent.tags[2]).toEqual(["payload", bytesToHex(sha256(bytes))]);
   });
 
   test("wrong kind or bad signature fails validation", async () => {
@@ -112,5 +123,38 @@ describe("nip98", () => {
     expect(() => unpackEventFromToken("")).toThrow(Nip98Error);
     expect(() => unpackEventFromToken("%")).toThrow(Nip98Error);
     expect(() => unpackEventFromToken("bm90LWFuLWV2ZW50")).toThrow(Nip98Error);
+  });
+
+  test("unpacks unpadded standard base64 (NIP-98 spec example)", () => {
+    // 98.md Authorization example: unpadded, len % 4 === 2, alphabet +/ not -_
+    const spec =
+      "eyJpZCI6ImZlOTY0ZTc1ODkwMzM2MGYyOGQ4NDI0ZDA5MmRhODQ5NGVkMjA3Y2JhODIzMTEwYmUzYTU3ZGZlNGI1Nzg3MzQiLCJwdWJrZXkiOiI2M2ZlNjMxOGRjNTg1ODNjZmUxNjgxMGY4NmRkMDllMThiZmQ3NmFhYmMyNGEwMDgxY2UyODU2ZjMzMDUwNGVkIiwiY29udGVudCI6IiIsImtpbmQiOjI3MjM1LCJjcmVhdGVkX2F0IjoxNjgyMzI3ODUyLCJ0YWdzIjpbWyJ1IiwiaHR0cHM6Ly9hcGkuc25vcnQuc29jaWFsL2FwaS92MS9uNXNwL2xpc3QiXSxbIm1ldGhvZCIsIkdFVCJdXSwic2lnIjoiNWVkOWQ4ZWM5NThiYzg1NGY5OTdiZGMyNGFjMzM3ZDAwNWFmMzcyMzI0NzQ3ZWZlNGEwMGUyNGY0YzMwNDM3ZmY0ZGQ4MzA4Njg0YmVkNDY3ZDlkNmJlM2U1YTUxN2JiNDNiMTczMmNjN2QzMzk0OWEzYWFmODY3MDVjMjIxODQifQ";
+    expect(spec.length % 4).toBe(2);
+    expect(spec.includes("=")).toBe(false);
+
+    const event = unpackEventFromToken(spec);
+    expect(event.id).toBe("fe964e758903360f28d8424d092da8494ed207cba823110be3a57dfe4b578734");
+    expect(event.kind).toBe(Kind.HttpAuth);
+    expect(event.tags).toEqual([
+      ["u", "https://api.snort.social/api/v1/n5sp/list"],
+      ["method", "GET"],
+    ]);
+
+    expect(unpackEventFromToken(`nostr ${spec}`).id).toBe(event.id);
+    expect(unpackEventFromToken(`NOSTR ${spec}`).id).toBe(event.id);
+  });
+
+  test("strips padding from this library's tokens and still unpacks", async () => {
+    const token = await getToken(URL, METHOD, sign);
+    const unpadded = token.replace(/=+$/, "");
+    expect(unpadded.length % 4).not.toBe(0);
+    expect(unpackEventFromToken(unpadded).id).toBe(unpackEventFromToken(token).id);
+  });
+
+  test("scheme strip is case-insensitive", async () => {
+    const raw = await getToken(URL, METHOD, sign);
+    const event = unpackEventFromToken(`Nostr ${raw}`);
+    expect(unpackEventFromToken(`nostr ${raw}`).id).toBe(event.id);
+    expect(unpackEventFromToken(`NOSTR ${raw}`).id).toBe(event.id);
   });
 });

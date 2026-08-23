@@ -19,9 +19,27 @@ const DEFAULT_MAX_SKEW_SEC = 60;
 
 export class Nip98Error extends NostrError {}
 
-/** SHA-256 hex of `JSON.stringify(payload)`. */
+/** SHA-256 of the request body: raw bytes for string/Uint8Array, else JSON.stringify. */
 function hashPayload(payload: unknown): string {
-  return bytesToHex(sha256(utf8Encoder.encode(JSON.stringify(payload))));
+  const bytes =
+    typeof payload === "string"
+      ? utf8Encoder.encode(payload)
+      : payload instanceof Uint8Array
+        ? payload
+        : utf8Encoder.encode(JSON.stringify(payload));
+  return bytesToHex(sha256(bytes));
+}
+
+/** RFC 4648 standard base64; accept missing `=` (NIP-98 spec example is unpadded). */
+function decodeStandardBase64(encoded: string): Uint8Array {
+  const rem = encoded.length % 4;
+  const padded = rem === 0 ? encoded : encoded + "=".repeat(4 - rem);
+  return base64.decode(padded);
+}
+
+function stripAuthorizationScheme(token: string): string {
+  const prefix = /^nostr\s+/i.exec(token);
+  return prefix ? token.slice(prefix[0].length) : token;
 }
 
 /**
@@ -64,13 +82,11 @@ export function unpackEventFromToken(token: string): Event {
     throw new Nip98Error("missing token");
   }
 
-  const encoded = token.startsWith(AUTHORIZATION_SCHEME)
-    ? token.slice(AUTHORIZATION_SCHEME.length)
-    : token;
+  const encoded = stripAuthorizationScheme(token);
 
   let json: string;
   try {
-    json = utf8Decoder.decode(base64.decode(encoded));
+    json = utf8Decoder.decode(decodeStandardBase64(encoded));
   } catch (cause) {
     throw new Nip98Error("invalid token encoding", { cause });
   }
