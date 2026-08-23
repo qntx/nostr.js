@@ -86,7 +86,7 @@ export class EventBuilder {
   static repost(target: Event, opts?: { relayHint?: string }): EventBuilder {
     const content = hasProtectedTag(target) ? "" : JSON.stringify(target);
     const b = new EventBuilder(Kind.Repost, content);
-    b.#tags.push(Tag.e(target.id, opts?.relayHint));
+    b.#tags.push(Tag.e(target.id, opts?.relayHint ?? ""));
     b.#tags.push(Tag.p(target.pubkey));
     return b;
   }
@@ -108,7 +108,7 @@ export class EventBuilder {
     const content =
       hasProtectedTag(target) || replaceable || addressable ? "" : JSON.stringify(target);
     const b = new EventBuilder(Kind.GenericRepost, content);
-    b.#tags.push(Tag.e(target.id, opts?.relayHint));
+    b.#tags.push(Tag.e(target.id, opts?.relayHint ?? ""));
     b.#tags.push(Tag.p(opts?.pPubkey ?? target.pubkey));
     b.#tags.push(Tag.k(target.kind));
     if (replaceable || addressable) {

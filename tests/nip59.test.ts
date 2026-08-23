@@ -118,6 +118,14 @@ describe("nip59", () => {
     await expect(unwrapGift(bob, wrap)).rejects.toThrow(/seal pubkey does not match rumor pubkey/);
   });
 
+  test("tampered gift wrap signature is rejected", async () => {
+    const { alice, bob, aliceKeys, bobKeys } = pair();
+    const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "x" });
+    const wrap = await wrapGift(alice, bobKeys.publicKey, rumor);
+    const bad = { ...wrap, sig: "00".repeat(64) };
+    await expect(unwrapGift(bob, bad)).rejects.toThrow(/gift wrap signature/);
+  });
+
   test("tampered seal signature is rejected", async () => {
     const { alice, bob, aliceKeys, bobKeys } = pair();
     const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "x" });

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vite-plus/test";
+import { bech32 } from "@scure/base";
 import {
   decodeNostrURI,
   getPublicKey,
@@ -29,6 +30,11 @@ describe("nip19", () => {
 
     const note = noteEncode(pk);
     expect(nip19Decode(note)).toEqual({ type: "note", data: pk });
+  });
+
+  test("npub/note/nsec reject payloads that are not 32 bytes", () => {
+    const short = bech32.encode("npub", bech32.toWords(new Uint8Array(16)), 1000);
+    expect(() => nip19Decode(short)).toThrow(/32 bytes/);
   });
 
   test("nprofile / nevent / naddr round-trip", () => {

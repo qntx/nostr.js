@@ -17,6 +17,7 @@ const STRING_FIELDS = [
   "software",
   "version",
   "payments_url",
+  "terms_of_service",
 ] as const;
 
 const LIMITATION_NUMBERS = [
@@ -24,9 +25,13 @@ const LIMITATION_NUMBERS = [
   "max_subscriptions",
   "max_filters",
   "max_limit",
+  "max_subid_length",
+  "max_event_tags",
+  "max_content_length",
   "min_pow_difficulty",
   "created_at_lower_limit",
   "created_at_upper_limit",
+  "default_limit",
 ] as const;
 
 const LIMITATION_BOOLEANS = ["auth_required", "payment_required", "restricted_writes"] as const;
@@ -60,6 +65,10 @@ export type RelayInformation = {
     max_subscriptions?: number;
     max_filters?: number;
     max_limit?: number;
+    max_subid_length?: number;
+    max_event_tags?: number;
+    max_content_length?: number;
+    default_limit?: number;
     auth_required?: boolean;
     payment_required?: boolean;
     restricted_writes?: boolean;
@@ -68,6 +77,7 @@ export type RelayInformation = {
     created_at_upper_limit?: number;
   };
   payments_url?: string;
+  terms_of_service?: string;
   tags?: string[];
 };
 

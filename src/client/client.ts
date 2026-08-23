@@ -406,8 +406,17 @@ export class Client {
     if (!relays && isGiftWrapKind(event.kind)) {
       relays = this.#giftWrapRelays(event);
     } else if (!relays && opts?.gossip) {
-      const outbox = this.gossip.outboxRelays(event.pubkey);
-      if (outbox.length > 0) relays = outbox;
+      const urls: string[] = [];
+      const add = (list: readonly string[]) => {
+        for (const url of list) {
+          if (!urls.includes(url)) urls.push(url);
+        }
+      };
+      add(this.gossip.outboxRelays(event.pubkey));
+      for (const tag of event.tags) {
+        if (tag[0] === "p" && tag[1]) add(this.gossip.inboxRelays(tag[1]));
+      }
+      if (urls.length > 0) relays = urls;
     }
     const results = await this.pool.publish(this.#defaultRelays(relays), event, {
       timeoutMs: opts?.timeoutMs,

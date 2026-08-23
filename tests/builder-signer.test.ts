@@ -52,6 +52,11 @@ describe("EventBuilder", () => {
     expect(
       EventBuilder.repost(target, { relayHint: "wss://r" }).currentTags.find((t) => t[0] === "e"),
     ).toEqual(["e", target.id, "wss://r"]);
+    expect(EventBuilder.repost(target).currentTags.find((t) => t[0] === "e")).toEqual([
+      "e",
+      target.id,
+      "",
+    ]);
   });
 
   test("genericRepost rejects kind 1", () => {
@@ -66,7 +71,7 @@ describe("EventBuilder", () => {
     const draft = EventBuilder.genericRepost(target);
 
     expect(draft.currentKind).toBe(Kind.GenericRepost);
-    expect(draft.currentTags.find((t) => t[0] === "e")).toEqual(["e", target.id]);
+    expect(draft.currentTags.find((t) => t[0] === "e")).toEqual(["e", target.id, ""]);
     expect(draft.currentTags).toContainEqual(["p", target.pubkey]);
     expect(draft.currentTags).toContainEqual(["k", "20"]);
     expect(draft.currentTags.some((t) => t[0] === "a")).toBe(false);

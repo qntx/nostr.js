@@ -1,5 +1,5 @@
 import type { Event, EventTemplate, UnsignedEvent } from "../core/event.ts";
-import { validateSignedEvent } from "../core/event.ts";
+import { signedMatchesUnsigned, validateSignedEvent } from "../core/event.ts";
 import { CryptoError } from "../core/error.ts";
 import { verifyEvent } from "../core/key.ts";
 import type { NostrSigner } from "./types.ts";
@@ -78,11 +78,11 @@ export class Nip07Signer implements NostrSigner {
     if (!validateSignedEvent(signed)) {
       throw new CryptoError("NIP-07 signEvent returned an invalid event");
     }
-    if (unsigned.pubkey && signed.pubkey.toLowerCase() !== unsigned.pubkey.toLowerCase()) {
-      throw new CryptoError("NIP-07 signed event pubkey does not match unsigned event");
-    }
     if (!verifyEvent(signed)) {
       throw new CryptoError("NIP-07 signed event failed signature verification");
+    }
+    if (!signedMatchesUnsigned(signed, unsigned)) {
+      throw new CryptoError("NIP-07 signed event does not match unsigned template");
     }
     return signed;
   }

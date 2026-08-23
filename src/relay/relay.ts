@@ -14,7 +14,7 @@ import {
   Reconciliation,
   type NegentropyStorageVector,
 } from "../nips/nip77.ts";
-import { makeAuthEvent } from "../nips/nip42.ts";
+import { isAuthRequired, makeAuthEvent } from "../nips/nip42.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayClosedError, RelayConnectionError, RelayError, RelayPublishError } from "./error.ts";
 import {
@@ -44,6 +44,8 @@ export type RelayOptions = {
   enablePing?: boolean;
   pingIntervalMs?: number;
   pingTimeoutMs?: number;
+  /** When set, CLOSED/OK `auth-required:` triggers AUTH then retries the REQ/EVENT. */
+  authSigner?: (template: EventTemplate) => Promise<Event>;
 };
 
 export type PublishResult = {
@@ -57,6 +59,8 @@ type PublishWaiter = {
   resolve: (result: PublishResult) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  event?: Event;
+  authRetried?: boolean;
 };
 
 type CountWaiter = {
@@ -114,7 +118,9 @@ export class Relay {
   #backoff: number[];
   #serial = 0;
   #challenge: string | undefined;
+  #authedChallenge: string | undefined;
   #authPromise: Promise<PublishResult> | undefined;
+  #authSigner: ((template: EventTemplate) => Promise<Event>) | undefined;
   #intentionalClose = false;
   #reconnectAttempts = 0;
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -147,6 +153,7 @@ export class Relay {
     this.#enablePing = opts.enablePing ?? false;
     this.#pingIntervalMs = opts.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS;
     this.#pingTimeoutMs = opts.pingTimeoutMs ?? DEFAULT_PING_TIMEOUT_MS;
+    this.#authSigner = opts.authSigner;
   }
 
   /** Latest NIP-42 challenge, if any. */
@@ -486,15 +493,29 @@ export class Relay {
         }
         const sub = this.#subs.get(subId);
         if (!sub) return;
-        this.#subs.delete(subId);
-        sub.closed = true;
-        sub.handlers.onclose?.(reason);
+        if (isAuthRequired(reason) && this.#authSigner && !sub.authRetried) {
+          sub.authRetried = true;
+          void this.#authThenResubscribe(sub, reason);
+          return;
+        }
+        this.#dropSubscription(sub, reason);
         break;
       }
       case "OK": {
         const [, eventId, ok, message] = msg;
         const waiter = this.#publishes.get(eventId);
         if (!waiter) return;
+        if (
+          !ok &&
+          isAuthRequired(message) &&
+          waiter.event &&
+          !waiter.authRetried &&
+          this.#authSigner
+        ) {
+          waiter.authRetried = true;
+          void this.#authThenRepublish(waiter, eventId, message);
+          return;
+        }
         clearTimeout(waiter.timer);
         this.#publishes.delete(eventId);
         waiter.resolve({ ok, message });
@@ -542,6 +563,7 @@ export class Relay {
       case "AUTH": {
         this.#challenge = msg[1];
         this.#authPromise = undefined;
+        this.#authedChallenge = undefined;
         this.onauth?.(msg[1]);
         break;
       }
@@ -668,7 +690,7 @@ export class Relay {
         this.#publishes.delete(event.id);
         reject(new RelayPublishError("publish timed out", this.url));
       }, timeoutMs);
-      this.#publishes.set(event.id, { resolve, reject, timer });
+      this.#publishes.set(event.id, { resolve, reject, timer, event });
       try {
         this.#send(["EVENT", event]);
       } catch (err) {
@@ -775,9 +797,71 @@ export class Relay {
     })();
 
     try {
-      return await this.#authPromise;
+      const result = await this.#authPromise;
+      if (result.ok) this.#authedChallenge = this.#challenge;
+      return result;
     } finally {
       this.#authPromise = undefined;
+    }
+  }
+
+  #dropSubscription(sub: Subscription, reason: string): void {
+    this.#subs.delete(sub.id);
+    sub.closed = true;
+    sub.handlers.onclose?.(reason);
+  }
+
+  async #authThenResubscribe(sub: Subscription, reason: string): Promise<void> {
+    try {
+      const signer = this.#authSigner;
+      if (!signer || !this.#challenge) {
+        this.#dropSubscription(sub, reason);
+        return;
+      }
+      if (this.#authedChallenge !== this.#challenge) {
+        const result = await this.auth(signer);
+        if (!result.ok) {
+          this.#dropSubscription(sub, reason);
+          return;
+        }
+      }
+      if (sub.closed || !this.#connected) {
+        this.#dropSubscription(sub, reason);
+        return;
+      }
+      this.#send(["REQ", sub.id, ...sub.filters]);
+    } catch {
+      this.#dropSubscription(sub, reason);
+    }
+  }
+
+  async #authThenRepublish(waiter: PublishWaiter, eventId: string, message: string): Promise<void> {
+    const finish = (result: PublishResult) => {
+      clearTimeout(waiter.timer);
+      this.#publishes.delete(eventId);
+      waiter.resolve(result);
+    };
+    try {
+      const signer = this.#authSigner;
+      const event = waiter.event;
+      if (!signer || !event || !this.#challenge) {
+        finish({ ok: false, message });
+        return;
+      }
+      if (this.#authedChallenge !== this.#challenge) {
+        const result = await this.auth(signer);
+        if (!result.ok) {
+          finish({ ok: false, message });
+          return;
+        }
+      }
+      if (!this.#connected) {
+        finish({ ok: false, message });
+        return;
+      }
+      this.#send(["EVENT", event]);
+    } catch {
+      finish({ ok: false, message });
     }
   }
 

@@ -1,4 +1,5 @@
 import type { Event } from "../core/event.ts";
+import { isReplaceableWinner } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { getDTag } from "../core/tag.ts";
 import { DataLoader } from "./dataloader.ts";
@@ -32,7 +33,7 @@ export function createReplaceableLoader(ctx: LoaderContext, kind: number) {
       for (const event of events) {
         if (event.kind !== kind) continue;
         const prev = best.get(event.pubkey);
-        if (!prev || prev.created_at < event.created_at) best.set(event.pubkey, event);
+        if (!prev || isReplaceableWinner(event, prev)) best.set(event.pubkey, event);
       }
 
       const now = Math.floor(Date.now() / 1000);

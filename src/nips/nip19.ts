@@ -201,9 +201,11 @@ export function decode(code: string): DecodedResult {
       };
     }
     case "nsec":
+      if (data.length !== 32) throw new Nip19Error("nsec must be 32 bytes");
       return { type: "nsec", data };
     case "npub":
     case "note":
+      if (data.length !== 32) throw new Nip19Error(`${prefix} must be 32 bytes`);
       return { type: prefix, data: bytesToHex(data) };
     default:
       throw new Nip19Error(`unknown prefix ${prefix}`);

@@ -3,6 +3,7 @@ import {
   Client,
   EventBuilder,
   Kind,
+  Keys,
   KeysSigner,
   useWebSocketImplementation,
 } from "../src/index.ts";
@@ -88,5 +89,49 @@ describe("Client", () => {
   test("publish requires signer when given EventBuilder", async () => {
     const client = Client.builder().relays(["wss://a.example"]).build();
     await expect(client.publish(EventBuilder.textNote("x"))).rejects.toThrow(/signer/);
+  });
+
+  test("gossip publish fans out to author write and tagged read relays", async () => {
+    const author = new KeysSigner(SK);
+    const tagged = Keys.fromSecretKey(
+      "0000000000000000000000000000000000000000000000000000000000000001",
+    );
+    const client = Client.builder()
+      .signer(author)
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .build();
+    await client.connect();
+
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://author-write.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(Keys.fromSecretKey(SK)),
+    );
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://tagged-read.example", read: true, write: false }])
+        .createdAt(1)
+        .signWithKeys(tagged),
+    );
+
+    const publishP = client.publish(
+      EventBuilder.textNote("hi").tag(["p", tagged.publicKey]).createdAt(1),
+      { gossip: true },
+    );
+    await new Promise((r) => setTimeout(r, 20));
+
+    const urls = MockWebSocket.instances.map((ws) => ws.url);
+    expect(urls.some((u) => u.includes("author-write.example"))).toBe(true);
+    expect(urls.some((u) => u.includes("tagged-read.example"))).toBe(true);
+
+    for (const ws of MockWebSocket.instances) {
+      const eventMsg = ws.sent
+        .map((s) => JSON.parse(s) as unknown[])
+        .find((m) => m[0] === "EVENT") as [string, { id: string }] | undefined;
+      if (eventMsg) ws.receive(JSON.stringify(["OK", eventMsg[1].id, true, ""]));
+    }
+    const results = await publishP;
+    expect(results.some((r) => r.result?.ok)).toBe(true);
+    await client.shutdown();
   });
 });

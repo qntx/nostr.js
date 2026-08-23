@@ -98,9 +98,10 @@ describe("nip10", () => {
     const tags = buildReplyTags({
       parent,
       relayHint: "wss://parent.example",
-      mentionIds: ["66".repeat(32)],
+      quoteIds: ["66".repeat(32)],
     });
     const eTags = tags.filter((t) => t[0] === "e");
+    const qTags = tags.filter((t) => t[0] === "q");
 
     expect(eTags.find((t) => t[3] === "root")?.[1]).toBe(root.id);
     expect(eTags.find((t) => t[3] === "reply")).toEqual([
@@ -110,7 +111,8 @@ describe("nip10", () => {
       "reply",
       parent.pubkey,
     ]);
-    expect(eTags.find((t) => t[3] === "mention")?.[1]).toBe("66".repeat(32));
+    expect(eTags.some((t) => t[3] === "mention")).toBe(false);
+    expect(qTags).toEqual([["q", "66".repeat(32)]]);
   });
 
   test("eTag and replyTo builder", () => {

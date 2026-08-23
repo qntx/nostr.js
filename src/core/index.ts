@@ -39,13 +39,24 @@ export {
   type KnownKind,
 } from "./kind.ts";
 
-export { Tag, getDTag, isTag, tagName, tagValue } from "./tag.ts";
-export type { Tag as TagTuple, TagInput } from "./tag.ts";
+export {
+  Tag,
+  eventAddress,
+  formatEventAddress,
+  getDTag,
+  isTag,
+  parseEventAddress,
+  tagName,
+  tagValue,
+} from "./tag.ts";
+export type { EventAddress, Tag as TagTuple, TagInput } from "./tag.ts";
 
 export {
   getEventHash,
   isMarkedVerified,
+  isReplaceableWinner,
   serializeEvent,
+  signedMatchesUnsigned,
   sortEvents,
   sortedEvents,
   validateEvent,

@@ -1,8 +1,9 @@
 import type { Event, EventTemplate, UnsignedEvent } from "../core/event.ts";
-import { validateSignedEvent } from "../core/event.ts";
+import { signedMatchesUnsigned, validateSignedEvent } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
 import { SecretKey, finalizeEvent, getPublicKey, verifyEvent } from "../core/key.ts";
+import { isHex32 } from "../core/util.ts";
 import {
   bunkerRelaysFromNip46,
   isNip05,
@@ -72,6 +73,10 @@ export type Nip46SignerOptions = {
   onAuthUrl?: (url: string) => void;
   /** Per-request timeout in ms. Default 30s. */
   timeoutMs?: number;
+  /** Requested permissions sent with `connect` (`method[:kind]` list). */
+  perms?: string[];
+  /** Client metadata sent with bunker-initiated `connect`. */
+  metadata?: ClientMetadata;
 };
 
 function resolveClientSecret(key?: SecretKey | Uint8Array | string): SecretKey {
@@ -163,6 +168,9 @@ export class Nip46Signer implements NostrSigner {
   readonly #conversationKey: Uint8Array;
   readonly #onAuthUrl: ((url: string) => void) | undefined;
   readonly #timeoutMs: number;
+  readonly #perms: string[] | undefined;
+  readonly #metadata: ClientMetadata | undefined;
+  #relays: string[];
   readonly #listeners = new Map<
     string,
     {
@@ -195,15 +203,22 @@ export class Nip46Signer implements NostrSigner {
       relays: [...pointer.relays],
       secret: pointer.secret,
     };
+    this.#relays = [...pointer.relays];
     this.#pool = pool;
     this.#ownsPool = ownsPool;
     this.#conversationKey = getConversationKey(clientSecret.bytes, this.#pointer.pubkey);
     this.#onAuthUrl = opts.onAuthUrl;
     this.#timeoutMs = opts.timeoutMs ?? 30_000;
+    this.#perms = opts.perms;
+    this.#metadata = opts.metadata;
   }
 
   get bunker(): Readonly<BunkerPointer> {
-    return this.#pointer;
+    return {
+      pubkey: this.#pointer.pubkey,
+      relays: [...this.#relays],
+      secret: this.#pointer.secret,
+    };
   }
 
   get clientPublicKey(): string {
@@ -247,6 +262,12 @@ export class Nip46Signer implements NostrSigner {
     });
     try {
       await signer.connectRemote();
+      try {
+        await signer.switchRelays();
+      } catch {
+        // Bunker may not implement switch_relays.
+      }
+      await signer.getPublicKey();
       return signer;
     } catch (err) {
       await signer.close();
@@ -316,7 +337,12 @@ export class Nip46Signer implements NostrSigner {
               };
               const signer = new Nip46Signer(sk, pointer, pool, ownsPool, opts);
               signer.#startSubscription();
-              finish(undefined, signer);
+              void signer
+                .switchRelays()
+                .catch(() => undefined)
+                .then(() => signer.getPublicKey())
+                .then(() => finish(undefined, signer))
+                .catch((e) => finish(e instanceof Error ? e : new Nip46Error(String(e))));
             } catch {
               // ignore non-matching events
             }
@@ -334,7 +360,7 @@ export class Nip46Signer implements NostrSigner {
   #startSubscription(): void {
     this.#sub?.close();
     this.#sub = this.#pool.subscribe(
-      this.#pointer.relays,
+      this.#relays,
       [
         {
           kinds: [Kind.NostrConnect],
@@ -375,13 +401,54 @@ export class Nip46Signer implements NostrSigner {
     this.#open = true;
   }
 
-  async connectRemote(metadata?: ClientMetadata): Promise<void> {
+  async connectRemote(overrides?: { metadata?: ClientMetadata; perms?: string[] }): Promise<void> {
+    const metadata = overrides?.metadata ?? this.#metadata;
+    const perms = overrides?.perms ?? this.#perms;
     const params = [this.#pointer.pubkey, this.#pointer.secret ?? ""];
+    if (perms?.length || metadata) {
+      params.push(perms?.length ? perms.join(",") : "");
+    }
     if (metadata) {
-      params.push("");
       params.push(JSON.stringify(metadata));
     }
     await this.#sendRequest("connect", params);
+  }
+
+  /**
+   * Ask the bunker for its preferred relay list and resubscribe when it changes.
+   * Spec result is a JSON array of URLs, or `null` when nothing changes.
+   */
+  async switchRelays(): Promise<string[] | null> {
+    const resp = await this.#sendRequest("switch_relays", []);
+    if (resp === "null") return null;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(resp);
+    } catch (cause) {
+      throw new Nip46Error("invalid switch_relays JSON", {
+        cause: cause instanceof Error ? cause : undefined,
+      });
+    }
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length === 0 ||
+      !parsed.every((x) => typeof x === "string")
+    ) {
+      throw new Nip46Error("invalid switch_relays result");
+    }
+    this.#relays = parsed;
+    this.#startSubscription();
+    return parsed;
+  }
+
+  /** Courtesy session teardown. Always closes the local signer afterwards. */
+  async logout(): Promise<void> {
+    try {
+      const resp = await this.#sendRequest("logout", []);
+      if (resp !== "ack") throw new Nip46Error(`logout result is not ack: ${resp}`);
+    } finally {
+      await this.close();
+    }
   }
 
   async ping(): Promise<void> {
@@ -391,7 +458,9 @@ export class Nip46Signer implements NostrSigner {
 
   async getPublicKey(): Promise<string> {
     if (!this.#cachedRemotePubkey) {
-      this.#cachedRemotePubkey = await this.#sendRequest("get_public_key", []);
+      const pk = await this.#sendRequest("get_public_key", []);
+      if (!isHex32(pk)) throw new Nip46Error("bunker returned invalid pubkey");
+      this.#cachedRemotePubkey = pk.toLowerCase();
     }
     return this.#cachedRemotePubkey;
   }
@@ -415,8 +484,8 @@ export class Nip46Signer implements NostrSigner {
     if (!validateSignedEvent(signed) || !verifyEvent(signed)) {
       throw new Nip46Error("bunker returned improperly signed event");
     }
-    if (unsigned.pubkey && signed.pubkey.toLowerCase() !== unsigned.pubkey.toLowerCase()) {
-      throw new Nip46Error("signed event pubkey does not match unsigned event");
+    if (!signedMatchesUnsigned(signed, unsigned)) {
+      throw new Nip46Error("signed event does not match unsigned template");
     }
     return signed;
   }
@@ -478,7 +547,7 @@ export class Nip46Signer implements NostrSigner {
       this.#waitingAuth.add(id);
     });
 
-    await this.#pool.publish(this.#pointer.relays, event);
+    await this.#pool.publish(this.#relays, event);
     return resultPromise;
   }
 }

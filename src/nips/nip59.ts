@@ -296,6 +296,9 @@ export async function unwrap(crypto: Nip44Decryptor, giftWrap: Event): Promise<R
   if (!validateSignedEvent(giftWrap) || !isGiftWrapKind(giftWrap.kind)) {
     throw new Nip59Error("expected gift wrap");
   }
+  if (!verifyEvent(giftWrap)) {
+    throw new Nip59Error("gift wrap signature");
+  }
 
   const sealJson = await decryptLayer(decryptor, giftWrap.pubkey, giftWrap.content);
   const sealRaw = parseJson(sealJson);

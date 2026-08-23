@@ -80,7 +80,15 @@ describe("fetchRelayInformation", () => {
         name: "relay",
         unknown_field: "drop-me",
         supported_nips: [1, 11, "nope", 11.5, -1],
-        limitation: { auth_required: true, extra: 1, max_limit: 500, min_pow_difficulty: 2.5 },
+        terms_of_service: "https://example.com/tos",
+        limitation: {
+          auth_required: true,
+          extra: 1,
+          max_limit: 500,
+          min_pow_difficulty: 2.5,
+          default_limit: 50,
+          max_subid_length: 64,
+        },
         fees: { admission: [] },
       }),
     });
@@ -88,8 +96,14 @@ describe("fetchRelayInformation", () => {
     const info = await fetchRelayInformation("wss://relay.example.com", { fetch: fetchImpl });
     expect(info).toEqual({
       name: "relay",
+      terms_of_service: "https://example.com/tos",
       supported_nips: [1, 11],
-      limitation: { auth_required: true, max_limit: 500 },
+      limitation: {
+        auth_required: true,
+        max_limit: 500,
+        default_limit: 50,
+        max_subid_length: 64,
+      },
     });
     expect("unknown_field" in info).toBe(false);
     expect("fees" in info).toBe(false);

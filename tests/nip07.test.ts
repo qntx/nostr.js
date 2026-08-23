@@ -55,6 +55,22 @@ describe("Nip07Signer", () => {
     await expect(signer.getPublicKey()).rejects.toThrow(/NIP-07/);
   });
 
+  test("rejects a signed event that does not match the template", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const provider: WindowNostr = {
+      async getPublicKey() {
+        return keys.publicKey;
+      },
+      async signEvent() {
+        return EventBuilder.textNote("other").createdAt(1).signWithKeys(keys);
+      },
+    };
+    const signer = new Nip07Signer(provider);
+    await expect(EventBuilder.textNote("wanted").createdAt(1).sign(signer)).rejects.toThrow(
+      /does not match unsigned template/,
+    );
+  });
+
   test("throws when nip44 unsupported", async () => {
     const keys = Keys.fromSecretKey(SK);
     const provider: WindowNostr = {

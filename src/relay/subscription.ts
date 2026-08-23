@@ -28,6 +28,8 @@ export class Subscription {
   readonly handlers: SubscriptionHandlers;
   eosed = false;
   closed = false;
+  /** True after one CLOSED `auth-required:` retry. */
+  authRetried = false;
   #abort: (() => void) | undefined;
 
   constructor(

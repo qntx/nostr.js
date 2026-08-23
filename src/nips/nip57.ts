@@ -6,8 +6,8 @@
  */
 import type { Event, EventTemplate } from "../core/event.ts";
 import { EventValidationError } from "../core/error.ts";
-import { isAddressableKind, isReplaceableKind, Kind } from "../core/kind.ts";
-import { getDTag, type Tag } from "../core/tag.ts";
+import { isAddressableKind, Kind } from "../core/kind.ts";
+import { eventAddress, getDTag, type Tag } from "../core/tag.ts";
 
 export type ProfileZapRequest = {
   pubkey: string;
@@ -42,13 +42,12 @@ export function makeZapRequest(params: ProfileZapRequest | EventZapRequest): Eve
   if ("event" in params) {
     const { event } = params;
     tags.push(["e", event.id]);
-    if (isReplaceableKind(event.kind)) {
-      tags.push(["a", `${event.kind}:${event.pubkey}:`]);
-    } else if (isAddressableKind(event.kind)) {
+    if (isAddressableKind(event.kind)) {
       const d = getDTag(event.tags);
       if (!d) throw new EventValidationError("d tag not found or is empty");
-      tags.push(["a", `${event.kind}:${event.pubkey}:${d}`]);
     }
+    const addr = eventAddress(event);
+    if (addr) tags.push(["a", addr]);
     tags.push(["k", event.kind.toString()]);
   }
 

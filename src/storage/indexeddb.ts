@@ -1,10 +1,11 @@
 import type { Event } from "../core/event.ts";
-import type { Filter } from "../core/filter.ts";
-import { matchFilters } from "../core/filter.ts";
-import { isAddressableKind, isEphemeralKind, isReplaceableKind, Kind } from "../core/kind.ts";
-import { getDTag } from "../core/tag.ts";
 import { sortEvents } from "../core/event.ts";
+import type { Filter } from "../core/filter.ts";
+import { matchFilter } from "../core/filter.ts";
+import { isEphemeralKind, Kind } from "../core/kind.ts";
+import { eventAddress } from "../core/tag.ts";
 import { CryptoError } from "../core/error.ts";
+import { coordinateRemovals, DeletionState, planDeletion } from "./deletion.ts";
 import type { EventStore, PutResult } from "./types.ts";
 
 /** Minimal IndexedDB surface so this module does not require the DOM lib. */
@@ -47,13 +48,6 @@ type IDBOpenRequestLike = IDBRequestLike & {
   result: IDBDatabaseLike;
 };
 
-function replaceableKey(event: Event): string {
-  if (isAddressableKind(event.kind)) {
-    return `${event.kind}:${event.pubkey}:${getDTag(event.tags) ?? ""}`;
-  }
-  return `${event.kind}:${event.pubkey}`;
-}
-
 export type IndexedDbEventStoreOptions = {
   /** IndexedDB database name. */
   dbName?: string;
@@ -69,7 +63,7 @@ export class IndexedDbEventStore implements EventStore {
   readonly #dbName: string;
   readonly #storeName: string;
   #db: IDBDatabaseLike | undefined;
-  #deleted = new Set<string>();
+  #deletion = new DeletionState();
   #replaceable = new Map<string, string>();
 
   constructor(opts: IndexedDbEventStoreOptions = {}) {
@@ -98,50 +92,73 @@ export class IndexedDbEventStore implements EventStore {
   async #rebuildIndexes(): Promise<void> {
     const db = await this.#ensure();
     const events = await idbGetAll<Event>(db, this.#storeName);
-    this.#deleted.clear();
+    this.#deletion.clear();
     this.#replaceable.clear();
-    // Sort ascending so newer replaceables overwrite older map entries.
-    events.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
-    for (const event of events) {
-      if (event.kind === Kind.EventDeletion) {
-        for (const tag of event.tags) {
-          if (tag[0] === "e" && tag[1]) this.#deleted.add(tag[1]);
+    const byId = new Map(events.map((e) => [e.id, e]));
+    const deletions = events
+      .filter((e) => e.kind === Kind.EventDeletion)
+      .sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+    for (const del of deletions) {
+      const plan = planDeletion(del, (id) => byId.get(id));
+      this.#deletion.absorb(plan);
+      for (const c of plan.coordinates) {
+        for (const ev of events) {
+          if (eventAddress(ev) === c.key && ev.created_at <= c.until) {
+            this.#deletion.ids.add(ev.id);
+          }
         }
       }
-      if (isReplaceableKind(event.kind) || isAddressableKind(event.kind)) {
-        this.#replaceable.set(replaceableKey(event), event.id);
-      }
+    }
+    events.sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+    for (const event of events) {
+      if (this.#deletion.ids.has(event.id) || this.#deletion.covers(event)) continue;
+      const key = eventAddress(event);
+      if (key) this.#replaceable.set(key, event.id);
     }
   }
 
   async put(event: Event): Promise<PutResult> {
     const db = await this.#ensure();
-    if (this.#deleted.has(event.id)) return "duplicate";
+    if (this.#deletion.ids.has(event.id)) return "duplicate";
 
     const existing = await idbGet<Event>(db, this.#storeName, event.id);
     if (existing) return "duplicate";
+
+    if (event.kind === Kind.EventDeletion) {
+      this.#deletion.pending.delete(event.id);
+      const stored = await idbGetAll<Event>(db, this.#storeName);
+      const byId = new Map(stored.map((e) => [e.id, e]));
+      const plan = planDeletion(event, (id) => byId.get(id));
+      this.#deletion.absorb(plan);
+      for (const id of plan.removeIds) {
+        await idbDelete(db, this.#storeName, id);
+        this.#dropReplaceable(id);
+      }
+      for (const id of coordinateRemovals(plan.coordinates, (key) => {
+        const existingId = this.#replaceable.get(key);
+        return existingId ? byId.get(existingId) : undefined;
+      })) {
+        this.#deletion.ids.add(id);
+        await idbDelete(db, this.#storeName, id);
+        this.#dropReplaceable(id);
+      }
+      await idbPut(db, this.#storeName, event);
+      return "deleted";
+    }
+
+    if (this.#deletion.covers(event)) {
+      this.#deletion.ids.add(event.id);
+      this.#deletion.pending.delete(event.id);
+      return "duplicate";
+    }
 
     if (isEphemeralKind(event.kind)) {
       await idbPut(db, this.#storeName, event);
       return "ephemeral";
     }
 
-    if (event.kind === Kind.EventDeletion) {
-      for (const tag of event.tags) {
-        if (tag[0] === "e" && tag[1]) {
-          this.#deleted.add(tag[1]);
-          await idbDelete(db, this.#storeName, tag[1]);
-          for (const [key, id] of this.#replaceable) {
-            if (id === tag[1]) this.#replaceable.delete(key);
-          }
-        }
-      }
-      await idbPut(db, this.#storeName, event);
-      return "deleted";
-    }
-
-    if (isReplaceableKind(event.kind) || isAddressableKind(event.kind)) {
-      const key = replaceableKey(event);
+    const key = eventAddress(event);
+    if (key) {
       const existingId = this.#replaceable.get(key);
       if (existingId) {
         const prev = await idbGet<Event>(db, this.#storeName, existingId);
@@ -161,7 +178,7 @@ export class IndexedDbEventStore implements EventStore {
   }
 
   async get(id: string): Promise<Event | undefined> {
-    if (this.#deleted.has(id)) return undefined;
+    if (this.#deletion.ids.has(id)) return undefined;
     const db = await this.#ensure();
     return idbGet<Event>(db, this.#storeName, id);
   }
@@ -169,17 +186,23 @@ export class IndexedDbEventStore implements EventStore {
   async query(filters: Filter[]): Promise<Event[]> {
     const db = await this.#ensure();
     const all = await idbGetAll<Event>(db, this.#storeName);
+    const seen = new Set<string>();
     const events: Event[] = [];
-    for (const event of all) {
-      if (this.#deleted.has(event.id)) continue;
-      if (matchFilters(filters, event)) events.push(event);
+    for (const filter of filters) {
+      const matched: Event[] = [];
+      for (const event of all) {
+        if (this.#deletion.ids.has(event.id) || this.#deletion.covers(event)) continue;
+        if (matchFilter(filter, event)) matched.push(event);
+      }
+      sortEvents(matched);
+      const slice = filter.limit !== undefined ? matched.slice(0, filter.limit) : matched;
+      for (const event of slice) {
+        if (seen.has(event.id)) continue;
+        seen.add(event.id);
+        events.push(event);
+      }
     }
     sortEvents(events);
-    const limit = filters.reduce(
-      (min, f) => (f.limit !== undefined ? Math.min(min, f.limit) : min),
-      Infinity,
-    );
-    if (Number.isFinite(limit)) return events.slice(0, limit);
     return events;
   }
 
@@ -191,11 +214,10 @@ export class IndexedDbEventStore implements EventStore {
       if (had) {
         await idbDelete(db, this.#storeName, id);
         n += 1;
-        for (const [key, eid] of this.#replaceable) {
-          if (eid === id) this.#replaceable.delete(key);
-        }
+        this.#dropReplaceable(id);
       }
-      this.#deleted.add(id);
+      this.#deletion.ids.add(id);
+      this.#deletion.pending.delete(id);
     }
     return n;
   }
@@ -203,13 +225,19 @@ export class IndexedDbEventStore implements EventStore {
   async clear(): Promise<void> {
     const db = await this.#ensure();
     await idbClear(db, this.#storeName);
-    this.#deleted.clear();
+    this.#deletion.clear();
     this.#replaceable.clear();
   }
 
   close(): void {
     this.#db?.close();
     this.#db = undefined;
+  }
+
+  #dropReplaceable(id: string): void {
+    for (const [key, eid] of this.#replaceable) {
+      if (eid === id) this.#replaceable.delete(key);
+    }
   }
 }
 

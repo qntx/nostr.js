@@ -21,6 +21,10 @@ export type BunkerResponderOptions = {
    */
   authUrl?: string;
   authUrlMethods?: string[];
+  /** Collected RPC requests (mutated as they arrive). */
+  requests?: Array<{ method: string; params: string[] }>;
+  /** `switch_relays` result. Default `"null"`. */
+  switchRelays?: string[] | null;
 };
 
 /**
@@ -100,6 +104,7 @@ export function armBunkerResponder(opts: BunkerResponderOptions): () => void {
           }
 
           handled.add(event.id);
+          opts.requests?.push({ method: req.method, params: req.params });
 
           let result: string | undefined;
           let error: string | undefined;
@@ -112,6 +117,15 @@ export function armBunkerResponder(opts: BunkerResponderOptions): () => void {
               break;
             case "ping":
               result = "pong";
+              break;
+            case "switch_relays":
+              result =
+                opts.switchRelays === undefined || opts.switchRelays === null
+                  ? "null"
+                  : JSON.stringify(opts.switchRelays);
+              break;
+            case "logout":
+              result = "ack";
               break;
             case "sign_event": {
               const template = JSON.parse(req.params[0]!) as {

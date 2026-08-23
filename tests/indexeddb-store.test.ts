@@ -41,6 +41,40 @@ describe("IndexedDbEventStore", () => {
     store.close();
   });
 
+  test("NIP-09 a-tag and pubkey check survive reopen", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const other = Keys.generate();
+    const store = new IndexedDbEventStore({ dbName: "del-db", storeName: "events" });
+    await store.open();
+
+    const meta = EventBuilder.metadata({ name: "v1" }).createdAt(10).signWithKeys(keys);
+    await store.put(meta);
+    const note = EventBuilder.textNote("x").createdAt(1).signWithKeys(keys);
+    await store.put(note);
+
+    const foreign = EventBuilder.deletion([note.id]).createdAt(2).signWithKeys(other);
+    await store.put(foreign);
+    expect(await store.get(note.id)).toBeDefined();
+
+    const del = EventBuilder.deletion([], "gone", {
+      kinds: [0],
+      addresses: [`0:${keys.publicKey}:`],
+    })
+      .createdAt(15)
+      .signWithKeys(keys);
+    await store.put(del);
+    expect(await store.get(meta.id)).toBeUndefined();
+    store.close();
+
+    const reopened = new IndexedDbEventStore({ dbName: "del-db", storeName: "events" });
+    await reopened.open();
+    expect(await reopened.get(meta.id)).toBeUndefined();
+    expect(await reopened.get(note.id)).toBeDefined();
+    const older = EventBuilder.metadata({ name: "old" }).createdAt(12).signWithKeys(keys);
+    expect(await reopened.put(older)).toBe("duplicate");
+    reopened.close();
+  });
+
   test("survives close and reopen on same db name", async () => {
     const keys = Keys.fromSecretKey(SK);
     const note = EventBuilder.textNote("persist").createdAt(7).signWithKeys(keys);

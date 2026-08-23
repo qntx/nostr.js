@@ -40,7 +40,18 @@ export default defineConfig({
       tsgo: true,
     },
     sourcemap: true,
-    exports: true,
+    exports: {
+      customExports(pkgExports: Record<string, unknown>) {
+        for (const [key, value] of Object.entries(pkgExports)) {
+          if (typeof value !== "string" || !value.endsWith(".mjs")) continue;
+          pkgExports[key] = {
+            types: value.replace(/\.mjs$/, ".d.mts"),
+            import: value,
+          };
+        }
+        return pkgExports;
+      },
+    },
   },
   test: {
     include: ["tests/**/*.{test,spec}.ts"],

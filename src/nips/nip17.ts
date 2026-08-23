@@ -130,9 +130,8 @@ export function buildChatMessageRumor(
     tags.push(TagBuilder.p(pk, recipient.relayHint));
   }
   if (opts?.replyTo) {
-    tags.push(
-      TagBuilder.e(assertHex32(opts.replyTo.id, "event id"), opts.replyTo.relayHint ?? "", "reply"),
-    );
+    // Kind 14 reply e-tag is unmarked: ["e", <id>, <relay-url>]
+    tags.push(TagBuilder.e(assertHex32(opts.replyTo.id, "event id"), opts.replyTo.relayHint ?? ""));
   }
   if (opts?.subject !== undefined) {
     tags.push(["subject", opts.subject]);

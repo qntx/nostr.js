@@ -1,4 +1,5 @@
 import type { Event } from "../core/event.ts";
+import { isReplaceableWinner } from "../core/event.ts";
 
 export type ReplaceableKey = {
   kind: number;
@@ -26,7 +27,7 @@ export class ReplaceableCache {
   putIfNewer(event: Event, dTag?: string): void {
     const spec: ReplaceableKey = { kind: event.kind, pubkey: event.pubkey, dTag };
     const prev = this.get(spec);
-    if (!prev?.event || prev.event.created_at < event.created_at) {
+    if (!prev?.event || isReplaceableWinner(event, prev.event)) {
       this.set(spec, event);
     }
   }

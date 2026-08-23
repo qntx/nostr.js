@@ -1,4 +1,5 @@
 import type { Event } from "../core/event.ts";
+import { isReplaceableWinner } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
 import { parseDmRelayList } from "../nips/nip17.ts";
@@ -16,6 +17,10 @@ export type PubkeyRoutes = {
   updatedAt: number;
   /** `created_at` of the last accepted kind:10050 list. */
   dmUpdatedAt: number;
+  /** Event id of the last accepted kind:10002 (NIP-01 equal-timestamp tie-break). */
+  relayListId?: string;
+  /** Event id of the last accepted kind:10050. */
+  dmListId?: string;
 };
 
 export type BrokenDownFilters =
@@ -64,7 +69,7 @@ export class Gossip {
       } catch {
         return false;
       }
-      return this.setRoutes(event.pubkey, items, event.created_at);
+      return this.setRoutes(event.pubkey, items, event.created_at, event.id);
     }
     if (event.kind === Kind.DirectMessageRelaysList) {
       let relays: string[];
@@ -73,7 +78,7 @@ export class Gossip {
       } catch {
         return false;
       }
-      return this.setDmRoutes(event.pubkey, relays, event.created_at);
+      return this.setDmRoutes(event.pubkey, relays, event.created_at, event.id);
     }
     return false;
   }
@@ -82,10 +87,22 @@ export class Gossip {
     pubkey: string,
     items: RelayListItem[],
     updatedAt = Math.floor(Date.now() / 1000),
+    eventId?: string,
   ): boolean {
     const pk = pubkey.toLowerCase();
     const prev = this.#routes.get(pk) ?? emptyRoutes();
     if (prev.updatedAt > updatedAt) return false;
+    if (
+      eventId &&
+      prev.relayListId &&
+      prev.updatedAt === updatedAt &&
+      !isReplaceableWinner(
+        { created_at: updatedAt, id: eventId },
+        { created_at: prev.updatedAt, id: prev.relayListId },
+      )
+    ) {
+      return false;
+    }
 
     const write: string[] = [];
     const read: string[] = [];
@@ -106,6 +123,8 @@ export class Gossip {
       dm: prev.dm,
       updatedAt,
       dmUpdatedAt: prev.dmUpdatedAt,
+      relayListId: eventId ?? prev.relayListId,
+      dmListId: prev.dmListId,
     });
     return true;
   }
@@ -114,10 +133,22 @@ export class Gossip {
     pubkey: string,
     relays: readonly string[],
     updatedAt = Math.floor(Date.now() / 1000),
+    eventId?: string,
   ): boolean {
     const pk = pubkey.toLowerCase();
     const prev = this.#routes.get(pk) ?? emptyRoutes();
     if (prev.dmUpdatedAt > updatedAt) return false;
+    if (
+      eventId &&
+      prev.dmListId &&
+      prev.dmUpdatedAt === updatedAt &&
+      !isReplaceableWinner(
+        { created_at: updatedAt, id: eventId },
+        { created_at: prev.dmUpdatedAt, id: prev.dmListId },
+      )
+    ) {
+      return false;
+    }
 
     const dm: string[] = [];
     for (const raw of relays) {
@@ -136,6 +167,8 @@ export class Gossip {
       dm: dm.slice(0, this.#maxRelays),
       updatedAt: prev.updatedAt,
       dmUpdatedAt: updatedAt,
+      relayListId: prev.relayListId,
+      dmListId: eventId ?? prev.dmListId,
     });
     return true;
   }

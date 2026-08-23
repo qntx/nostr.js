@@ -61,4 +61,15 @@ describe("nip44", () => {
     const cipher = await a.nip44Encrypt!(pkB, "hello nip44");
     expect(await b.nip44Decrypt!(pkA, cipher)).toBe("hello nip44");
   });
+
+  test("rejects conversation_key and nonce that are not 32 bytes", () => {
+    const key = new Uint8Array(32);
+    expect(() => nip44Encrypt("hi", key, new Uint8Array(16))).toThrow(/nonce must be 32 bytes/);
+    expect(() => nip44Encrypt("hi", new Uint8Array(16))).toThrow(
+      /conversation_key must be 32 bytes/,
+    );
+    expect(() => getConversationKey(new Uint8Array(16), "aa".repeat(32))).toThrow(
+      /secret key length/,
+    );
+  });
 });

@@ -6,6 +6,8 @@ import {
   SecretKey,
   classifyKind,
   createSubscriptionId,
+  eventAddress,
+  formatEventAddress,
   encodeClientMessage,
   finalizeEvent,
   getEventHash,
@@ -18,6 +20,7 @@ import {
   matchFilters,
   mergeFilters,
   parseClientMessage,
+  parseEventAddress,
   parseRelayMessage,
   serializeEvent,
   validateEvent,
@@ -165,6 +168,21 @@ describe("kinds", () => {
     expect(Kind.KeyTransfer).toBe(4455);
     expect(Kind.EncryptionKeyAnnouncement).toBe(10044);
   });
+
+  test("event address coordinates", () => {
+    const pk = "aa".repeat(32);
+    expect(parseEventAddress(`30023:${pk}:hello:world`)).toEqual({
+      kind: 30023,
+      pubkey: pk,
+      identifier: "hello:world",
+    });
+    expect(parseEventAddress(`0:${pk}:`)).toEqual({ kind: 0, pubkey: pk, identifier: "" });
+    expect(parseEventAddress("0:short:")).toBeUndefined();
+    expect(formatEventAddress(0, pk)).toBe(`0:${pk}:`);
+    expect(eventAddress({ kind: 1, pubkey: pk, tags: [] })).toBeUndefined();
+    expect(eventAddress({ kind: 0, pubkey: pk, tags: [] })).toBe(`0:${pk}:`);
+    expect(eventAddress({ kind: 30023, pubkey: pk, tags: [["d", "x"]] })).toBe(`30023:${pk}:x`);
+  });
 });
 
 describe("filter", () => {
@@ -187,6 +205,8 @@ describe("filter", () => {
     expect(matchFilter({ since: 200 }, base)).toBe(false);
     expect(matchFilter({ "#t": ["nostr"] }, base)).toBe(true);
     expect(matchFilter({ "#t": ["other"] }, base)).toBe(false);
+    expect(matchFilter({ authors: [base.pubkey.toUpperCase()] }, base)).toBe(true);
+    expect(matchFilter({ ids: [base.id.toUpperCase()] }, base)).toBe(true);
   });
 
   test("matchFilters is OR across filters", () => {

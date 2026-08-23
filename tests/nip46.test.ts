@@ -186,10 +186,12 @@ describe("Nip46Signer", () => {
       secret: "tok",
     });
 
+    const requests: Array<{ method: string; params: string[] }> = [];
     const stop = armBunkerResponder({
       bunkerSk: BUNKER_SK,
       userSk: USER_SK,
       clientPubkey: clientPk,
+      requests,
     });
 
     try {
@@ -199,6 +201,7 @@ describe("Nip46Signer", () => {
         timeoutMs: 3000,
       });
 
+      expect(requests.map((r) => r.method)).toEqual(["connect", "switch_relays", "get_public_key"]);
       expect(await signer.getPublicKey()).toBe(getPublicKey(USER_SK));
 
       const unsigned = EventBuilder.textNote("remote sign")
@@ -415,34 +418,88 @@ describe("Nip46Signer", () => {
       secret,
     });
 
-    const handshake = Nip46Signer.fromNostrConnectURI(uri, {
-      clientSecretKey: CLIENT_SK,
-      createPool: testPool,
-      handshakeTimeoutMs: 3000,
-    });
-
-    // Wait for client REQ, then bunker confirms secret.
-    await new Promise((r) => setTimeout(r, 25));
-    expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(1);
-    publishNostrConnectAck({
-      bunkerSk: BUNKER_SK,
-      clientPubkey: clientPk,
-      secret,
-      ws: MockWebSocket.instances[0]!,
-    });
-
-    const signer = await handshake;
-    expect(signer.bunker.pubkey).toBe(getPublicKey(BUNKER_SK));
-    expect(signer.clientPublicKey).toBe(clientPk);
-
     const stop = armBunkerResponder({
       bunkerSk: BUNKER_SK,
       userSk: USER_SK,
       clientPubkey: clientPk,
     });
     try {
+      const handshake = Nip46Signer.fromNostrConnectURI(uri, {
+        clientSecretKey: CLIENT_SK,
+        createPool: testPool,
+        handshakeTimeoutMs: 3000,
+        timeoutMs: 3000,
+      });
+
+      await new Promise((r) => setTimeout(r, 25));
+      expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(1);
+      publishNostrConnectAck({
+        bunkerSk: BUNKER_SK,
+        clientPubkey: clientPk,
+        secret,
+        ws: MockWebSocket.instances[0]!,
+      });
+
+      const signer = await handshake;
+      expect(signer.bunker.pubkey).toBe(getPublicKey(BUNKER_SK));
+      expect(signer.clientPublicKey).toBe(clientPk);
       expect(await signer.getPublicKey()).toBe(getPublicKey(USER_SK));
       await signer.close();
+    } finally {
+      stop();
+    }
+  });
+
+  test("connect sends perms and metadata", async () => {
+    const bunkerPk = getPublicKey(BUNKER_SK);
+    const clientPk = getPublicKey(CLIENT_SK);
+    const requests: Array<{ method: string; params: string[] }> = [];
+    const stop = armBunkerResponder({
+      bunkerSk: BUNKER_SK,
+      userSk: USER_SK,
+      clientPubkey: clientPk,
+      requests,
+    });
+    try {
+      const signer = await Nip46Signer.connect(
+        toBunkerURL({ pubkey: bunkerPk, relays: ["wss://bunker.example"], secret: "tok" }),
+        {
+          clientSecretKey: CLIENT_SK,
+          createPool: testPool,
+          timeoutMs: 3000,
+          perms: ["sign_event:1", "nip44_encrypt"],
+          metadata: { name: "test-client", url: "https://example.com" },
+        },
+      );
+      const connect = requests.find((r) => r.method === "connect");
+      expect(connect?.params).toEqual([
+        bunkerPk,
+        "tok",
+        "sign_event:1,nip44_encrypt",
+        JSON.stringify({ name: "test-client", url: "https://example.com" }),
+      ]);
+      await signer.close();
+    } finally {
+      stop();
+    }
+  });
+
+  test("switchRelays updates bunker relays; logout acks and closes", async () => {
+    const bunkerPk = getPublicKey(BUNKER_SK);
+    const clientPk = getPublicKey(CLIENT_SK);
+    const stop = armBunkerResponder({
+      bunkerSk: BUNKER_SK,
+      userSk: USER_SK,
+      clientPubkey: clientPk,
+      switchRelays: ["wss://new.example"],
+    });
+    try {
+      const signer = await Nip46Signer.connect(
+        toBunkerURL({ pubkey: bunkerPk, relays: ["wss://bunker.example"], secret: "tok" }),
+        { clientSecretKey: CLIENT_SK, createPool: testPool, timeoutMs: 3000 },
+      );
+      expect(signer.bunker.relays).toEqual(["wss://new.example"]);
+      await signer.logout();
     } finally {
       stop();
     }

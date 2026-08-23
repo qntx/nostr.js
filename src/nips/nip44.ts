@@ -7,13 +7,24 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { concatBytes, randomBytes } from "@noble/hashes/utils.js";
 import { base64 } from "@scure/base";
 import { CryptoError } from "../core/error.ts";
-import { assertHex32, hexToBytes, utf8Decoder, utf8Encoder } from "../core/util.ts";
+import {
+  assertHex32,
+  assertSecretKeyBytes,
+  hexToBytes,
+  utf8Decoder,
+  utf8Encoder,
+} from "../core/util.ts";
 
 const minPlaintextSize = 0x0001;
 const maxPlaintextSize = 0xffffffff;
 const extendedPrefixThreshold = 0x10000;
 
+function assert32(bytes: Uint8Array, label: string): void {
+  if (bytes.length !== 32) throw new CryptoError(`${label} must be 32 bytes`);
+}
+
 export function getConversationKey(privkeyA: Uint8Array, pubkeyB: string): Uint8Array {
+  assertSecretKeyBytes(privkeyA);
   assertHex32(pubkeyB, "public key");
   const sharedX = secp256k1
     .getSharedSecret(privkeyA, hexToBytes("02" + pubkeyB.toLowerCase()))
@@ -25,6 +36,8 @@ function getMessageKeys(
   conversationKey: Uint8Array,
   nonce: Uint8Array,
 ): { chacha_key: Uint8Array; chacha_nonce: Uint8Array; hmac_key: Uint8Array } {
+  assert32(conversationKey, "conversation_key");
+  assert32(nonce, "nonce");
   const keys = hkdf_expand(sha256, conversationKey, nonce, 76);
   return {
     chacha_key: keys.subarray(0, 32),

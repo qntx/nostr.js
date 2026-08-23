@@ -16,7 +16,7 @@ const BOB_SK = "00000000000000000000000000000000000000000000000000000000000000b0
 const CAROL_SK = "0000000000000000000000000000000000000000000000000000000000000ca8";
 
 describe("nip17 chat helpers", () => {
-  test("buildChatMessageRumor writes p tags, subject, and e/reply", () => {
+  test("buildChatMessageRumor writes p tags, subject, and unmarked reply e-tag", () => {
     const alice = Keys.fromSecretKey(ALICE_SK);
     const bob = Keys.fromSecretKey(BOB_SK);
     const replyId = "aa".repeat(32);
@@ -31,7 +31,7 @@ describe("nip17 chat helpers", () => {
     expect(rumor.created_at).toBe(42);
     expect(rumor.tags).toEqual([
       ["p", bob.publicKey, "wss://hint.example"],
-      ["e", replyId, "", "reply"],
+      ["e", replyId, ""],
       ["subject", "party"],
     ]);
   });

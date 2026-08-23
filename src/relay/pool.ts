@@ -132,6 +132,7 @@ export class Pool {
     this.#rejectInsecure(url, norm);
     let relay = this.#relays.get(norm);
     if (!relay) {
+      const authSigner = this.#opts.automaticallyAuth?.(norm) ?? undefined;
       relay = new Relay(norm, {
         websocketImplementation: this.#opts.websocketImplementation,
         verifyEvent: this.#opts.verifyEvent,
@@ -142,6 +143,7 @@ export class Pool {
         enablePing: this.#opts.enablePing,
         pingIntervalMs: this.#opts.pingIntervalMs,
         pingTimeoutMs: this.#opts.pingTimeoutMs,
+        authSigner,
       });
       // Only drop from the pool on terminal close (reconnect keeps the entry).
       relay.onclose = () => {

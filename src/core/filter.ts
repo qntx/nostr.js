@@ -14,18 +14,30 @@ export type Filter = {
 };
 
 export function matchFilter(filter: Filter, event: Event): boolean {
-  if (filter.ids && !filter.ids.includes(event.id)) return false;
+  if (filter.ids && !filter.ids.some((id) => id.toLowerCase() === event.id.toLowerCase())) {
+    return false;
+  }
   if (filter.kinds && !filter.kinds.includes(event.kind)) return false;
-  if (filter.authors && !filter.authors.includes(event.pubkey)) return false;
+  if (
+    filter.authors &&
+    !filter.authors.some((pk) => pk.toLowerCase() === event.pubkey.toLowerCase())
+  ) {
+    return false;
+  }
 
   for (const key of Object.keys(filter)) {
     if (key[0] !== "#") continue;
     const tagName = key.slice(1);
     const values = filter[`#${tagName}`];
     if (!values) continue;
-    const hit = event.tags.some(
-      (tag) => tag[0] === tagName && tag[1] !== undefined && values.includes(tag[1]),
-    );
+    const hexTag = tagName === "e" || tagName === "p";
+    const hit = event.tags.some((tag) => {
+      if (tag[0] !== tagName || tag[1] === undefined) return false;
+      if (hexTag) {
+        return values.some((v) => v.toLowerCase() === tag[1]!.toLowerCase());
+      }
+      return values.includes(tag[1]);
+    });
     if (!hit) return false;
   }
 

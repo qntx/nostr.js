@@ -125,3 +125,29 @@ export function sortEvents(events: Event[]): Event[] {
 export function sortedEvents(events: readonly Event[]): Event[] {
   return events.slice().sort(compareEventsDesc);
 }
+
+/**
+ * NIP-01 replaceable/addressable winner: higher `created_at`, or equal timestamp
+ * and lexicographically lower `id`.
+ */
+export function isReplaceableWinner(
+  candidate: { created_at: number; id: string },
+  incumbent: { created_at: number; id: string },
+): boolean {
+  if (candidate.created_at !== incumbent.created_at) {
+    return candidate.created_at > incumbent.created_at;
+  }
+  return candidate.id < incumbent.id;
+}
+
+/** True when a signed event is the signed form of `unsigned` (kind/tags/content/time/pubkey). */
+export function signedMatchesUnsigned(signed: Event, unsigned: UnsignedEvent): boolean {
+  if (signed.kind !== unsigned.kind) return false;
+  if (signed.content !== unsigned.content) return false;
+  if (signed.created_at !== unsigned.created_at) return false;
+  if (JSON.stringify(signed.tags) !== JSON.stringify(unsigned.tags)) return false;
+  if (unsigned.pubkey && signed.pubkey.toLowerCase() !== unsigned.pubkey.toLowerCase()) {
+    return false;
+  }
+  return true;
+}

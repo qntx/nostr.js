@@ -121,8 +121,8 @@ export type ReplyTagsOptions = {
   parent: Pick<Event, "id" | "pubkey" | "tags">;
   /** Optional relay hint for the parent e-tag. */
   relayHint?: string;
-  /** Extra mention event ids. */
-  mentionIds?: string[];
+  /** Quoted event ids (`q` tags). */
+  quoteIds?: string[];
 };
 
 /**
@@ -162,17 +162,17 @@ export function buildReplyTags(opts: ReplyTagsOptions): Tag[] {
   addP(opts.parent.pubkey, opts.relayHint);
   for (const p of thread.profiles) addP(p.pubkey, p.relays?.[0]);
 
-  for (const id of opts.mentionIds ?? []) {
-    if (isHex32(id)) tags.push(["e", id.toLowerCase(), "", "mention"] as Tag);
+  for (const id of opts.quoteIds ?? []) {
+    if (isHex32(id)) tags.push(["q", id.toLowerCase()] as Tag);
   }
 
   return tags;
 }
 
-/** Convenience: e-tag with optional marker. */
+/** Convenience: e-tag with optional NIP-10 marker (`root` / `reply`). */
 export function eTag(
   id: string,
-  opts?: { relay?: string; marker?: "root" | "reply" | "mention"; author?: string },
+  opts?: { relay?: string; marker?: "root" | "reply"; author?: string },
 ): Tag {
   const t: string[] = ["e", id.toLowerCase()];
   if (opts?.relay !== undefined || opts?.marker || opts?.author) {
@@ -192,13 +192,13 @@ export function eTag(
 export function replyTo(
   parent: Pick<Event, "id" | "pubkey" | "tags">,
   content: string,
-  opts?: { relayHint?: string; mentionIds?: string[] },
+  opts?: { relayHint?: string; quoteIds?: string[] },
 ): EventBuilder {
   return EventBuilder.textNote(content).tags(
     buildReplyTags({
       parent,
       relayHint: opts?.relayHint,
-      mentionIds: opts?.mentionIds,
+      quoteIds: opts?.quoteIds,
     }),
   );
 }

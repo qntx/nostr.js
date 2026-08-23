@@ -27,35 +27,122 @@
   "sideEffects": false,
   "types": "./dist/index.d.mts",
   "exports": {
-    ".": "./dist/index.mjs",
-    "./client": "./dist/client.mjs",
-    "./core": "./dist/core.mjs",
-    "./gossip": "./dist/gossip.mjs",
-    "./loaders": "./dist/loaders.mjs",
-    "./nips/blossom": "./dist/nips/blossom.mjs",
-    "./nips/nip04": "./dist/nips/nip04.mjs",
-    "./nips/nip05": "./dist/nips/nip05.mjs",
-    "./nips/nip10": "./dist/nips/nip10.mjs",
-    "./nips/nip11": "./dist/nips/nip11.mjs",
-    "./nips/nip13": "./dist/nips/nip13.mjs",
-    "./nips/nip17": "./dist/nips/nip17.mjs",
-    "./nips/nip19": "./dist/nips/nip19.mjs",
-    "./nips/nip21": "./dist/nips/nip21.mjs",
-    "./nips/nip27": "./dist/nips/nip27.mjs",
-    "./nips/nip42": "./dist/nips/nip42.mjs",
-    "./nips/nip44": "./dist/nips/nip44.mjs",
-    "./nips/nip46": "./dist/nips/nip46.mjs",
-    "./nips/nip49": "./dist/nips/nip49.mjs",
-    "./nips/nip51": "./dist/nips/nip51.mjs",
-    "./nips/nip57": "./dist/nips/nip57.mjs",
-    "./nips/nip59": "./dist/nips/nip59.mjs",
-    "./nips/nip65": "./dist/nips/nip65.mjs",
-    "./nips/nip77": "./dist/nips/nip77.mjs",
-    "./nips/nip96": "./dist/nips/nip96.mjs",
-    "./nips/nip98": "./dist/nips/nip98.mjs",
-    "./relay": "./dist/relay.mjs",
-    "./signer": "./dist/signer.mjs",
-    "./storage": "./dist/storage.mjs",
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./client": {
+      "types": "./dist/client.d.mts",
+      "import": "./dist/client.mjs"
+    },
+    "./core": {
+      "types": "./dist/core.d.mts",
+      "import": "./dist/core.mjs"
+    },
+    "./gossip": {
+      "types": "./dist/gossip.d.mts",
+      "import": "./dist/gossip.mjs"
+    },
+    "./loaders": {
+      "types": "./dist/loaders.d.mts",
+      "import": "./dist/loaders.mjs"
+    },
+    "./nips/blossom": {
+      "types": "./dist/nips/blossom.d.mts",
+      "import": "./dist/nips/blossom.mjs"
+    },
+    "./nips/nip04": {
+      "types": "./dist/nips/nip04.d.mts",
+      "import": "./dist/nips/nip04.mjs"
+    },
+    "./nips/nip05": {
+      "types": "./dist/nips/nip05.d.mts",
+      "import": "./dist/nips/nip05.mjs"
+    },
+    "./nips/nip10": {
+      "types": "./dist/nips/nip10.d.mts",
+      "import": "./dist/nips/nip10.mjs"
+    },
+    "./nips/nip11": {
+      "types": "./dist/nips/nip11.d.mts",
+      "import": "./dist/nips/nip11.mjs"
+    },
+    "./nips/nip13": {
+      "types": "./dist/nips/nip13.d.mts",
+      "import": "./dist/nips/nip13.mjs"
+    },
+    "./nips/nip17": {
+      "types": "./dist/nips/nip17.d.mts",
+      "import": "./dist/nips/nip17.mjs"
+    },
+    "./nips/nip19": {
+      "types": "./dist/nips/nip19.d.mts",
+      "import": "./dist/nips/nip19.mjs"
+    },
+    "./nips/nip21": {
+      "types": "./dist/nips/nip21.d.mts",
+      "import": "./dist/nips/nip21.mjs"
+    },
+    "./nips/nip27": {
+      "types": "./dist/nips/nip27.d.mts",
+      "import": "./dist/nips/nip27.mjs"
+    },
+    "./nips/nip42": {
+      "types": "./dist/nips/nip42.d.mts",
+      "import": "./dist/nips/nip42.mjs"
+    },
+    "./nips/nip44": {
+      "types": "./dist/nips/nip44.d.mts",
+      "import": "./dist/nips/nip44.mjs"
+    },
+    "./nips/nip46": {
+      "types": "./dist/nips/nip46.d.mts",
+      "import": "./dist/nips/nip46.mjs"
+    },
+    "./nips/nip49": {
+      "types": "./dist/nips/nip49.d.mts",
+      "import": "./dist/nips/nip49.mjs"
+    },
+    "./nips/nip51": {
+      "types": "./dist/nips/nip51.d.mts",
+      "import": "./dist/nips/nip51.mjs"
+    },
+    "./nips/nip57": {
+      "types": "./dist/nips/nip57.d.mts",
+      "import": "./dist/nips/nip57.mjs"
+    },
+    "./nips/nip59": {
+      "types": "./dist/nips/nip59.d.mts",
+      "import": "./dist/nips/nip59.mjs"
+    },
+    "./nips/nip65": {
+      "types": "./dist/nips/nip65.d.mts",
+      "import": "./dist/nips/nip65.mjs"
+    },
+    "./nips/nip77": {
+      "types": "./dist/nips/nip77.d.mts",
+      "import": "./dist/nips/nip77.mjs"
+    },
+    "./nips/nip96": {
+      "types": "./dist/nips/nip96.d.mts",
+      "import": "./dist/nips/nip96.mjs"
+    },
+    "./nips/nip98": {
+      "types": "./dist/nips/nip98.d.mts",
+      "import": "./dist/nips/nip98.mjs"
+    },
+    "./relay": {
+      "types": "./dist/relay.d.mts",
+      "import": "./dist/relay.mjs"
+    },
+    "./signer": {
+      "types": "./dist/signer.d.mts",
+      "import": "./dist/signer.mjs"
+    },
+    "./storage": {
+      "types": "./dist/storage.d.mts",
+      "import": "./dist/storage.mjs"
+    },
     "./package.json": "./package.json"
   },
   "publishConfig": {
