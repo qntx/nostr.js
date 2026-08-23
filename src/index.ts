@@ -249,6 +249,15 @@ export {
   type ReconcileOutcome,
 } from "./nips/nip77.ts";
 export {
+  Nip96Error,
+  fetchNip96Info,
+  parseNip96UploadResponse,
+  uploadNip96,
+  type Nip96Fetch,
+  type Nip96ServerInfo,
+  type Nip96UploadResult,
+} from "./nips/nip96.ts";
+export {
   Nip98Error,
   getToken as nip98GetToken,
   unpackEventFromToken,
