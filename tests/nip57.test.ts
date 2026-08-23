@@ -195,7 +195,7 @@ function receiptFor(
   provider: Keys,
   request: Event,
   json: string,
-  extra?: { invoice?: string; preimage?: string },
+  extra?: { invoice?: string; preimage?: string; extraTags?: Tag[] },
 ): Event {
   const paymentHash = sha256(hexToBytes(APPENDIX_E_PREIMAGE));
   const invoice =
@@ -211,6 +211,7 @@ function receiptFor(
   ];
   if (extra?.preimage !== undefined) tags.push(["preimage", extra.preimage]);
   else tags.push(["preimage", APPENDIX_E_PREIMAGE]);
+  if (extra?.extraTags) tags.push(...extra.extraTags);
   return signedReceipt(provider, tags);
 }
 
@@ -413,6 +414,289 @@ describe("validateZapReceipt", () => {
     expect(validateZapReceipt(garbage as Event, { nostrPubkey: keys.publicKey }).valid).toBe(false);
     expect(validateZapReceipt(garbage as Event, { nostrPubkey: keys.publicKey }).reason).toBe(
       "invalid receipt",
+    );
+  });
+
+  test("D.7: a must be a valid event coordinate", () => {
+    const provider = Keys.generate();
+    const coord = `30023:${keys.publicKey}:hello`;
+    const valid = signedZapRequest({ amount: 1_000_000, extraTags: [["a", coord]] });
+    const validResult = validateZapReceipt(
+      receiptFor(provider, valid.request, valid.json, { extraTags: [["a", coord]] }),
+      { nostrPubkey: provider.publicKey },
+    );
+    expect(validResult.valid).toBe(true);
+
+    const replaceable = `0:${keys.publicKey}:`;
+    const replaceableReq = signedZapRequest({
+      amount: 1_000_000,
+      extraTags: [["a", replaceable]],
+    });
+    expect(
+      validateZapReceipt(
+        receiptFor(provider, replaceableReq.request, replaceableReq.json, {
+          extraTags: [["a", replaceable]],
+        }),
+        { nostrPubkey: provider.publicKey },
+      ).valid,
+    ).toBe(true);
+
+    const nested = `30023:${keys.publicKey}:hello:world`;
+    const nestedReq = signedZapRequest({ amount: 1_000_000, extraTags: [["a", nested]] });
+    expect(
+      validateZapReceipt(
+        receiptFor(provider, nestedReq.request, nestedReq.json, { extraTags: [["a", nested]] }),
+        { nostrPubkey: provider.publicKey },
+      ).valid,
+    ).toBe(true);
+
+    const invalids: Tag[][] = [
+      [["a", "not-a-coordinate"]],
+      [["a", ""]],
+      [["a"]],
+      [["a", "0:short:"]],
+      [["a", `30023:${keys.publicKey}`]],
+      [
+        ["a", coord],
+        ["a", "nope"],
+      ],
+    ];
+    for (const extraTags of invalids) {
+      const { request, json } = signedZapRequest({ amount: 1_000_000, extraTags });
+      const receipt = receiptFor(provider, request, json);
+      expect(() => validateZapReceipt(receipt, { nostrPubkey: provider.publicKey })).not.toThrow();
+      const result = validateZapReceipt(receipt, { nostrPubkey: provider.publicKey });
+      expect(result.valid).toBe(false);
+      expect(result.reason).toBe("invalid a");
+    }
+  });
+
+  test("D.8: request P is 0 or 1 and equals receipt pubkey", () => {
+    const provider = Keys.generate();
+    const none = signedZapRequest({ amount: 1_000_000 });
+    expect(
+      validateZapReceipt(receiptFor(provider, none.request, none.json), {
+        nostrPubkey: provider.publicKey,
+      }).valid,
+    ).toBe(true);
+
+    const matching = signedZapRequest({
+      amount: 1_000_000,
+      extraTags: [["P", provider.publicKey]],
+    });
+    expect(
+      validateZapReceipt(receiptFor(provider, matching.request, matching.json), {
+        nostrPubkey: provider.publicKey,
+      }).valid,
+    ).toBe(true);
+
+    const mixedCase = signedZapRequest({
+      amount: 1_000_000,
+      extraTags: [["P", provider.publicKey.toUpperCase()]],
+    });
+    expect(
+      validateZapReceipt(receiptFor(provider, mixedCase.request, mixedCase.json), {
+        nostrPubkey: provider.publicKey,
+      }).valid,
+    ).toBe(true);
+
+    const wrong = signedZapRequest({
+      amount: 1_000_000,
+      extraTags: [["P", keys.publicKey]],
+    });
+    const wrongReceipt = receiptFor(provider, wrong.request, wrong.json);
+    expect(() =>
+      validateZapReceipt(wrongReceipt, { nostrPubkey: provider.publicKey }),
+    ).not.toThrow();
+    const wrongResult = validateZapReceipt(wrongReceipt, { nostrPubkey: provider.publicKey });
+    expect(wrongResult.valid).toBe(false);
+    expect(wrongResult.reason).toBe("request P mismatch");
+
+    const emptyValue = signedZapRequest({ amount: 1_000_000, extraTags: [["P", ""]] });
+    expect(
+      validateZapReceipt(receiptFor(provider, emptyValue.request, emptyValue.json), {
+        nostrPubkey: provider.publicKey,
+      }).reason,
+    ).toBe("request P mismatch");
+
+    const nameless = signedZapRequest({ amount: 1_000_000, extraTags: [["P"]] });
+    expect(
+      validateZapReceipt(receiptFor(provider, nameless.request, nameless.json), {
+        nostrPubkey: provider.publicKey,
+      }).reason,
+    ).toBe("request P mismatch");
+
+    const twoP = signedZapRequest({
+      amount: 1_000_000,
+      extraTags: [
+        ["P", provider.publicKey],
+        ["P", provider.publicKey],
+      ],
+    });
+    const twoPReceipt = receiptFor(provider, twoP.request, twoP.json);
+    expect(() =>
+      validateZapReceipt(twoPReceipt, { nostrPubkey: provider.publicKey }),
+    ).not.toThrow();
+    const twoPResult = validateZapReceipt(twoPReceipt, { nostrPubkey: provider.publicKey });
+    expect(twoPResult.valid).toBe(false);
+    expect(twoPResult.reason).toBe("too many P tags");
+  });
+
+  test("E: receipt copies request p, e, and a", () => {
+    const provider = Keys.generate();
+    const eventId = "11".repeat(32);
+    const coord = `30023:${keys.publicKey}:hello`;
+    const copied = signedZapRequest({
+      amount: 1_000_000,
+      extraTags: [
+        ["e", eventId],
+        ["a", coord],
+      ],
+    });
+    expect(
+      validateZapReceipt(
+        receiptFor(provider, copied.request, copied.json, {
+          extraTags: [
+            ["e", eventId],
+            ["a", coord],
+          ],
+        }),
+        { nostrPubkey: provider.publicKey },
+      ).valid,
+    ).toBe(true);
+
+    const aWithHint = signedZapRequest({ amount: 1_000_000, extraTags: [["a", coord]] });
+    expect(
+      validateZapReceipt(
+        receiptFor(provider, aWithHint.request, aWithHint.json, {
+          extraTags: [["a", coord, "wss://r.example"]],
+        }),
+        { nostrPubkey: provider.publicKey },
+      ).valid,
+    ).toBe(true);
+
+    const missingP = signedZapRequest({ amount: 1_000_000 });
+    const missingPBase = receiptFor(provider, missingP.request, missingP.json);
+    const missingPReceipt = signedReceipt(
+      provider,
+      missingPBase.tags.filter((t) => t[0] !== "p"),
+    );
+    expect(() =>
+      validateZapReceipt(missingPReceipt, { nostrPubkey: provider.publicKey }),
+    ).not.toThrow();
+    const missingPResult = validateZapReceipt(missingPReceipt, {
+      nostrPubkey: provider.publicKey,
+    });
+    expect(missingPResult.valid).toBe(false);
+    expect(missingPResult.reason).toBe("missing p");
+
+    const wrongP = signedZapRequest({ amount: 1_000_000 });
+    const wrongPBase = receiptFor(provider, wrongP.request, wrongP.json);
+    const wrongPReceipt = signedReceipt(
+      provider,
+      wrongPBase.tags.map((t) => (t[0] === "p" ? (["p", provider.publicKey] as Tag) : t)),
+    );
+    expect(validateZapReceipt(wrongPReceipt, { nostrPubkey: provider.publicKey }).reason).toBe(
+      "missing p",
+    );
+
+    const withE = signedZapRequest({ amount: 1_000_000, extraTags: [["e", eventId]] });
+    const missingE = receiptFor(provider, withE.request, withE.json);
+    expect(() => validateZapReceipt(missingE, { nostrPubkey: provider.publicKey })).not.toThrow();
+    const missingEResult = validateZapReceipt(missingE, { nostrPubkey: provider.publicKey });
+    expect(missingEResult.valid).toBe(false);
+    expect(missingEResult.reason).toBe("missing e");
+
+    const wrongE = receiptFor(provider, withE.request, withE.json, {
+      extraTags: [["e", "22".repeat(32)]],
+    });
+    expect(validateZapReceipt(wrongE, { nostrPubkey: provider.publicKey }).reason).toBe(
+      "missing e",
+    );
+
+    const withA = signedZapRequest({ amount: 1_000_000, extraTags: [["a", coord]] });
+    const missingA = receiptFor(provider, withA.request, withA.json);
+    expect(() => validateZapReceipt(missingA, { nostrPubkey: provider.publicKey })).not.toThrow();
+    const missingAResult = validateZapReceipt(missingA, { nostrPubkey: provider.publicKey });
+    expect(missingAResult.valid).toBe(false);
+    expect(missingAResult.reason).toBe("missing a");
+
+    const wrongA = receiptFor(provider, withA.request, withA.json, {
+      extraTags: [["a", `30023:${keys.publicKey}:other`]],
+    });
+    expect(validateZapReceipt(wrongA, { nostrPubkey: provider.publicKey }).reason).toBe(
+      "missing a",
+    );
+
+    const twoA = signedZapRequest({
+      amount: 1_000_000,
+      extraTags: [
+        ["a", coord],
+        ["a", `0:${keys.publicKey}:`],
+      ],
+    });
+    const twoAPartial = receiptFor(provider, twoA.request, twoA.json, {
+      extraTags: [["a", coord]],
+    });
+    expect(validateZapReceipt(twoAPartial, { nostrPubkey: provider.publicKey }).reason).toBe(
+      "missing a",
+    );
+  });
+
+  test("E: receipt P is the zap sender, not request tag P", () => {
+    const provider = Keys.generate();
+    const { request, json } = signedZapRequest({ amount: 1_000_000 });
+    const appendixE = receiptFor(provider, request, json, {
+      extraTags: [["P", request.pubkey]],
+    });
+    const appendixEResult = validateZapReceipt(appendixE, { nostrPubkey: provider.publicKey });
+    expect(appendixEResult.valid).toBe(true);
+
+    const mixedCase = receiptFor(provider, request, json, {
+      extraTags: [["P", request.pubkey.toUpperCase()]],
+    });
+    expect(validateZapReceipt(mixedCase, { nostrPubkey: provider.publicKey }).valid).toBe(true);
+
+    const both = signedZapRequest({
+      amount: 1_000_000,
+      extraTags: [["P", provider.publicKey]],
+    });
+    expect(
+      validateZapReceipt(
+        receiptFor(provider, both.request, both.json, { extraTags: [["P", both.request.pubkey]] }),
+        { nostrPubkey: provider.publicKey },
+      ).valid,
+    ).toBe(true);
+
+    const copiedRequestP = signedZapRequest({
+      amount: 1_000_000,
+      extraTags: [["P", provider.publicKey]],
+    });
+    const copiedReceipt = receiptFor(provider, copiedRequestP.request, copiedRequestP.json, {
+      extraTags: [["P", provider.publicKey]],
+    });
+    expect(() =>
+      validateZapReceipt(copiedReceipt, { nostrPubkey: provider.publicKey }),
+    ).not.toThrow();
+    const copiedResult = validateZapReceipt(copiedReceipt, { nostrPubkey: provider.publicKey });
+    expect(copiedResult.valid).toBe(false);
+    expect(copiedResult.reason).toBe("receipt P mismatch");
+
+    const wrongSender = receiptFor(provider, request, json, {
+      extraTags: [["P", keys.publicKey]],
+    });
+    expect(validateZapReceipt(wrongSender, { nostrPubkey: provider.publicKey }).reason).toBe(
+      "receipt P mismatch",
+    );
+
+    const emptyP = receiptFor(provider, request, json, { extraTags: [["P", ""]] });
+    expect(validateZapReceipt(emptyP, { nostrPubkey: provider.publicKey }).reason).toBe(
+      "receipt P mismatch",
+    );
+
+    const namelessP = receiptFor(provider, request, json, { extraTags: [["P"]] });
+    expect(validateZapReceipt(namelessP, { nostrPubkey: provider.publicKey }).reason).toBe(
+      "receipt P mismatch",
     );
   });
 });

@@ -10,7 +10,7 @@ import { EventValidationError } from "../core/error.ts";
 import { validateSignedEvent, type Event, type EventTemplate } from "../core/event.ts";
 import { verifyEvent } from "../core/key.ts";
 import { isAddressableKind, Kind } from "../core/kind.ts";
-import { eventAddress, getDTag, type Tag } from "../core/tag.ts";
+import { eventAddress, getDTag, parseEventAddress, type Tag } from "../core/tag.ts";
 import { hexToBytes, utf8Encoder } from "../core/util.ts";
 
 export type ProfileZapRequest = {
@@ -145,6 +145,13 @@ function countTags(tags: readonly Tag[], name: string): number {
   return n;
 }
 
+function hasTagValue(tags: readonly Tag[], name: string, value: string): boolean {
+  for (const tag of tags) {
+    if (tag[0] === name && tag[1] === value) return true;
+  }
+  return false;
+}
+
 const BOLT11_TIMESTAMP_WORDS = 7;
 const BOLT11_SIGNATURE_WORDS = 104;
 const BOLT11_HASH_WORDS = 52;
@@ -214,6 +221,21 @@ export function validateZapReceipt(receipt: Event, ctx: ZapReceiptContext): ZapR
     if (countTags(request.tags, "e") > 1) return fail("too many e tags");
     if (!firstTagValue(request.tags, "relays")) return fail("missing relays");
 
+    for (const tag of request.tags) {
+      if (tag[0] !== "a") continue;
+      if (tag[1] === undefined || !parseEventAddress(tag[1])) return fail("invalid a");
+    }
+
+    // Request P is the LNURL provider (receipt pubkey), not the zap sender.
+    const requestPCount = countTags(request.tags, "P");
+    if (requestPCount > 1) return fail("too many P tags");
+    if (requestPCount === 1) {
+      const requestP = firstTagValue(request.tags, "P");
+      if (requestP === undefined || requestP.toLowerCase() !== receipt.pubkey.toLowerCase()) {
+        return fail("request P mismatch");
+      }
+    }
+
     const bolt11Tag = firstTagValue(receipt.tags, "bolt11");
     if (bolt11Tag === undefined) return fail("missing bolt11");
     const bolt11 = parseBolt11(bolt11Tag);
@@ -243,6 +265,27 @@ export function validateZapReceipt(receipt: Event, ctx: ZapReceiptContext): ZapR
         return fail("preimage mismatch");
       }
       if (!bytesEq(sha256(preimage), bolt11.paymentHash)) return fail("preimage mismatch");
+    }
+
+    const recipient = firstTagValue(request.tags, "p");
+    if (recipient === undefined || !hasTagValue(receipt.tags, "p", recipient)) {
+      return fail("missing p");
+    }
+    const requestE = firstTagValue(request.tags, "e");
+    if (requestE !== undefined && !hasTagValue(receipt.tags, "e", requestE)) {
+      return fail("missing e");
+    }
+    for (const tag of request.tags) {
+      if (tag[0] !== "a" || tag[1] === undefined) continue;
+      if (!hasTagValue(receipt.tags, "a", tag[1])) return fail("missing a");
+    }
+
+    // Receipt P is the zap sender (request pubkey). Do not copy request tag P.
+    for (const tag of receipt.tags) {
+      if (tag[0] !== "P") continue;
+      if (tag[1] === undefined || tag[1].toLowerCase() !== request.pubkey.toLowerCase()) {
+        return fail("receipt P mismatch");
+      }
     }
 
     const amountMsats =
