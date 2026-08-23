@@ -104,17 +104,15 @@ describe("makeZapRequest", () => {
   });
 
   test("addressable event adds a tag kind:pubkey:d", () => {
-    const event = new EventBuilder(Kind.LongFormContent, "article")
-      .tag(["d", "hello"])
-      .signWithKeys(keys);
+    const event = new EventBuilder(30023, "article").tag(["d", "hello"]).signWithKeys(keys);
     const zr = makeZapRequest({ event, amount: 21, relays: ["wss://r.example"] });
-    expect(zr.tags).toContainEqual(["a", `${Kind.LongFormContent}:${event.pubkey}:hello`]);
+    expect(zr.tags).toContainEqual(["a", `30023:${event.pubkey}:hello`]);
     expect(zr.tags).toContainEqual(["e", event.id]);
-    expect(zr.tags).toContainEqual(["k", String(Kind.LongFormContent)]);
+    expect(zr.tags).toContainEqual(["k", "30023"]);
   });
 
   test("addressable event without d throws", () => {
-    const event = new EventBuilder(Kind.LongFormContent, "article").signWithKeys(keys);
+    const event = new EventBuilder(30023, "article").signWithKeys(keys);
     expect(() => makeZapRequest({ event, amount: 21, relays: ["wss://r.example"] })).toThrow(
       EventValidationError,
     );
@@ -124,9 +122,7 @@ describe("makeZapRequest", () => {
   });
 
   test("addressable event with empty d throws", () => {
-    const event = new EventBuilder(Kind.LongFormContent, "article")
-      .tag(["d", ""])
-      .signWithKeys(keys);
+    const event = new EventBuilder(30023, "article").tag(["d", ""]).signWithKeys(keys);
     expect(() => makeZapRequest({ event, amount: 21, relays: ["wss://r.example"] })).toThrow(
       EventValidationError,
     );
