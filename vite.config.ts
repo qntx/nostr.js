@@ -14,6 +14,7 @@ export default defineConfig({
       storage: "src/storage/index.ts",
       loaders: "src/loaders/index.ts",
       gossip: "src/gossip/index.ts",
+      "nips/blossom": "src/nips/blossom.ts",
       "nips/nip04": "src/nips/nip04.ts",
       "nips/nip05": "src/nips/nip05.ts",
       "nips/nip10": "src/nips/nip10.ts",

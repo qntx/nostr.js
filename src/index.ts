@@ -254,6 +254,25 @@ export {
   unpackEventFromToken,
   validateAuthEvent,
 } from "./nips/nip98.ts";
+export {
+  BlossomError,
+  blossomServerListEventBuilder,
+  checkUpload,
+  createAuthTemplate,
+  createUploadAuth,
+  deleteBlob,
+  encodeAuthorizationHeader,
+  getHashFromURL,
+  listBlobs,
+  mirrorBlob,
+  parseBlossomServerList,
+  sha256Blob,
+  upload,
+  type BlobDescriptor,
+  type BlossomAuthVerb,
+  type BlossomFetch,
+  type BlossomSign,
+} from "./nips/blossom.ts";
 
 // --- relay ---
 export {

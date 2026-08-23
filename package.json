@@ -52,6 +52,11 @@
       "import": "./dist/loaders.mjs",
       "default": "./dist/loaders.mjs"
     },
+    "./nips/blossom": {
+      "types": "./dist/nips/blossom.d.mts",
+      "import": "./dist/nips/blossom.mjs",
+      "default": "./dist/nips/blossom.mjs"
+    },
     "./nips/nip04": {
       "types": "./dist/nips/nip04.d.mts",
       "import": "./dist/nips/nip04.mjs",

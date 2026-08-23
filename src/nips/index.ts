@@ -1,3 +1,4 @@
+export * as blossom from "./blossom.ts";
 export * as nip04 from "./nip04.ts";
 export * as nip05 from "./nip05.ts";
 export * as nip10 from "./nip10.ts";
