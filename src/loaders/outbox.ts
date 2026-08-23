@@ -144,6 +144,7 @@ export class OutboxFeed {
   }): Promise<Event[]> {
     this.#assertOpen();
     if (!opts?.skipHydrate) await this.hydrate();
+    await this.#hydrateBoundsFromStore();
 
     const byRelay = groupAuthorsByOutboxRelay(
       this.#authors,
@@ -159,28 +160,9 @@ export class OutboxFeed {
       [...byRelay.entries()].map(async ([url, authors]) => {
         if (opts?.signal?.aborted) return;
 
-        let since = opts?.since;
-        if (since === undefined) {
-          for (const pk of authors) {
-            for (const kind of this.#kinds) {
-              const b = this.#bounds.get(boundKey(pk, kind));
-              if (b && (since === undefined || b.newest < since)) since = b.newest;
-            }
-          }
-          // Overlap slightly when resuming from bounds (live race).
-          if (since !== undefined) since = Math.max(0, since - 1);
-        }
-
-        const filter: Filter = {
-          authors,
-          kinds: this.#kinds,
-          limit: opts?.limit ?? 50,
-          ...(since !== undefined ? { since } : {}),
-          ...(opts?.until !== undefined ? { until: opts.until } : {}),
-        };
-
+        const filters = this.#syncFilters(authors, opts);
         try {
-          const batch = await this.#pool.fetch([url], [filter], {
+          const batch = await this.#pool.fetch([url], filters, {
             timeoutMs: this.#timeoutMs,
             signal: opts?.signal,
           });
@@ -262,6 +244,76 @@ export class OutboxFeed {
 
   #assertOpen(): void {
     if (this.#closed) throw new Error("OutboxFeed is closed");
+  }
+
+  async #newestFromStore(pubkey: string, kind: number): Promise<number | undefined> {
+    const [ev] = await this.#storage.query([{ authors: [pubkey], kinds: [kind], limit: 1 }]);
+    return ev?.created_at;
+  }
+
+  async #hydrateBoundsFromStore(): Promise<void> {
+    await Promise.all(
+      this.#authors.flatMap((pk) =>
+        this.#kinds.map(async (kind) => {
+          const key = boundKey(pk, kind);
+          if (this.#bounds.has(key)) return;
+          const newest = await this.#newestFromStore(pk, kind);
+          if (newest === undefined) return;
+          this.#bounds.set(key, { oldest: newest, newest });
+        }),
+      ),
+    );
+  }
+
+  #syncFilters(
+    authors: string[],
+    opts?: { limit?: number; since?: number; until?: number },
+  ): Filter[] {
+    const base: Filter = {
+      kinds: this.#kinds,
+      limit: opts?.limit ?? 50,
+      ...(opts?.until !== undefined ? { until: opts.until } : {}),
+    };
+
+    if (opts?.since !== undefined) {
+      return [{ ...base, authors, since: opts.since }];
+    }
+
+    const bounded: string[] = [];
+    const unbounded: string[] = [];
+    let minBoundedNewest: number | undefined;
+
+    for (const pk of authors) {
+      let newest: number | undefined;
+      let complete = true;
+      for (const kind of this.#kinds) {
+        const b = this.#bounds.get(boundKey(pk, kind));
+        if (!b) {
+          complete = false;
+          break;
+        }
+        if (newest === undefined || b.newest < newest) newest = b.newest;
+      }
+      if (complete && newest !== undefined) {
+        bounded.push(pk);
+        if (minBoundedNewest === undefined || newest < minBoundedNewest) {
+          minBoundedNewest = newest;
+        }
+      } else {
+        unbounded.push(pk);
+      }
+    }
+
+    if (bounded.length === 0 || minBoundedNewest === undefined) {
+      return [{ ...base, authors }];
+    }
+    if (unbounded.length === 0) {
+      return [{ ...base, authors, since: Math.max(0, minBoundedNewest - 1) }];
+    }
+    return [
+      { ...base, authors: bounded, since: Math.max(0, minBoundedNewest - 1) },
+      { ...base, authors: unbounded },
+    ];
   }
 
   #noteEvent(event: Event): void {
