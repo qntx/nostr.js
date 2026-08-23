@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import {
   EventValidationError,
+  HexError,
   Kind,
   bookmarkListEventBuilder,
   muteListEventBuilder,
@@ -34,7 +35,7 @@ describe("nip51 mute list", () => {
         ["p", PK.toUpperCase(), "wss://hint.example"],
         ["e", ID],
         ["t", "spam"],
-        ["word", "scam"],
+        ["word", "Scam"],
         ["emoji", "ignored", "https://x.example/x.png"],
         ["p", "not-hex"],
         ["e", ""],
@@ -66,6 +67,25 @@ describe("nip51 mute list", () => {
     ]);
     expect(parseMuteList({ kind: built.currentKind, tags: built.currentTags })).toEqual(items);
   });
+
+  test("muteListEventBuilder lowercases hex and words; skips empty t/word", () => {
+    const built = muteListEventBuilder([
+      { type: "pubkey", value: PK.toUpperCase() },
+      { type: "event", value: ID.toUpperCase() },
+      { type: "hashtag", value: "" },
+      { type: "word", value: "" },
+      { type: "word", value: "Scam" },
+    ]);
+    expect(built.currentTags).toEqual([
+      ["p", PK],
+      ["e", ID],
+      ["word", "scam"],
+    ]);
+  });
+
+  test("muteListEventBuilder rejects non-hex pubkey", () => {
+    expect(() => muteListEventBuilder([{ type: "pubkey", value: "nope" }])).toThrow(HexError);
+  });
 });
 
 describe("nip51 pin list", () => {
@@ -84,13 +104,18 @@ describe("nip51 pin list", () => {
   });
 
   test("pinListEventBuilder emits e tags", () => {
-    const built = pinListEventBuilder([ID, ID2]);
+    const built = pinListEventBuilder([ID.toUpperCase(), ID2]);
     expect(built.currentKind).toBe(Kind.PinList);
+    expect(built.currentContent).toBe("");
     expect(built.currentTags).toEqual([
       ["e", ID],
       ["e", ID2],
     ]);
     expect(parsePinList({ kind: built.currentKind, tags: built.currentTags })).toEqual([ID, ID2]);
+  });
+
+  test("pinListEventBuilder rejects non-hex ids", () => {
+    expect(() => pinListEventBuilder(["nope"])).toThrow(HexError);
   });
 });
 
@@ -111,8 +136,9 @@ describe("nip51 bookmark list", () => {
   });
 
   test("bookmarkListEventBuilder emits e then a", () => {
-    const built = bookmarkListEventBuilder({ e: [ID], a: [ARTICLE] });
+    const built = bookmarkListEventBuilder({ e: [ID.toUpperCase()], a: [ARTICLE, ""] });
     expect(built.currentKind).toBe(Kind.BookmarkList);
+    expect(built.currentContent).toBe("");
     expect(built.currentTags).toEqual([
       ["e", ID],
       ["a", ARTICLE],
@@ -175,12 +201,17 @@ describe("nip51 relay set", () => {
 
 describe("nip51 favorite relays", () => {
   test("parses relay urls and kind 30002 a tags only", () => {
+    const withColonD = `30002:${PK}:home:extra`;
     expect(
       parseFavoriteRelays({
         kind: Kind.FavoriteRelays,
         tags: [
           ["relay", "wss://a.example"],
           ["a", RELAY_SET],
+          ["a", withColonD],
+          ["a", "30002"],
+          ["a", `30002:${PK}`],
+          ["a", `30002:${PK}:`],
           ["a", PEOPLE_SET],
           ["a", EMOJI_SET],
           ["p", PK],
@@ -189,7 +220,7 @@ describe("nip51 favorite relays", () => {
       }),
     ).toEqual({
       relays: [normalizeURL("wss://a.example")],
-      sets: [RELAY_SET],
+      sets: [RELAY_SET, withColonD],
     });
   });
 });
@@ -251,6 +282,9 @@ describe("nip51 kind mismatch", () => {
 
   test("throws EventValidationError", () => {
     expect(() => parseMuteList(wrong)).toThrow(EventValidationError);
+    expect(() => parseMuteList(wrong)).toThrow(
+      `expected kind ${Kind.MuteList}, got ${Kind.TextNote}`,
+    );
     expect(() => parsePinList(wrong)).toThrow(EventValidationError);
     expect(() => parseBookmarkList(wrong)).toThrow(EventValidationError);
     expect(() => parseUserEmojiList(wrong)).toThrow(EventValidationError);

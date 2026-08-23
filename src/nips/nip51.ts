@@ -10,7 +10,7 @@ import { EventValidationError } from "../core/error.ts";
 import type { Event } from "../core/event.ts";
 import { Kind } from "../core/kind.ts";
 import { getDTag, Tag } from "../core/tag.ts";
-import { isHex32, normalizeURL } from "../core/util.ts";
+import { assertHex32, isHex32, normalizeURL } from "../core/util.ts";
 
 export type MuteItem =
   | { type: "pubkey"; value: string }
@@ -65,6 +65,18 @@ function identifier(tags: Event["tags"]): string {
   return getDTag(tags) ?? "";
 }
 
+/** NIP-51 a-tag: `30002:<64-hex-pubkey>:<d>` with `d` possibly containing `:`. */
+function isRelaySetAddress(value: string): boolean {
+  const kindSep = value.indexOf(":");
+  if (kindSep < 0) return false;
+  if (value.slice(0, kindSep) !== String(Kind.RelaySets)) return false;
+  const pkSep = value.indexOf(":", kindSep + 1);
+  if (pkSep < 0) return false;
+  const pubkey = value.slice(kindSep + 1, pkSep);
+  const d = value.slice(pkSep + 1);
+  return isHex32(pubkey) && d.length > 0;
+}
+
 /** Parse kind:10000 mute list public tags (`p` / `e` / `t` / `word`). */
 export function parseMuteList(event: Pick<Event, "kind" | "tags">): MuteItem[] {
   requireKind(event, Kind.MuteList);
@@ -80,10 +92,11 @@ export function parseMuteList(event: Pick<Event, "kind" | "tags">): MuteItem[] {
         if (isHex32(value)) items.push({ type: "event", value: value.toLowerCase() });
         break;
       case "t":
+        // NIP-51 does not require hashtag case-folding.
         items.push({ type: "hashtag", value });
         break;
       case "word":
-        items.push({ type: "word", value });
+        items.push({ type: "word", value: value.toLowerCase() });
         break;
     }
   }
@@ -96,16 +109,16 @@ export function muteListEventBuilder(items: readonly MuteItem[]): EventBuilder {
   for (const item of items) {
     switch (item.type) {
       case "pubkey":
-        b.tag(Tag.p(item.value));
+        b.tag(Tag.p(assertHex32(item.value, "public key")));
         break;
       case "event":
-        b.tag(Tag.e(item.value));
+        b.tag(Tag.e(assertHex32(item.value, "event id")));
         break;
       case "hashtag":
-        b.tag(Tag.t(item.value));
+        if (item.value) b.tag(Tag.t(item.value));
         break;
       case "word":
-        b.tag(["word", item.value]);
+        if (item.value) b.tag(["word", item.value.toLowerCase()]);
         break;
     }
   }
@@ -126,7 +139,7 @@ export function parsePinList(event: Pick<Event, "kind" | "tags">): string[] {
 /** Build an unsigned kind:10001 EventBuilder from event ids. */
 export function pinListEventBuilder(ids: readonly string[]): EventBuilder {
   const b = new EventBuilder(Kind.PinList, "");
-  for (const id of ids) b.tag(Tag.e(id));
+  for (const id of ids) b.tag(Tag.e(assertHex32(id, "event id")));
   return b;
 }
 
@@ -156,10 +169,12 @@ export function bookmarkListEventBuilder(items: {
 }): EventBuilder {
   const b = new EventBuilder(Kind.BookmarkList, "");
   if (items.e) {
-    for (const id of items.e) b.tag(Tag.e(id));
+    for (const id of items.e) b.tag(Tag.e(assertHex32(id, "event id")));
   }
   if (items.a) {
-    for (const coord of items.a) b.tag(Tag.a(coord));
+    for (const coord of items.a) {
+      if (coord) b.tag(Tag.a(coord));
+    }
   }
   return b;
 }
@@ -193,10 +208,8 @@ export function parseFavoriteRelays(event: Pick<Event, "kind" | "tags">): {
 } {
   requireKind(event, Kind.FavoriteRelays);
   const sets: string[] = [];
-  const setKind = String(Kind.RelaySets);
   for (const tag of event.tags) {
-    if (tag[0] !== "a" || !tag[1]) continue;
-    if (tag[1].split(":")[0] !== setKind) continue;
+    if (tag[0] !== "a" || !tag[1] || !isRelaySetAddress(tag[1])) continue;
     sets.push(tag[1]);
   }
   return { relays: collectRelays(event.tags), sets };
