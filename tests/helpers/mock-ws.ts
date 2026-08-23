@@ -53,8 +53,18 @@ export class MockWebSocket implements WebSocketLike {
   }
 
   close(): void {
+    if (this.readyState === MockWebSocket.CLOSING || this.readyState === MockWebSocket.CLOSED) {
+      this.readyState = MockWebSocket.CLOSED;
+      return;
+    }
     this.readyState = MockWebSocket.CLOSED;
     this.#emit("close", {});
+  }
+
+  /** Simulate the socket opening (for autoConnect = false tests). */
+  open(): void {
+    this.readyState = MockWebSocket.OPEN;
+    this.#emit("open", {});
   }
 
   addEventListener(type: string, listener: Listener): void {

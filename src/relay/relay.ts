@@ -29,6 +29,15 @@ import {
   type WebSocketLike,
 } from "./websocket.ts";
 
+export const RelayStatus = {
+  Initialized: "initialized",
+  Connecting: "connecting",
+  Connected: "connected",
+  Disconnected: "disconnected",
+  Closed: "closed",
+} as const;
+export type RelayStatusName = (typeof RelayStatus)[keyof typeof RelayStatus];
+
 export type RelayOptions = {
   websocketImplementation?: WebSocketConstructor;
   verifyEvent?: (event: Event) => boolean;
@@ -84,6 +93,14 @@ type PingWaiter = {
   resolve: (alive: boolean) => void;
 };
 
+type SocketHandlers = {
+  onOpen: () => void;
+  onError: () => void;
+  onClose: () => void;
+  onMessage: (ev: unknown) => void;
+  ws: WebSocketLike;
+};
+
 const DEFAULT_BACKOFF = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000, 60_000];
 const DEFAULT_PING_INTERVAL_MS = 29_000;
 const DEFAULT_PING_TIMEOUT_MS = 20_000;
@@ -105,7 +122,12 @@ export class Relay {
   readonly url: string;
   #ws: WebSocketLike | undefined;
   #connected = false;
+  #gen = 0;
+  #status: RelayStatusName = RelayStatus.Initialized;
   #connecting: Promise<void> | undefined;
+  #connectFinish: ((err?: unknown) => void) | undefined;
+  #connectTimer: ReturnType<typeof setTimeout> | undefined;
+  #socketHandlers: SocketHandlers | undefined;
   #subs = new Map<SubscriptionId, Subscription>();
   #publishes = new Map<string, PublishWaiter>();
   #counts = new Map<string, CountWaiter>();
@@ -165,6 +187,14 @@ export class Relay {
     return this.#connected;
   }
 
+  get status(): RelayStatusName {
+    return this.#status;
+  }
+
+  get generation(): number {
+    return this.#gen;
+  }
+
   get reconnectEnabled(): boolean {
     return this.#enableReconnect;
   }
@@ -185,119 +215,175 @@ export class Relay {
 
   async connect(opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void> {
     if (this.#connected) return;
-    if (this.#connecting) return this.#connecting;
+    if (this.#connecting) return await this.#connecting;
 
+    const gen = ++this.#gen;
     this.#intentionalClose = false;
     this.#skipReconnect = false;
     this.#deathHandled = false;
     this.#clearReconnectTimer();
+    this.#status = RelayStatus.Connecting;
 
     const timeoutMs = opts?.timeoutMs ?? this.#connectTimeoutMs;
     const isReconnect = this.#reconnectAttempts > 0;
 
-    this.#connecting = new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const finish = (err?: unknown) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        opts?.signal?.removeEventListener("abort", onAbort);
-        if (err) {
-          this.#connecting = undefined;
-          reject(
-            err instanceof Error ? err : new RelayConnectionError("connection failed", this.url),
-          );
-        } else {
-          resolve();
-        }
-      };
+    let resolveConnect = (): void => {};
+    let rejectConnect = (_err: Error): void => {};
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let ws: WebSocketLike | undefined;
+    let handlers: SocketHandlers | undefined;
 
-      const timer = setTimeout(() => {
-        this.#detachSocketHandlers();
-        this.#teardownSocket();
-        // only abandon reconnect on initial connect timeout
-        if (!isReconnect) this.#skipReconnect = true;
-        finish(new RelayConnectionError("connection timed out", this.url));
-        this.#handleSocketDeath("connection timed out", { fromConnectAttempt: true });
-      }, timeoutMs);
-
-      const onAbort = () => {
-        this.#intentionalClose = true;
-        this.#detachSocketHandlers();
-        this.#teardownSocket();
-        this.#skipReconnect = true;
-        finish(new RelayConnectionError("connection aborted", this.url));
-      };
-      opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-      try {
-        this.#ws = new this.#WS(this.url);
-      } catch (err) {
-        finish(err);
-        return;
-      }
-
-      const ws = this.#ws;
-
-      const onOpen = () => {
-        this.#connected = true;
-        this.#deathHandled = false;
-        const wasReconnect = this.#reconnectAttempts > 0;
-        this.#reconnectAttempts = 0;
-        this.#challenge = undefined;
-        this.#authPromise = undefined;
-        this.#resubscribeAll();
-        this.#startPingLoop();
-        if (wasReconnect) this.onreconnect?.();
-        finish();
-      };
-      const onError = () => {
-        this.#connected = false;
-        if (!isReconnect) this.#skipReconnect = true;
-        finish(new RelayConnectionError("connection failed", this.url));
-        this.#handleSocketDeath("connection failed", { fromConnectAttempt: true });
-      };
-      const onClose = () => {
-        this.#connected = false;
-        if (!settled) {
-          if (!isReconnect) this.#skipReconnect = true;
-          finish(new RelayConnectionError("websocket closed", this.url));
-        }
-        this.#handleSocketDeath("websocket closed", { fromConnectAttempt: !settled });
-      };
-      const onMessage = (ev: unknown) => {
-        const data =
-          typeof ev === "object" && ev !== null && "data" in ev
-            ? (ev as { data: unknown }).data
-            : ev;
-        this.#onMessage(String(data));
-      };
-
-      // store for detach
-      this.#socketHandlers = { onOpen, onError, onClose, onMessage, ws };
-
-      ws.addEventListener("open", onOpen);
-      ws.addEventListener("error", onError);
-      ws.addEventListener("close", onClose);
-      ws.addEventListener("message", onMessage);
+    const connecting = new Promise<void>((resolve, reject) => {
+      resolveConnect = resolve;
+      rejectConnect = reject;
     });
 
-    try {
-      await this.#connecting;
-    } finally {
-      this.#connecting = undefined;
-    }
-  }
-
-  #socketHandlers:
-    | {
-        onOpen: () => void;
-        onError: () => void;
-        onClose: () => void;
-        onMessage: (ev: unknown) => void;
-        ws: WebSocketLike;
+    const release = (): void => {
+      if (!ws) return;
+      if (handlers) {
+        try {
+          ws.removeEventListener("open", handlers.onOpen);
+          ws.removeEventListener("error", handlers.onError);
+          ws.removeEventListener("close", handlers.onClose);
+          ws.removeEventListener("message", handlers.onMessage);
+        } catch {
+          // ignore
+        }
+        if (this.#socketHandlers === handlers) this.#socketHandlers = undefined;
       }
-    | undefined;
+      try {
+        if (ws.readyState !== this.#WS.CLOSED && ws.readyState !== this.#WS.CLOSING) {
+          ws.close();
+        }
+      } catch {
+        // ignore
+      }
+      if (this.#ws === ws) this.#ws = undefined;
+    };
+
+    const onAbort = (): void => {
+      if (gen !== this.#gen) {
+        release();
+        return;
+      }
+      this.#intentionalClose = true;
+      this.#skipReconnect = true;
+      release();
+      finish(new RelayConnectionError("connection aborted", this.url));
+      if (gen === this.#gen) {
+        this.#handleSocketDeath("connection aborted", { fromConnectAttempt: true, gen });
+      }
+    };
+
+    const finish = (err?: unknown): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      if (this.#connectTimer === timer) this.#connectTimer = undefined;
+      opts?.signal?.removeEventListener("abort", onAbort);
+      if (this.#connectFinish === finish) this.#connectFinish = undefined;
+      if (this.#connecting === connecting) this.#connecting = undefined;
+      if (err) {
+        rejectConnect(
+          err instanceof Error ? err : new RelayConnectionError("connection failed", this.url),
+        );
+      } else {
+        resolveConnect();
+      }
+    };
+
+    this.#connecting = connecting;
+    this.#connectFinish = finish;
+
+    timer = setTimeout(() => {
+      if (gen !== this.#gen) {
+        release();
+        return;
+      }
+      if (!isReconnect) this.#skipReconnect = true;
+      release();
+      finish(new RelayConnectionError("connection timed out", this.url));
+      if (gen === this.#gen) {
+        this.#handleSocketDeath("connection timed out", { fromConnectAttempt: true, gen });
+      }
+    }, timeoutMs);
+    this.#connectTimer = timer;
+
+    opts?.signal?.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      ws = new this.#WS(this.url);
+    } catch (err) {
+      finish(err);
+      await connecting;
+      return;
+    }
+    this.#ws = ws;
+
+    const onOpen = (): void => {
+      if (gen !== this.#gen) {
+        release();
+        return;
+      }
+      this.#connected = true;
+      this.#status = RelayStatus.Connected;
+      this.#deathHandled = false;
+      const wasReconnect = this.#reconnectAttempts > 0;
+      this.#reconnectAttempts = 0;
+      this.#challenge = undefined;
+      this.#authPromise = undefined;
+      this.#resubscribeAll();
+      this.#startPingLoop();
+      if (wasReconnect) this.onreconnect?.();
+      finish();
+    };
+    const onError = (): void => {
+      if (gen !== this.#gen) {
+        release();
+        return;
+      }
+      this.#connected = false;
+      const fromConnectAttempt = !settled;
+      if (!settled && !isReconnect) this.#skipReconnect = true;
+      release();
+      finish(new RelayConnectionError("connection failed", this.url));
+      if (gen === this.#gen) {
+        this.#handleSocketDeath("connection failed", { fromConnectAttempt, gen });
+      }
+    };
+    const onClose = (): void => {
+      if (gen !== this.#gen) {
+        release();
+        return;
+      }
+      this.#connected = false;
+      const fromConnectAttempt = !settled;
+      if (!settled && !isReconnect) this.#skipReconnect = true;
+      release();
+      if (fromConnectAttempt) {
+        finish(new RelayConnectionError("websocket closed", this.url));
+      }
+      if (gen === this.#gen) {
+        this.#handleSocketDeath("websocket closed", { fromConnectAttempt, gen });
+      }
+    };
+    const onMessage = (ev: unknown): void => {
+      if (gen !== this.#gen) return;
+      const data =
+        typeof ev === "object" && ev !== null && "data" in ev ? (ev as { data: unknown }).data : ev;
+      this.#onMessage(String(data));
+    };
+
+    handlers = { onOpen, onError, onClose, onMessage, ws };
+    this.#socketHandlers = handlers;
+    ws.addEventListener("open", onOpen);
+    ws.addEventListener("error", onError);
+    ws.addEventListener("close", onClose);
+    ws.addEventListener("message", onMessage);
+
+    await connecting;
+  }
 
   #detachSocketHandlers(): void {
     const h = this.#socketHandlers;
@@ -315,10 +401,17 @@ export class Relay {
 
   /** Graceful shutdown: disables reconnect and closes all subscriptions. */
   close(): void {
+    this.#gen += 1;
+    this.#status = RelayStatus.Closed;
     this.#intentionalClose = true;
     this.#skipReconnect = true;
     this.#clearReconnectTimer();
+    if (this.#connectTimer !== undefined) {
+      clearTimeout(this.#connectTimer);
+      this.#connectTimer = undefined;
+    }
     this.#stopPingLoop();
+    this.#connectFinish?.(new RelayClosedError("relay closed", this.url));
     this.#closeAllSubscriptions("relay closed");
     this.#rejectPublishes(new RelayClosedError("relay closed", this.url));
     this.#rejectCounts(new RelayClosedError("relay closed", this.url));
@@ -383,7 +476,8 @@ export class Relay {
   /**
    * Unexpected socket death. Keep subscriptions if reconnecting.
    */
-  #handleSocketDeath(reason: string, opts?: { fromConnectAttempt?: boolean }): void {
+  #handleSocketDeath(reason: string, opts: { fromConnectAttempt?: boolean; gen: number }): void {
+    if (opts.gen !== this.#gen) return;
     if (this.#deathHandled) return;
     this.#deathHandled = true;
     this.#stopPingLoop();
@@ -401,15 +495,19 @@ export class Relay {
       this.#subs.size > 0;
 
     if (canReconnect) {
+      this.#status = RelayStatus.Disconnected;
       this.#scheduleReconnect();
       return;
     }
 
-    // terminal close
-    if (!opts?.fromConnectAttempt || this.#subs.size > 0) {
+    if (!this.#intentionalClose) this.#status = RelayStatus.Disconnected;
+
+    if (!opts.fromConnectAttempt || this.#subs.size > 0) {
       this.#closeAllSubscriptions(reason);
       if (!this.#intentionalClose) this.onclose?.();
     }
+
+    this.#status = RelayStatus.Closed;
   }
 
   #scheduleReconnect(): void {
@@ -419,12 +517,12 @@ export class Relay {
     this.#reconnectAttempts += 1;
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = undefined;
+      if (this.#intentionalClose || this.#connected) return;
       void this.connect().catch(() => {
-        // connect failure already schedules next attempt via #handleSocketDeath
-        // if subs still open
         if (
           this.#enableReconnect &&
           !this.#intentionalClose &&
+          !this.#skipReconnect &&
           this.#subs.size > 0 &&
           !this.#connected
         ) {
