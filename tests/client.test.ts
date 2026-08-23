@@ -10,6 +10,24 @@ import {
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
+const SK2 = "0000000000000000000000000000000000000000000000000000000000000001";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitUntil(pred: () => boolean, timeoutMs = 500): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (pred()) return;
+    await sleep(5);
+  }
+  throw new Error("timeout waiting for condition");
+}
+
+function sentMessages(ws: MockWebSocket): unknown[][] {
+  return ws.sent.map((s) => JSON.parse(s) as unknown[]);
+}
 
 beforeEach(() => {
   MockWebSocket.reset();
@@ -132,6 +150,87 @@ describe("Client", () => {
     }
     const results = await publishP;
     expect(results.some((r) => r.result?.ok)).toBe(true);
+    await client.shutdown();
+  });
+
+  test("subscribe two relays with eoseTimeoutMs fires oneose once", async () => {
+    const client = Client.builder()
+      .relays(["wss://a.example", "wss://b.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .build();
+    let eose = 0;
+    const closer = client.subscribe(
+      { kinds: [1] },
+      {
+        eoseTimeoutMs: 50,
+        oneose: () => {
+          eose += 1;
+        },
+      },
+    );
+    await waitUntil(
+      () =>
+        MockWebSocket.instances.length === 2 &&
+        MockWebSocket.instances.every((ws) => sentMessages(ws).some((m) => m[0] === "REQ")),
+    );
+    const loud = MockWebSocket.instances.find((ws) => ws.url.includes("a.example"))!;
+    const silent = MockWebSocket.instances.find((ws) => ws.url.includes("b.example"))!;
+    const req = sentMessages(loud).find((m) => m[0] === "REQ") as [string, string];
+    loud.receive(JSON.stringify(["EOSE", req[1]]));
+    expect(eose).toBe(0);
+    await waitUntil(() => eose === 1);
+    expect(eose).toBe(1);
+    expect(sentMessages(silent).some((m) => m[0] === "CLOSE")).toBe(false);
+    closer.close();
+    await client.shutdown();
+  });
+
+  test("gossip subscribe with eoseTimeoutMs fires oneose once", async () => {
+    const author = Keys.fromSecretKey(SK);
+    const tagged = Keys.fromSecretKey(SK2);
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(author),
+    );
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-b.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(tagged),
+    );
+
+    let eose = 0;
+    const closer = client.subscribe(
+      { kinds: [1], authors: [author.publicKey, tagged.publicKey] },
+      {
+        gossip: true,
+        eoseTimeoutMs: 50,
+        oneose: () => {
+          eose += 1;
+        },
+      },
+    );
+    await waitUntil(() => {
+      const targets = MockWebSocket.instances.filter(
+        (ws) => ws.url.includes("out-a.example") || ws.url.includes("out-b.example"),
+      );
+      return (
+        targets.length === 2 && targets.every((ws) => sentMessages(ws).some((m) => m[0] === "REQ"))
+      );
+    });
+    const loud = MockWebSocket.instances.find((ws) => ws.url.includes("out-a.example"))!;
+    const silent = MockWebSocket.instances.find((ws) => ws.url.includes("out-b.example"))!;
+    const req = sentMessages(loud).find((m) => m[0] === "REQ") as [string, string];
+    loud.receive(JSON.stringify(["EOSE", req[1]]));
+    expect(eose).toBe(0);
+    await waitUntil(() => eose === 1);
+    expect(eose).toBe(1);
+    expect(sentMessages(silent).some((m) => m[0] === "CLOSE")).toBe(false);
+    closer.close();
     await client.shutdown();
   });
 });
