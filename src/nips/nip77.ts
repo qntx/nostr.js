@@ -165,9 +165,20 @@ function compareBytes(a: Uint8Array, b: Uint8Array): number {
   return 0;
 }
 
-function itemCompare(a: NegItem, b: NegItem): number {
+function compareNegItems(a: NegItem, b: NegItem): number {
   if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
   return compareBytes(a.id, b.id);
+}
+
+/** Sort key for NIP-77 items: `created_at` ascending, then `id` lexicographically. */
+export function itemCompare(
+  a: { id: string; created_at: number },
+  b: { id: string; created_at: number },
+): number {
+  if (a.created_at !== b.created_at) return a.created_at - b.created_at;
+  if (a.id < b.id) return -1;
+  if (a.id > b.id) return 1;
+  return 0;
 }
 
 export class NegentropyStorageVector {
@@ -184,9 +195,9 @@ export class NegentropyStorageVector {
   seal(): void {
     if (this.#sealed) throw new Nip77Error("already sealed");
     this.#sealed = true;
-    this.#items.sort(itemCompare);
+    this.#items.sort(compareNegItems);
     for (let i = 1; i < this.#items.length; i++) {
-      if (itemCompare(this.#items[i - 1]!, this.#items[i]!) === 0) {
+      if (compareNegItems(this.#items[i - 1]!, this.#items[i]!) === 0) {
         throw new Nip77Error("duplicate item inserted");
       }
     }
@@ -213,7 +224,7 @@ export class NegentropyStorageVector {
     while (count > 0) {
       const step = Math.floor(count / 2);
       const it = first + step;
-      if (itemCompare(this.#items[it]!, bound) < 0) {
+      if (compareNegItems(this.#items[it]!, bound) < 0) {
         first = it + 1;
         count -= step + 1;
       } else {
@@ -241,19 +252,25 @@ export class NegentropyStorageVector {
   }
 }
 
-export function storageFromEvents(
-  events: readonly Pick<Event, "id" | "created_at">[],
+export function storageFromItems(
+  items: readonly { id: string; created_at: number }[],
 ): NegentropyStorageVector {
   const storage = new NegentropyStorageVector();
   const seen = new Set<string>();
-  for (const event of events) {
-    const id = event.id.toLowerCase();
+  for (const item of items) {
+    const id = item.id.toLowerCase();
     if (seen.has(id)) continue;
     seen.add(id);
-    storage.insert(event.created_at, id);
+    storage.insert(item.created_at, id);
   }
   storage.seal();
   return storage;
+}
+
+export function storageFromEvents(
+  events: readonly Pick<Event, "id" | "created_at">[],
+): NegentropyStorageVector {
+  return storageFromItems(events);
 }
 
 type Bound = { timestamp: number; id: Uint8Array };

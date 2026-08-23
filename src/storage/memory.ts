@@ -1,11 +1,12 @@
 import type { Event } from "../core/event.ts";
-import { sortEvents } from "../core/event.ts";
+import { isReplaceableWinner, sortEvents } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { matchFilter } from "../core/filter.ts";
 import { isEphemeralKind, Kind } from "../core/kind.ts";
 import { eventAddress } from "../core/tag.ts";
+import { itemCompare } from "../nips/nip77.ts";
 import { coordinateRemovals, DeletionState, planDeletion } from "./deletion.ts";
-import type { EventStore, PutResult } from "./types.ts";
+import type { EventStore, NegentropyItem, PutResult } from "./types.ts";
 
 /**
  * In-memory event store with NIP-01 replaceable / addressable / ephemeral
@@ -13,6 +14,8 @@ import type { EventStore, PutResult } from "./types.ts";
  */
 export class MemoryEventStore implements EventStore {
   #byId = new Map<string, Event>();
+  #byPubkey = new Map<string, Set<string>>();
+  #byKind = new Map<number, Set<string>>();
   #replaceable = new Map<string, string>(); // address -> event id
   #deletion = new DeletionState();
 
@@ -26,16 +29,16 @@ export class MemoryEventStore implements EventStore {
       const plan = planDeletion(event, (id) => this.#byId.get(id));
       this.#deletion.absorb(plan);
       for (const id of plan.removeIds) {
-        this.#drop(id);
+        this.#indexRemove(id);
       }
       for (const id of coordinateRemovals(plan.coordinates, (key) => {
         const existingId = this.#replaceable.get(key);
         return existingId ? this.#byId.get(existingId) : undefined;
       })) {
         this.#deletion.ids.add(id);
-        this.#drop(id);
+        this.#indexRemove(id);
       }
-      this.#byId.set(event.id, event);
+      this.#indexInsert(event);
       return "deleted";
     }
 
@@ -46,7 +49,7 @@ export class MemoryEventStore implements EventStore {
     }
 
     if (isEphemeralKind(event.kind)) {
-      this.#byId.set(event.id, event);
+      this.#indexInsert(event);
       return "ephemeral";
     }
 
@@ -55,18 +58,14 @@ export class MemoryEventStore implements EventStore {
       const existingId = this.#replaceable.get(key);
       if (existingId) {
         const existing = this.#byId.get(existingId);
-        if (existing) {
-          if (existing.created_at > event.created_at) return "rejected";
-          if (existing.created_at === event.created_at && existing.id > event.id) return "rejected";
-          this.#byId.delete(existingId);
-        }
+        if (existing && !isReplaceableWinner(event, existing)) return "rejected";
+        this.#indexRemove(existingId);
       }
-      this.#byId.set(event.id, event);
-      this.#replaceable.set(key, event.id);
+      this.#indexInsert(event);
       return existingId ? "replaced" : "accepted";
     }
 
-    this.#byId.set(event.id, event);
+    this.#indexInsert(event);
     return "accepted";
   }
 
@@ -79,14 +78,7 @@ export class MemoryEventStore implements EventStore {
     const seen = new Set<string>();
     const events: Event[] = [];
     for (const filter of filters) {
-      const matched: Event[] = [];
-      for (const event of this.#byId.values()) {
-        if (this.#deletion.ids.has(event.id)) continue;
-        if (matchFilter(filter, event)) matched.push(event);
-      }
-      sortEvents(matched);
-      const slice = filter.limit !== undefined ? matched.slice(0, filter.limit) : matched;
-      for (const event of slice) {
+      for (const event of this.#matchedEvents(filter)) {
         if (seen.has(event.id)) continue;
         seen.add(event.id);
         events.push(event);
@@ -96,13 +88,34 @@ export class MemoryEventStore implements EventStore {
     return events;
   }
 
+  async count(filters: Filter[]): Promise<number> {
+    const seen = new Set<string>();
+    for (const filter of filters) {
+      for (const event of this.#matchedEvents(filter)) seen.add(event.id);
+    }
+    return seen.size;
+  }
+
+  async negentropyItems(filter: Filter): Promise<NegentropyItem[]> {
+    if (filter.limit === 0) return [];
+    const items: NegentropyItem[] = [];
+    this.#eachCandidate(filter, (event) => {
+      if (this.#deletion.covers(event)) return;
+      if (!matchFilter(filter, event)) return;
+      items.push({ id: event.id, created_at: event.created_at });
+    });
+    if (filter.limit !== undefined) {
+      items.sort(queryItemOrder);
+      if (items.length > filter.limit) items.length = filter.limit;
+    }
+    items.sort(itemCompare);
+    return items;
+  }
+
   async remove(ids: string[]): Promise<number> {
     let n = 0;
     for (const id of ids) {
-      if (this.#byId.delete(id)) {
-        n += 1;
-        this.#dropReplaceable(id);
-      }
+      if (this.#indexRemove(id)) n += 1;
       this.#deletion.ids.add(id);
       this.#deletion.pending.delete(id);
     }
@@ -111,6 +124,8 @@ export class MemoryEventStore implements EventStore {
 
   async clear(): Promise<void> {
     this.#byId.clear();
+    this.#byPubkey.clear();
+    this.#byKind.clear();
     this.#replaceable.clear();
     this.#deletion.clear();
   }
@@ -119,14 +134,119 @@ export class MemoryEventStore implements EventStore {
     return this.#byId.size;
   }
 
-  #drop(id: string): void {
-    this.#byId.delete(id);
-    this.#dropReplaceable(id);
+  #indexInsert(event: Event): void {
+    this.#byId.set(event.id, event);
+    addToSet(this.#byPubkey, event.pubkey.toLowerCase(), event.id);
+    addToSet(this.#byKind, event.kind, event.id);
+    const addr = eventAddress(event);
+    if (addr) this.#replaceable.set(addr, event.id);
   }
 
-  #dropReplaceable(id: string): void {
-    for (const [key, eid] of this.#replaceable) {
-      if (eid === id) this.#replaceable.delete(key);
-    }
+  #indexRemove(id: string): boolean {
+    const event = this.#byId.get(id);
+    if (!event) return false;
+    this.#byId.delete(id);
+    removeFromSet(this.#byPubkey, event.pubkey.toLowerCase(), id);
+    removeFromSet(this.#byKind, event.kind, id);
+    const addr = eventAddress(event);
+    if (addr && this.#replaceable.get(addr) === id) this.#replaceable.delete(addr);
+    return true;
   }
+
+  #matchedEvents(filter: Filter): Event[] {
+    if (filter.limit === 0) return [];
+    const matched: Event[] = [];
+    this.#eachCandidate(filter, (event) => {
+      if (this.#deletion.covers(event)) return;
+      if (!matchFilter(filter, event)) return;
+      matched.push(event);
+    });
+    sortEvents(matched);
+    return filter.limit !== undefined ? matched.slice(0, filter.limit) : matched;
+  }
+
+  #eachCandidate(filter: Filter, visit: (event: Event) => void): void {
+    if (filter.ids) {
+      const seen = new Set<string>();
+      for (const raw of filter.ids) {
+        const event = this.#byId.get(raw) ?? this.#byId.get(raw.toLowerCase());
+        if (!event || seen.has(event.id)) continue;
+        seen.add(event.id);
+        visit(event);
+      }
+      return;
+    }
+
+    if (filter.authors && filter.kinds) {
+      const seen = new Set<string>();
+      for (const pk of filter.authors) {
+        const byPk = this.#byPubkey.get(pk.toLowerCase());
+        if (!byPk) continue;
+        for (const kind of filter.kinds) {
+          const byKind = this.#byKind.get(kind);
+          if (!byKind) continue;
+          for (const id of byPk) {
+            if (!byKind.has(id) || seen.has(id)) continue;
+            seen.add(id);
+            const event = this.#byId.get(id);
+            if (event) visit(event);
+          }
+        }
+      }
+      return;
+    }
+
+    if (filter.authors) {
+      const seen = new Set<string>();
+      for (const pk of filter.authors) {
+        const byPk = this.#byPubkey.get(pk.toLowerCase());
+        if (!byPk) continue;
+        for (const id of byPk) {
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const event = this.#byId.get(id);
+          if (event) visit(event);
+        }
+      }
+      return;
+    }
+
+    if (filter.kinds) {
+      const seen = new Set<string>();
+      for (const kind of filter.kinds) {
+        const byKind = this.#byKind.get(kind);
+        if (!byKind) continue;
+        for (const id of byKind) {
+          if (seen.has(id)) continue;
+          seen.add(id);
+          const event = this.#byId.get(id);
+          if (event) visit(event);
+        }
+      }
+      return;
+    }
+
+    for (const event of this.#byId.values()) visit(event);
+  }
+}
+
+function addToSet<K>(map: Map<K, Set<string>>, key: K, id: string): void {
+  let set = map.get(key);
+  if (!set) {
+    set = new Set();
+    map.set(key, set);
+  }
+  set.add(id);
+}
+
+function removeFromSet<K>(map: Map<K, Set<string>>, key: K, id: string): void {
+  const set = map.get(key);
+  if (!set) return;
+  set.delete(id);
+  if (set.size === 0) map.delete(key);
+}
+
+function queryItemOrder(a: NegentropyItem, b: NegentropyItem): number {
+  if (a.created_at !== b.created_at) return b.created_at - a.created_at;
+  return a.id.localeCompare(b.id);
 }

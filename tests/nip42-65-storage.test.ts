@@ -236,6 +236,65 @@ describe("MemoryEventStore", () => {
     expect(await store.put(note)).toBe("duplicate");
     expect(await store.get(note.id)).toBeUndefined();
   });
+
+  test("replace kind 0 and 10002 drops old id from query/count/negentropyItems", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+
+    const meta1 = EventBuilder.metadata({ name: "v1" }).createdAt(10).signWithKeys(keys);
+    const meta2 = EventBuilder.metadata({ name: "v2" }).createdAt(20).signWithKeys(keys);
+    expect(await store.put(meta1)).toBe("accepted");
+    expect(await store.put(meta2)).toBe("replaced");
+
+    const list1 = EventBuilder.relayList([{ url: "wss://a.example" }])
+      .createdAt(10)
+      .signWithKeys(keys);
+    const list2 = EventBuilder.relayList([{ url: "wss://b.example" }])
+      .createdAt(20)
+      .signWithKeys(keys);
+    expect(await store.put(list1)).toBe("accepted");
+    expect(await store.put(list2)).toBe("replaced");
+
+    const q0 = await store.query([{ kinds: [Kind.Metadata] }]);
+    expect(q0.map((e) => e.id)).toEqual([meta2.id]);
+    expect(await store.count([{ kinds: [Kind.Metadata] }])).toBe(1);
+    const items0 = await store.negentropyItems({ kinds: [Kind.Metadata] });
+    expect(items0).toEqual([{ id: meta2.id, created_at: 20 }]);
+    expect(items0.some((i) => i.id === meta1.id)).toBe(false);
+
+    const q65 = await store.query([{ kinds: [Kind.RelayList] }]);
+    expect(q65.map((e) => e.id)).toEqual([list2.id]);
+    expect(await store.count([{ kinds: [Kind.RelayList] }])).toBe(1);
+    const items65 = await store.negentropyItems({ kinds: [Kind.RelayList] });
+    expect(items65.map((i) => i.id)).toEqual([list2.id]);
+    expect(items65.some((i) => i.id === list1.id)).toBe(false);
+  });
+
+  test("count equals query length", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+    const a = EventBuilder.textNote("a").createdAt(1).signWithKeys(keys);
+    const b = EventBuilder.textNote("b").createdAt(2).signWithKeys(keys);
+    const meta = EventBuilder.metadata({ name: "n" }).createdAt(3).signWithKeys(keys);
+    await store.put(a);
+    await store.put(b);
+    await store.put(meta);
+
+    const filters = [
+      { kinds: [1], limit: 10 },
+      { kinds: [0], limit: 1 },
+      { authors: [keys.publicKey] },
+    ];
+    expect(await store.count(filters)).toBe((await store.query(filters)).length);
+    expect(await store.count([{ kinds: [1] }])).toBe((await store.query([{ kinds: [1] }])).length);
+    expect(await store.count([{ kinds: [1], limit: 1 }])).toBe(1);
+
+    const items = await store.negentropyItems({ kinds: [1] });
+    expect(items).toEqual([
+      { id: a.id, created_at: 1 },
+      { id: b.id, created_at: 2 },
+    ]);
+  });
 });
 
 beforeEach(() => {

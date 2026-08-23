@@ -337,6 +337,50 @@ describe("IndexedDbEventStore", () => {
     store.close();
   });
 
+  test("negentropyItems and count do not getAll events", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const other = Keys.generate();
+    const store = new IndexedDbEventStore({ dbName: "neg-items" });
+    await store.open();
+    const older = EventBuilder.textNote("old").createdAt(1).signWithKeys(keys);
+    const newer = EventBuilder.textNote("new").createdAt(2).signWithKeys(keys);
+    const foreign = EventBuilder.textNote("other").createdAt(3).signWithKeys(other);
+    const meta1 = EventBuilder.metadata({ name: "v1" }).createdAt(10).signWithKeys(keys);
+    const meta2 = EventBuilder.metadata({ name: "v2" }).createdAt(20).signWithKeys(keys);
+    await store.put(older);
+    await store.put(newer);
+    await store.put(foreign);
+    expect(await store.put(meta1)).toBe("accepted");
+    expect(await store.put(meta2)).toBe("replaced");
+
+    mock.resetStats();
+    const items = await store.negentropyItems({ kinds: [1], authors: [keys.publicKey] });
+    expect(items.map((i) => i.id)).toEqual([older.id, newer.id]);
+    expect(items.map((i) => i.created_at)).toEqual([1, 2]);
+    expect(mock.eventsGetAllCount()).toBe(0);
+
+    mock.resetStats();
+    const n = await store.count([{ kinds: [1], authors: [keys.publicKey] }]);
+    expect(n).toBe(2);
+    expect(n).toBe((await store.query([{ kinds: [1], authors: [keys.publicKey] }])).length);
+    expect(mock.eventsGetAllCount()).toBe(0);
+
+    mock.resetStats();
+    const metaItems = await store.negentropyItems({ kinds: [Kind.Metadata] });
+    expect(metaItems.map((i) => i.id)).toEqual([meta2.id]);
+    expect(await store.count([{ kinds: [Kind.Metadata] }])).toBe(1);
+    expect(mock.eventsGetAllCount()).toBe(0);
+
+    const tagged = EventBuilder.textNote("tag").tag(["e", EID]).createdAt(4).signWithKeys(keys);
+    await store.put(tagged);
+    mock.resetStats();
+    const byE = await store.negentropyItems({ "#e": [EID] });
+    expect(byE.map((i) => i.id)).toEqual([tagged.id]);
+    expect(await store.count([{ "#e": [EID] }])).toBe(1);
+    expect(mock.eventsGetAllCount()).toBe(0);
+    store.close();
+  });
+
   test("v1 mixed-case pubkey and e-tag are queryable after upgrade", async () => {
     const keys = Keys.fromSecretKey(SK);
     const note = EventBuilder.textNote("v1").tag(["e", EID]).createdAt(1).signWithKeys(keys);

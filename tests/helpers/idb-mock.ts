@@ -137,6 +137,10 @@ export function installIdbMock(): IdbMock {
         stats,
       );
     }
+
+    openKeyCursor(range?: MockKeyRange, direction: "next" | "prev" = "next") {
+      return this.openCursor(range, direction);
+    }
   }
 
   class MockStore {
@@ -372,7 +376,9 @@ function openCursor(
   stats: { cursorVisits: number },
 ) {
   const req = {
-    result: undefined as { key: unknown; value: Row; continue(): void } | undefined,
+    result: undefined as
+      | { key: unknown; primaryKey: unknown; value: Row; continue(): void }
+      | undefined,
     error: null as Error | null,
     onsuccess: null as ((ev: unknown) => void) | null,
     onerror: null as ((ev: unknown) => void) | null,
@@ -403,6 +409,7 @@ function openCursor(
     const entry = entries[pos]!;
     req.result = {
       key: entry.key,
+      primaryKey: entry.primaryKey,
       value: structuredClone(entry.value),
       continue() {
         pos += 1;

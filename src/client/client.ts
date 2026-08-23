@@ -33,7 +33,7 @@ import {
   type Recipient,
   type ReplyTo,
 } from "../nips/nip17.ts";
-import { storageFromEvents, type NegentropyStorageVector } from "../nips/nip77.ts";
+import { storageFromItems, type NegentropyStorageVector } from "../nips/nip77.ts";
 import { ClientBuilder } from "./builder.ts";
 
 export const SyncDirection = {
@@ -757,8 +757,8 @@ export class Client {
     this.#assertAlive();
     this.#throwIfAborted(opts?.signal);
     const direction = opts?.direction ?? SyncDirection.Down;
-    const localEvents = await this.storage.query([filter]);
-    const storage: NegentropyStorageVector = storageFromEvents(localEvents);
+    const items = await this.storage.negentropyItems(filter);
+    const storage: NegentropyStorageVector = storageFromItems(items);
     const relay = await this.pool.ensureRelay(url, { signal: opts?.signal });
     const { have, need } = await relay.negReconcile(filter, storage, {
       timeoutMs: opts?.timeoutMs,

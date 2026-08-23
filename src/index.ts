@@ -273,6 +273,8 @@ export {
   Reconciliation,
   Responder,
   storageFromEvents,
+  storageFromItems,
+  itemCompare,
   type NegItem,
   type ReconcileOutcome,
 } from "./nips/nip77.ts";
@@ -352,6 +354,7 @@ export {
   IndexedDbEventStore,
   type EventStore,
   type PutResult,
+  type NegentropyItem,
   type IndexedDbEventStoreOptions,
 } from "./storage/index.ts";
 export {
