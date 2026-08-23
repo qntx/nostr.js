@@ -79,8 +79,8 @@ describe("fetchRelayInformation", () => {
       json: async () => ({
         name: "relay",
         unknown_field: "drop-me",
-        supported_nips: [1, 11, "nope"],
-        limitation: { auth_required: true, extra: 1 },
+        supported_nips: [1, 11, "nope", 11.5, -1],
+        limitation: { auth_required: true, extra: 1, max_limit: 500, min_pow_difficulty: 2.5 },
         fees: { admission: [] },
       }),
     });
@@ -89,7 +89,7 @@ describe("fetchRelayInformation", () => {
     expect(info).toEqual({
       name: "relay",
       supported_nips: [1, 11],
-      limitation: { auth_required: true },
+      limitation: { auth_required: true, max_limit: 500 },
     });
     expect("unknown_field" in info).toBe(false);
     expect("fees" in info).toBe(false);

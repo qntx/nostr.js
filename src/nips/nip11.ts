@@ -33,7 +33,7 @@ const LIMITATION_BOOLEANS = ["auth_required", "payment_required", "restricted_wr
 
 /**
  * Minimal fetch surface used by NIP-11.
- * Callers should use `redirect: "manual"` / no-follow semantics.
+ * Implementations must honor `init.redirect`; `fetchRelayInformation` always sends `"manual"`.
  */
 export type Nip11Fetch = (
   url: string,
@@ -100,6 +100,10 @@ function defaultFetch(): Nip11Fetch {
   return globalThis.fetch.bind(globalThis) as Nip11Fetch;
 }
 
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
 function parseRelayInformation(json: unknown): RelayInformation {
   if (json === null || typeof json !== "object" || Array.isArray(json)) {
     throw new Nip11Error("relay information document must be a JSON object");
@@ -113,9 +117,7 @@ function parseRelayInformation(json: unknown): RelayInformation {
   }
 
   if (Array.isArray(raw.supported_nips)) {
-    info.supported_nips = raw.supported_nips.filter(
-      (n): n is number => typeof n === "number" && Number.isFinite(n),
-    );
+    info.supported_nips = raw.supported_nips.filter(isNonNegativeInteger);
   }
 
   if (Array.isArray(raw.tags)) {
@@ -127,7 +129,7 @@ function parseRelayInformation(json: unknown): RelayInformation {
     const limitation: NonNullable<RelayInformation["limitation"]> = {};
     for (const key of LIMITATION_NUMBERS) {
       const value = rawLim[key];
-      if (typeof value === "number" && Number.isFinite(value)) limitation[key] = value;
+      if (isNonNegativeInteger(value)) limitation[key] = value;
     }
     for (const key of LIMITATION_BOOLEANS) {
       const value = rawLim[key];
