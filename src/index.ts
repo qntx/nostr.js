@@ -215,6 +215,13 @@ export {
   type NostrConnectParams,
 } from "./nips/nip46.ts";
 export {
+  encrypt as nip49Encrypt,
+  decrypt as nip49Decrypt,
+  Nip49Error,
+  type KeySecurityByte,
+  type Ncryptsec,
+} from "./nips/nip49.ts";
+export {
   Nip77Error,
   PROTOCOL_VERSION,
   DEFAULT_FRAME_SIZE_LIMIT,

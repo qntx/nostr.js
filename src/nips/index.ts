@@ -8,6 +8,7 @@ export * as nip27 from "./nip27.ts";
 export * as nip42 from "./nip42.ts";
 export * as nip44 from "./nip44.ts";
 export * as nip46 from "./nip46.ts";
+export * as nip49 from "./nip49.ts";
 export * as nip59 from "./nip59.ts";
 export * as nip65 from "./nip65.ts";
 export * as nip77 from "./nip77.ts";
