@@ -4,6 +4,8 @@ import {
   Keys,
   Pool,
   Relay,
+  RelayClosedError,
+  RelayStatus,
   isInsecureRelayUrl,
   useWebSocketImplementation,
   verifyEvent,
@@ -13,6 +15,15 @@ import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function captureError(p: Promise<unknown>): Promise<unknown> {
+  return p.then(
+    () => {
+      throw new Error("expected reject");
+    },
+    (err: unknown) => err,
+  );
 }
 
 async function waitUntil(pred: () => boolean, timeoutMs = 500): Promise<void> {
@@ -131,6 +142,13 @@ class PingOnlySocket extends MockWebSocket {
 }
 
 const PingOnlyCtor = PingOnlySocket as unknown as WebSocketConstructor;
+
+/** removeEventListener is a no-op so stale open/close can still hit captured handlers. */
+class StickyListenersSocket extends MockWebSocket {
+  override removeEventListener(_type: string, _listener: (ev: unknown) => void): void {}
+}
+
+const StickyListenersCtor = StickyListenersSocket as unknown as WebSocketConstructor;
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
 
@@ -601,5 +619,169 @@ describe("ping", () => {
     } finally {
       relay.close();
     }
+  });
+});
+
+describe("Relay generation / close", () => {
+  test("close() during in-flight connect() rejects; next connect() is a new handshake", async () => {
+    MockWebSocket.autoConnect = false;
+    const relay = new Relay("wss://gen-close.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const first = relay.connect();
+    const coalesced = relay.connect();
+    expect(MockWebSocket.instances.length).toBe(1);
+    expect(relay.status).toBe(RelayStatus.Connecting);
+    const firstWs = MockWebSocket.last();
+    const firstClosed = captureError(first);
+    const coalescedClosed = captureError(coalesced);
+    relay.close();
+    expect(await firstClosed).toBeInstanceOf(RelayClosedError);
+    expect(await coalescedClosed).toBeInstanceOf(RelayClosedError);
+    expect(relay.status).toBe(RelayStatus.Closed);
+    expect(relay.connected).toBe(false);
+
+    MockWebSocket.autoConnect = true;
+    const second = relay.connect();
+    expect(second).not.toBe(first);
+    await second;
+    expect(relay.connected).toBe(true);
+    expect(relay.status).toBe(RelayStatus.Connected);
+    expect(MockWebSocket.instances.length).toBe(2);
+    expect(MockWebSocket.last()).not.toBe(firstWs);
+    relay.close();
+  });
+
+  test("late open after close() does not set connected and does not send REQ", async () => {
+    MockWebSocket.autoConnect = false;
+    const relay = new Relay("wss://late-open.example", {
+      websocketImplementation: StickyListenersCtor,
+    });
+    const connecting = relay.connect();
+    const firstWs = MockWebSocket.last();
+    const closed = captureError(connecting);
+    relay.close();
+    expect(await closed).toBeInstanceOf(RelayClosedError);
+
+    MockWebSocket.autoConnect = true;
+    await relay.connect();
+    const secondWs = MockWebSocket.last();
+    expect(secondWs).not.toBe(firstWs);
+    expect(relay.connected).toBe(true);
+    relay.subscribe([{ kinds: [1] }]);
+    expect(sentMessages(secondWs).filter((m) => m[0] === "REQ")).toHaveLength(1);
+    expect(sentMessages(firstWs).filter((m) => m[0] === "REQ")).toHaveLength(0);
+
+    firstWs.open();
+    expect(relay.connected).toBe(true);
+    expect(relay.status).toBe(RelayStatus.Connected);
+    expect(MockWebSocket.last()).toBe(secondWs);
+    expect(sentMessages(secondWs).filter((m) => m[0] === "REQ")).toHaveLength(1);
+    expect(sentMessages(firstWs).filter((m) => m[0] === "REQ")).toHaveLength(0);
+    relay.close();
+  });
+
+  test("close() then connect() succeeds with a new generation", async () => {
+    const relay = new Relay("wss://reopen.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    await relay.connect();
+    const genAfterConnect = relay.generation;
+    relay.close();
+    expect(relay.status).toBe(RelayStatus.Closed);
+    expect(relay.generation).toBeGreaterThan(genAfterConnect);
+    await relay.connect();
+    expect(relay.connected).toBe(true);
+    expect(relay.status).toBe(RelayStatus.Connected);
+    expect(relay.generation).toBeGreaterThan(genAfterConnect);
+    relay.close();
+  });
+
+  test("stale connect timeout after close() does not kill the next socket", async () => {
+    const realSetTimeout = globalThis.setTimeout;
+    const held: Array<() => void> = [];
+    globalThis.setTimeout = ((handler: unknown, delay?: number, ...args: unknown[]) => {
+      if (delay === 80 && typeof handler === "function") {
+        held.push(() => {
+          (handler as (...a: unknown[]) => void)(...args);
+        });
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      }
+      return realSetTimeout(handler as Parameters<typeof setTimeout>[0], delay, ...args);
+    }) as typeof setTimeout;
+
+    try {
+      MockWebSocket.autoConnect = false;
+      const relay = new Relay("wss://stale-timeout.example", {
+        websocketImplementation: MockWebSocketCtor,
+        connectTimeoutMs: 10_000,
+        enableReconnect: true,
+        reconnectBackoffMs: [10],
+      });
+      const first = relay.connect({ timeoutMs: 80 });
+      const firstClosed = captureError(first);
+      relay.close();
+      expect(await firstClosed).toBeInstanceOf(RelayClosedError);
+      expect(held).toHaveLength(1);
+
+      MockWebSocket.autoConnect = true;
+      await relay.connect();
+      expect(relay.connected).toBe(true);
+      const secondWs = MockWebSocket.last();
+      let secondCloseCalls = 0;
+      const origClose = secondWs.close.bind(secondWs);
+      secondWs.close = () => {
+        secondCloseCalls += 1;
+        origClose();
+      };
+
+      held[0]!();
+      expect(relay.connected).toBe(true);
+      expect(relay.status).toBe(RelayStatus.Connected);
+      expect(secondWs.readyState).toBe(MockWebSocket.OPEN);
+      expect(secondCloseCalls).toBe(0);
+
+      relay.subscribe([{ kinds: [1] }], {});
+      const before = MockWebSocket.instances.length;
+      secondWs.close();
+      await waitUntil(() => MockWebSocket.instances.length > before && relay.connected);
+      expect(relay.connected).toBe(true);
+      relay.close();
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+  });
+
+  test("WebSocket constructor throw leaves Closed status", async () => {
+    class BoomSocket {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      static CLOSING = 2;
+      static CLOSED = 3;
+      constructor(_url: string) {
+        throw new Error("no socket");
+      }
+    }
+    const relay = new Relay("wss://boom.example", {
+      websocketImplementation: BoomSocket as unknown as WebSocketConstructor,
+    });
+    await expect(relay.connect()).rejects.toThrow("no socket");
+    expect(relay.status).toBe(RelayStatus.Closed);
+    expect(relay.connected).toBe(false);
+  });
+
+  test("intentional close does not schedule reconnect", async () => {
+    const relay = new Relay("wss://nogo-gen.example", {
+      enableReconnect: true,
+      reconnectBackoffMs: [10],
+      websocketImplementation: MockWebSocketCtor,
+    });
+    await relay.connect();
+    relay.subscribe([{ kinds: [1] }], {});
+    const before = MockWebSocket.instances.length;
+    relay.close();
+    await sleep(30);
+    expect(MockWebSocket.instances.length).toBe(before);
+    expect(relay.status).toBe(RelayStatus.Closed);
   });
 });

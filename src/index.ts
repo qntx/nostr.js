@@ -310,6 +310,7 @@ export {
   RelayConnectionError,
   RelayError,
   RelayPublishError,
+  RelayStatus,
   isInsecureRelayUrl,
   useWebSocketImplementation,
   type PoolOptions,
@@ -317,6 +318,7 @@ export {
   type PoolPublishResult,
   type PublishResult,
   type RelayOptions,
+  type RelayStatusName,
   type SubscribeOptions,
 } from "./relay/index.ts";
 
