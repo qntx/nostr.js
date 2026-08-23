@@ -18,8 +18,30 @@ const VERSION = 0x02;
 const SALT_LEN = 16;
 const NONCE_LEN = 24;
 const PAYLOAD_LEN = 91;
+const LOGN_MIN = 1;
+const LOGN_MAX = 22;
+const SCRYPT_R = 8;
+const SCRYPT_P = 1;
 
 export class Nip49Error extends NostrError {}
+
+function assertLogn(logn: number): void {
+  if (!Number.isInteger(logn) || logn < LOGN_MIN || logn > LOGN_MAX) {
+    throw new Nip49Error(`invalid logn ${logn}, expected integer ${LOGN_MIN}..${LOGN_MAX}`);
+  }
+}
+
+function deriveKey(password: string, salt: Uint8Array, logn: number): Uint8Array {
+  assertLogn(logn);
+  const N = 2 ** logn;
+  return scrypt(password.normalize("NFKC"), salt, {
+    N,
+    r: SCRYPT_R,
+    p: SCRYPT_P,
+    dkLen: 32,
+    maxmem: 128 * SCRYPT_R * (N + SCRYPT_P),
+  });
+}
 
 /** Encrypt a 32-byte secret key to an `ncryptsec` bech32 string. */
 export function encrypt(
@@ -30,7 +52,7 @@ export function encrypt(
 ): Ncryptsec {
   assertSecretKeyBytes(secretKey);
   const salt = randomBytes(SALT_LEN);
-  const key = scrypt(password.normalize("NFKC"), salt, { N: 2 ** logn, r: 8, p: 1, dkLen: 32 });
+  const key = deriveKey(password, salt, logn);
   const nonce = randomBytes(NONCE_LEN);
   const aad = Uint8Array.from([ksb]);
   const ciphertext = xchacha20poly1305(key, nonce, aad).encrypt(secretKey);
@@ -48,9 +70,11 @@ export function encrypt(
 /** Decrypt an `ncryptsec` bech32 string to a 32-byte secret key. */
 export function decrypt(ncryptsec: string, password: string): Uint8Array {
   let prefix: string;
-  let words: number[];
+  let b: Uint8Array;
   try {
-    ({ prefix, words } = bech32.decode(ncryptsec as `${string}1${string}`, Bech32MaxSize));
+    const decoded = bech32.decode(ncryptsec as `${string}1${string}`, Bech32MaxSize);
+    prefix = decoded.prefix;
+    b = new Uint8Array(bech32.fromWords(decoded.words));
   } catch (cause) {
     throw new Nip49Error("invalid ncryptsec", {
       cause: cause instanceof Error ? cause : undefined,
@@ -59,7 +83,6 @@ export function decrypt(ncryptsec: string, password: string): Uint8Array {
   if (prefix !== "ncryptsec") {
     throw new Nip49Error(`invalid prefix ${prefix}, expected 'ncryptsec'`);
   }
-  const b = new Uint8Array(bech32.fromWords(words));
   if (b.length !== PAYLOAD_LEN) {
     throw new Nip49Error("invalid ncryptsec length");
   }
@@ -74,9 +97,10 @@ export function decrypt(ncryptsec: string, password: string): Uint8Array {
   const aad = Uint8Array.from([ksb]);
   const ciphertext = b.subarray(2 + SALT_LEN + NONCE_LEN + 1);
   try {
-    const key = scrypt(password.normalize("NFKC"), salt, { N: 2 ** logn, r: 8, p: 1, dkLen: 32 });
+    const key = deriveKey(password, salt, logn);
     return xchacha20poly1305(key, nonce, aad).decrypt(ciphertext);
   } catch (cause) {
+    if (cause instanceof Nip49Error) throw cause;
     throw new Nip49Error("failed to decrypt", {
       cause: cause instanceof Error ? cause : undefined,
     });

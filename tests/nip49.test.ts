@@ -40,6 +40,17 @@ describe("nip49", () => {
     expect(enc.startsWith("ncryptsec1")).toBe(true);
     expect(nip49Decrypt(enc, "pw")).toEqual(sec);
   });
+
+  test("excess bech32 padding throws Nip49Error", () => {
+    expect(() => decrypt("ncryptsec1pcnlmyt", "x")).toThrow(Nip49Error);
+  });
+
+  test("invalid logn throws Nip49Error", () => {
+    const sec = hexToBytes(vectors[0]![1]);
+    expect(() => encrypt(sec, "pw", 0)).toThrow(Nip49Error);
+    expect(() => encrypt(sec, "pw", 23)).toThrow(Nip49Error);
+    expect(() => encrypt(sec, "pw", 1.5)).toThrow(Nip49Error);
+  });
 });
 
 const vectors: [string, string, number, KeySecurityByte, string][] = [
