@@ -43,6 +43,8 @@ function boundKey(pubkey: string, kind: number): string {
 
 /**
  * Group authors by outbox relay (discovery fallback).
+ * `prefer` reorders existing candidates only; it never appends a URL
+ * that is not already in the author's outbox or discovery list.
  * Returns Map<relayUrl, authors[]>.
  */
 export function groupAuthorsByOutboxRelay(
@@ -50,13 +52,21 @@ export function groupAuthorsByOutboxRelay(
   gossip: Gossip,
   discoveryRelays: readonly string[],
   maxRelaysPerAuthor = 3,
+  prefer: readonly string[] = [],
 ): Map<string, string[]> {
   const map = new Map<string, string[]>();
+  const preferSet = new Set(prefer);
   for (const author of authors) {
     const pk = author.toLowerCase();
     let relays = gossip.outboxRelays(pk);
     if (relays.length === 0) relays = [...discoveryRelays];
-    relays = relays.slice(0, maxRelaysPerAuthor);
+    const preferred: string[] = [];
+    const rest: string[] = [];
+    for (const url of relays) {
+      if (preferSet.has(url)) preferred.push(url);
+      else rest.push(url);
+    }
+    relays = preferred.concat(rest).slice(0, maxRelaysPerAuthor);
     for (const url of relays) {
       const list = map.get(url) ?? [];
       if (!list.includes(pk)) list.push(pk);
@@ -151,6 +161,7 @@ export class OutboxFeed {
       this.#gossip,
       this.#discovery,
       this.#maxRelays,
+      this.#pool.connectedUrls(),
     );
 
     if (byRelay.size === 0) return [];
@@ -192,6 +203,7 @@ export class OutboxFeed {
       this.#gossip,
       this.#discovery,
       this.#maxRelays,
+      this.#pool.connectedUrls(),
     );
 
     const seen = new Set<string>();

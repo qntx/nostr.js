@@ -8,6 +8,7 @@ import {
   MemoryEventStore,
   OutboxFeed,
   groupAuthorsByOutboxRelay,
+  normalizeURL,
   useWebSocketImplementation,
 } from "../src/index.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
@@ -28,6 +29,16 @@ async function waitForReq(timeoutMs = 500): Promise<void> {
     await sleep(5);
   }
   throw new Error("timeout waiting for REQ");
+}
+
+async function waitForReqSockets(minCount: number, timeoutMs = 500): Promise<MockWebSocket[]> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const sockets = MockWebSocket.instances.filter((ws) => reqMessages(ws).length > 0);
+    if (sockets.length >= minCount) return sockets;
+    await sleep(5);
+  }
+  throw new Error("timeout waiting for REQ sockets");
 }
 
 function collectReqFilters(): ReqFilter[] {
@@ -109,6 +120,51 @@ describe("groupAuthorsByOutboxRelay", () => {
     const discoveryKey = [...map.keys()].find((k) => k.includes("discovery"));
     expect(discoveryKey).toBeDefined();
     expect(map.get(discoveryKey!)!.includes(b.publicKey)).toBe(true);
+  });
+
+  test("prefers connected URLs already in the author's list when slicing", () => {
+    const gossip = new Gossip();
+    const a = Keys.fromSecretKey(SK_A);
+    gossip.setRoutes(a.publicKey, [
+      { url: "wss://a.example", read: true, write: true },
+      { url: "wss://b.example", read: true, write: true },
+      { url: "wss://c.example", read: true, write: true },
+      { url: "wss://d.example", read: true, write: true },
+    ]);
+
+    const map = groupAuthorsByOutboxRelay([a.publicKey], gossip, ["wss://discovery.example"], 3, [
+      normalizeURL("wss://d.example"),
+    ]);
+
+    const urls = [...map.keys()];
+    expect(urls).toHaveLength(3);
+    expect(urls[0]).toBe(normalizeURL("wss://d.example"));
+    expect(urls).toContain(normalizeURL("wss://a.example"));
+    expect(urls).toContain(normalizeURL("wss://b.example"));
+    expect(urls.some((u) => u.includes("c.example"))).toBe(false);
+    expect(map.get(urls[0]!)!.includes(a.publicKey)).toBe(true);
+  });
+
+  test("does not append a preferred URL that is not already a candidate", () => {
+    const gossip = new Gossip();
+    const a = Keys.fromSecretKey(SK_A);
+    gossip.setRoutes(a.publicKey, [
+      { url: "wss://a.example", read: true, write: true },
+      { url: "wss://b.example", read: true, write: true },
+    ]);
+
+    const extra = normalizeURL("wss://connected-other.example");
+    const map = groupAuthorsByOutboxRelay([a.publicKey], gossip, ["wss://discovery.example"], 3, [
+      extra,
+      normalizeURL("wss://b.example"),
+    ]);
+
+    const urls = [...map.keys()];
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toBe(normalizeURL("wss://b.example"));
+    expect(urls[1]).toBe(normalizeURL("wss://a.example"));
+    expect(urls.includes(extra)).toBe(false);
+    expect([...map.keys()].some((u) => u.includes("discovery"))).toBe(false);
   });
 });
 
@@ -355,6 +411,94 @@ describe("OutboxFeed", () => {
       expect(filter.since).toBe(since);
     }
 
+    feed.close();
+    await client.shutdown();
+  });
+
+  test("startLive prefers a connected outbox relay within maxRelaysPerAuthor", async () => {
+    const a = Keys.fromSecretKey(SK_A);
+    const gossip = new Gossip();
+    gossip.setRoutes(a.publicKey, [
+      { url: "wss://out-a.example", read: true, write: true },
+      { url: "wss://out-b.example", read: true, write: true },
+      { url: "wss://out-c.example", read: true, write: true },
+      { url: "wss://out-d.example", read: true, write: true },
+    ]);
+
+    const client = Client.builder()
+      .gossip(gossip)
+      .relays(["wss://discovery.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+
+    await client.connect();
+    await client.pool.ensureRelay("wss://out-d.example");
+
+    const feed = new OutboxFeed({
+      pool: client.pool,
+      gossip,
+      storage: client.storage,
+      discoveryRelays: client.relays,
+      authors: [a.publicKey],
+      maxRelaysPerAuthor: 3,
+    });
+
+    const live = feed.startLive({ since: 0 });
+    await waitForReqSockets(3);
+    await sleep(20);
+
+    const reqUrls = MockWebSocket.instances
+      .filter((ws) => reqMessages(ws).length > 0)
+      .map((ws) => ws.url);
+    expect(reqUrls).toHaveLength(3);
+    expect(reqUrls.some((u) => u.includes("out-d.example"))).toBe(true);
+    expect(reqUrls.some((u) => u.includes("out-a.example"))).toBe(true);
+    expect(reqUrls.some((u) => u.includes("out-b.example"))).toBe(true);
+    expect(reqUrls.some((u) => u.includes("out-c.example"))).toBe(false);
+
+    live.close();
+    feed.close();
+    await client.shutdown();
+  });
+
+  test("startLive does not add a connected relay missing from the author's list", async () => {
+    const a = Keys.fromSecretKey(SK_A);
+    const gossip = new Gossip();
+    gossip.setRoutes(a.publicKey, [{ url: "wss://out-a.example", read: true, write: true }]);
+
+    const client = Client.builder()
+      .gossip(gossip)
+      .relays(["wss://discovery.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+
+    await client.connect();
+    await client.pool.ensureRelay("wss://other.example");
+
+    const feed = new OutboxFeed({
+      pool: client.pool,
+      gossip,
+      storage: client.storage,
+      discoveryRelays: client.relays,
+      authors: [a.publicKey],
+    });
+
+    const live = feed.startLive({ since: 0 });
+    await waitForReqSockets(1);
+    await sleep(20);
+
+    const other = MockWebSocket.instances.find((ws) => ws.url.includes("other.example"));
+    expect(other).toBeDefined();
+    expect(reqMessages(other!)).toHaveLength(0);
+    expect(
+      MockWebSocket.instances.some(
+        (ws) => ws.url.includes("out-a.example") && reqMessages(ws).length > 0,
+      ),
+    ).toBe(true);
+
+    live.close();
     feed.close();
     await client.shutdown();
   });

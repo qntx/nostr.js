@@ -3,6 +3,7 @@ import type { Filter } from "../core/filter.ts";
 import { sortedEvents } from "../core/event.ts";
 import { CryptoError } from "../core/error.ts";
 import { Kind } from "../core/kind.ts";
+import { normalizeURL } from "../core/util.ts";
 import { EventBuilder } from "../core/builder.ts";
 import type { NostrSigner } from "../signer/types.ts";
 import { Pool, type PoolPublishResult } from "../relay/pool.ts";
@@ -405,7 +406,8 @@ export class Client {
 
   /**
    * Sign (if builder) and publish to relays.
-   * With `gossip: true`, prefers the author's NIP-65 outbox relays when known.
+   * With `gossip: true`, prefers the author's NIP-65 outbox relays, tagged `p`
+   * inboxes, and up to 5 `e`/`a` tag relay hints when known.
    * On any successful OK, observes the event into storage/gossip.
    */
   async publish(
@@ -431,6 +433,20 @@ export class Client {
       add(this.gossip.outboxRelays(event.pubkey));
       for (const tag of event.tags) {
         if (tag[0] === "p" && tag[1]) add(this.gossip.inboxRelays(tag[1]));
+      }
+      let hintCount = 0;
+      for (const tag of event.tags) {
+        if (hintCount >= 5) break;
+        if ((tag[0] !== "e" && tag[0] !== "a") || !tag[2]) continue;
+        try {
+          const url = normalizeURL(tag[2]);
+          if (!urls.includes(url)) {
+            urls.push(url);
+            hintCount += 1;
+          }
+        } catch {
+          // not a relay URL
+        }
       }
       if (urls.length > 0) relays = urls;
     }
