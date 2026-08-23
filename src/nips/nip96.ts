@@ -10,7 +10,7 @@ const WELL_KNOWN_PATH = "/.well-known/nostr/nip96.json";
 
 /**
  * Minimal fetch surface (NIP-11-shaped).
- * Callers must use `redirect: "manual"` / no-follow semantics.
+ * Implementations must honor `init.redirect`; this library always sends `"manual"`.
  */
 export type Nip96Fetch = (
   url: string,
@@ -46,6 +46,30 @@ function defaultFetch(): Nip96Fetch {
 
 function serverInfoUrl(serviceUrl: string): string {
   return `${serviceUrl.replace(/\/+$/, "")}${WELL_KNOWN_PATH}`;
+}
+
+function errorMessageFromBody(json: unknown): string | undefined {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return undefined;
+  const message = (json as { message?: unknown }).message;
+  if (typeof message !== "string") return undefined;
+  const text = message.trim();
+  return text || undefined;
+}
+
+/** Non-OK: prefer NIP-96 JSON `message`; never require a `url` tag. */
+async function throwHttpError(
+  prefix: string,
+  res: Awaited<ReturnType<Nip96Fetch>>,
+): Promise<never> {
+  let detail: string | undefined;
+  try {
+    detail = errorMessageFromBody(await res.json());
+  } catch {
+    // body is optional on error
+  }
+  throw new Nip96Error(
+    detail ? `${prefix} HTTP ${res.status}: ${detail}` : `${prefix} HTTP ${res.status}`,
+  );
 }
 
 function parseNip96ServerInfo(json: unknown): Nip96ServerInfo {
@@ -115,7 +139,7 @@ export async function fetchNip96Info(
     });
   }
   if (!res.ok) {
-    throw new Nip96Error(`NIP-96 server info HTTP ${res.status}`);
+    await throwHttpError("NIP-96 server info", res);
   }
 
   let json: unknown;
@@ -160,7 +184,7 @@ export async function uploadNip96(
     });
   }
   if (!res.ok) {
-    throw new Nip96Error(`NIP-96 upload HTTP ${res.status}`);
+    await throwHttpError("NIP-96 upload", res);
   }
 
   let json: unknown;

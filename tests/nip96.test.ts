@@ -70,6 +70,23 @@ describe("nip96 server info", () => {
     const fetchImpl: Nip96Fetch = async () => jsonResponse(302, { api_url: API_URL });
     await expect(fetchNip96Info(SERVICE, { fetch: fetchImpl })).rejects.toThrow(Nip96Error);
   });
+
+  test("empty api_url is valid for delegated documents", async () => {
+    const fetchImpl: Nip96Fetch = async () =>
+      jsonResponse(200, { api_url: "", delegated_to_url: "https://other.example" });
+    await expect(fetchNip96Info(SERVICE, { fetch: fetchImpl })).resolves.toEqual({
+      api_url: "",
+      delegated_to_url: "https://other.example",
+    });
+  });
+
+  test("non-OK info includes JSON message", async () => {
+    const fetchImpl: Nip96Fetch = async () =>
+      jsonResponse(404, { status: "error", message: "not found" });
+    await expect(fetchNip96Info(SERVICE, { fetch: fetchImpl })).rejects.toThrow(
+      /^NIP-96 server info HTTP 404: not found$/,
+    );
+  });
 });
 
 describe("nip96 upload parse", () => {
@@ -91,6 +108,9 @@ describe("nip96 upload parse", () => {
     );
     expect(() =>
       parseNip96UploadResponse({ status: "success", nip94_event: { tags: [["ox", OX]] } }),
+    ).toThrow(/upload response without url/);
+    expect(() =>
+      parseNip96UploadResponse({ status: "success", nip94_event: { tags: [["url", ""]] } }),
     ).toThrow(/upload response without url/);
   });
 
@@ -126,5 +146,20 @@ describe("nip96 upload parse", () => {
     await expect(
       uploadNip96(API_URL, new Blob(["x"]), "Nostr tok", { fetch: fetchImpl }),
     ).rejects.toThrow(/upload response without url/);
+  });
+
+  test("non-OK upload includes JSON message and does not require url", async () => {
+    const fetchImpl: Nip96Fetch = async () =>
+      jsonResponse(403, { status: "error", message: "User is not allowed to upload" });
+    await expect(
+      uploadNip96(API_URL, new Blob(["x"]), "Nostr tok", { fetch: fetchImpl }),
+    ).rejects.toThrow(/^NIP-96 upload HTTP 403: User is not allowed to upload$/);
+  });
+
+  test("non-OK upload without message falls back to status", async () => {
+    const fetchImpl: Nip96Fetch = async () => jsonResponse(413, { status: "error" });
+    await expect(
+      uploadNip96(API_URL, new Blob(["x"]), "Nostr tok", { fetch: fetchImpl }),
+    ).rejects.toThrow(/^NIP-96 upload HTTP 413$/);
   });
 });
