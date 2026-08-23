@@ -137,6 +137,11 @@
       "import": "./dist/nips/nip77.mjs",
       "default": "./dist/nips/nip77.mjs"
     },
+    "./nips/nip98": {
+      "types": "./dist/nips/nip98.d.mts",
+      "import": "./dist/nips/nip98.mjs",
+      "default": "./dist/nips/nip98.mjs"
+    },
     "./relay": {
       "types": "./dist/relay.d.mts",
       "import": "./dist/relay.mjs",

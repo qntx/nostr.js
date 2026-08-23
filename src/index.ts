@@ -243,6 +243,12 @@ export {
   type NegItem,
   type ReconcileOutcome,
 } from "./nips/nip77.ts";
+export {
+  Nip98Error,
+  getToken as nip98GetToken,
+  unpackEventFromToken,
+  validateAuthEvent,
+} from "./nips/nip98.ts";
 
 // --- relay ---
 export {

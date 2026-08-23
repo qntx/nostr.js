@@ -15,3 +15,4 @@ export * as nip57 from "./nip57.ts";
 export * as nip59 from "./nip59.ts";
 export * as nip65 from "./nip65.ts";
 export * as nip77 from "./nip77.ts";
+export * as nip98 from "./nip98.ts";
