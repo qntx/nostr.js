@@ -59,14 +59,7 @@ describe("nip05 parse", () => {
     expect(lookupFromDocument(doc, { local: "missing", domain: "example.com" })).toBeUndefined();
   });
 
-  test("parseNip05Document nip46 pubkey map and spec shape", () => {
-    const mapped = parseNip05Document({
-      names: { bob: PK },
-      nip46: { [PK.toUpperCase()]: ["wss://bunker.example"] },
-    });
-    expect(mapped.nip46?.relaysByPubkey?.[PK]).toEqual(["wss://bunker.example"]);
-    expect(mapped.nip46?.relays).toBeUndefined();
-
+  test("parseNip05Document nip46 appendix shape; ignores hex-pubkey maps", () => {
     const spec = parseNip05Document({
       names: { bob: PK },
       nip46: {
@@ -78,6 +71,13 @@ describe("nip05 parse", () => {
       relays: ["wss://spec.example"],
       nostrconnectUrl: "nostrconnect://abc",
     });
+    expect("relaysByPubkey" in (spec.nip46 ?? {})).toBe(false);
+
+    const hexOnly = parseNip05Document({
+      names: { bob: PK },
+      nip46: { [PK.toUpperCase()]: ["wss://bunker.example"] },
+    });
+    expect(hexOnly.nip46).toBeUndefined();
 
     const mixed = parseNip05Document({
       names: { bob: PK },
@@ -88,9 +88,11 @@ describe("nip05 parse", () => {
         [PK]: ["wss://map.example"],
       },
     });
-    expect(mixed.nip46?.relaysByPubkey?.[PK]).toEqual(["wss://map.example"]);
-    expect(mixed.nip46?.relays).toEqual(["wss://spec.example"]);
-    expect(mixed.nip46?.nostrconnectUrl).toBe("nostrconnect://abc");
+    expect(mixed.nip46).toEqual({
+      relays: ["wss://spec.example"],
+      nostrconnectUrl: "nostrconnect://abc",
+    });
+    expect("relaysByPubkey" in (mixed.nip46 ?? {})).toBe(false);
     expect(lookupFromDocument(mixed, { local: "bob", domain: "example.com" })).toEqual({
       pubkey: PK,
       relays: ["wss://profile.example"],
@@ -98,11 +100,41 @@ describe("nip05 parse", () => {
   });
 
   test("parseNip05Document omits empty nip46", () => {
-    const doc = parseNip05Document({
+    const ignored = parseNip05Document({
       names: { bob: PK },
       nip46: { ignored: ["wss://x"] },
     });
-    expect(doc.nip46).toBeUndefined();
+    expect(ignored.nip46).toBeUndefined();
+
+    const emptyRelays = parseNip05Document({
+      names: { bob: PK },
+      nip46: { relays: [] },
+    });
+    expect(emptyRelays.nip46).toEqual({ relays: [] });
+
+    const urlOnly = parseNip05Document({
+      names: { bob: PK },
+      nip46: { nostrconnect_url: "nostrconnect://abc" },
+    });
+    expect(urlOnly.nip46).toEqual({ nostrconnectUrl: "nostrconnect://abc" });
+
+    const emptyUrl = parseNip05Document({
+      names: { bob: PK },
+      nip46: { nostrconnect_url: "" },
+    });
+    expect(emptyUrl.nip46).toBeUndefined();
+
+    const notObject = parseNip05Document({
+      names: { bob: PK },
+      nip46: ["wss://x"],
+    });
+    expect(notObject.nip46).toBeUndefined();
+
+    const badUrlType = parseNip05Document({
+      names: { bob: PK },
+      nip46: { nostrconnect_url: 1 },
+    });
+    expect(badUrlType.nip46).toBeUndefined();
   });
 });
 

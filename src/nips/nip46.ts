@@ -6,7 +6,6 @@
  */
 import { assertHex32, isHex32 } from "../core/util.ts";
 import { NostrError } from "../core/error.ts";
-import { bunkerRelaysFromNip46, queryNip05Document, type Nip05Fetch } from "./nip05.ts";
 
 export const BUNKER_REGEX = /^bunker:\/\/([0-9a-fA-F]{64})\??([?/\w:.=&%-]*)$/;
 
@@ -62,8 +61,7 @@ export function toBunkerURL(pointer: BunkerPointer): string {
 
 /**
  * Parse a `bunker://` URL into a pointer.
- * Returns null when the input is not a bunker URL
- * (use {@link parseBunkerInput} for bunker:// or NIP-05).
+ * Returns null when the input is not a bunker URL (including NIP-05 identifiers).
  */
 export function parseBunkerURL(input: string): BunkerPointer | null {
   const match = input.trim().match(BUNKER_REGEX);
@@ -79,37 +77,6 @@ export function parseBunkerURL(input: string): BunkerPointer | null {
   } catch {
     return null;
   }
-}
-
-/**
- * Resolve a bunker pointer from `bunker://` or a NIP-05 identifier.
- * Returns `null` on failure (invalid input, missing names, missing/empty `nip46`).
- * Never falls back to profile `doc.relays`.
- */
-export async function parseBunkerInput(
-  input: string,
-  opts?: { fetch?: Nip05Fetch; signal?: AbortSignal },
-): Promise<BunkerPointer | null> {
-  const pointer = parseBunkerURL(input);
-  if (pointer) return pointer;
-  return queryBunkerProfile(input, opts);
-}
-
-/**
- * Resolve a bunker pointer from a NIP-05 identifier's `nip46` field.
- * Missing `nip46` or an empty resolved relay list → `null`.
- */
-export async function queryBunkerProfile(
-  identifier: string,
-  opts?: { fetch?: Nip05Fetch; signal?: AbortSignal },
-): Promise<BunkerPointer | null> {
-  const fetched = await queryNip05Document(identifier, opts);
-  if (!fetched) return null;
-  const pubkey = fetched.doc.names[fetched.address.local];
-  if (!pubkey) return null;
-  const relays = bunkerRelaysFromNip46(fetched.doc.nip46, pubkey);
-  if (relays.length === 0) return null;
-  return { pubkey, relays, secret: null };
 }
 
 /** Build a client-initiated `nostrconnect://` URI. */

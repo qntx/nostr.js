@@ -26,20 +26,17 @@ export type Nip05Address = {
 };
 
 /**
- * nostr.json `nip46` object. One structural type: mixed documents may set both
- * the jumble/nostr-tools pubkey map and the current 46.md `{relays, nostrconnect_url}`.
+ * 46.md appendix discovery metadata (`{relays, nostrconnect_url}`).
+ * Not a bunker pointer.
  */
 export type Nip05Nip46 = {
-  /** nostr-tools / jumble: hex pubkey → bunker relays */
-  relaysByPubkey?: Record<string, string[]>;
-  /** current 46.md appendix */
   relays?: string[];
   nostrconnectUrl?: string;
 };
 
 export type Nip05Document = {
   names: Record<string, string>;
-  /** NIP-05 profile hints — never used as bunker relays */
+  /** NIP-05 profile relay hints */
   relays?: Record<string, string[]>;
   nip46?: Nip05Nip46;
 };
@@ -109,8 +106,8 @@ function stringUrls(list: unknown): string[] | undefined {
 }
 
 /**
- * Parse nostr.json `nip46`: spec `{relays, nostrconnect_url}` plus jumble hex-pubkey maps.
- * Hex-64 keys are never confused with `relays` (not 64 hex chars).
+ * Parse nostr.json `nip46`: 46.md appendix `{relays, nostrconnect_url}`.
+ * Hex-pubkey maps and other keys are ignored.
  */
 export function parseNip05Nip46(raw: unknown): Nip05Nip46 | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
@@ -125,32 +122,10 @@ export function parseNip05Nip46(raw: unknown): Nip05Nip46 | undefined {
     result.nostrconnectUrl = obj.nostrconnect_url;
   }
 
-  const relaysByPubkey: Record<string, string[]> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (k === "relays" || k === "nostrconnect_url") continue;
-    if (!isHex32(k)) continue;
-    const urls = stringUrls(v);
-    if (urls?.length) relaysByPubkey[k.toLowerCase()] = urls;
-  }
-  if (Object.keys(relaysByPubkey).length) result.relaysByPubkey = relaysByPubkey;
-
-  if (
-    result.relays === undefined &&
-    result.nostrconnectUrl === undefined &&
-    result.relaysByPubkey === undefined
-  ) {
+  if (result.relays === undefined && result.nostrconnectUrl === undefined) {
     return undefined;
   }
   return result;
-}
-
-/** Bunker relays from `nip46`: per-pubkey map wins over spec `relays`. Never uses profile `doc.relays`. */
-export function bunkerRelaysFromNip46(nip46: Nip05Nip46 | undefined, pubkey: string): string[] {
-  if (!nip46) return [];
-  const byPubkey = nip46.relaysByPubkey?.[pubkey.toLowerCase()];
-  if (byPubkey?.length) return [...byPubkey];
-  if (nip46.relays?.length) return [...nip46.relays];
-  return [];
 }
 
 /** Parse and validate a nostr.json document body. */
@@ -233,7 +208,7 @@ export async function queryNip05Document(
 /**
  * Query `/.well-known/nostr.json` for an identifier.
  * Returns `null` on network/parse/lookup failure (does not throw for those).
- * Profile `relays` only — bunker relays live on `nip46`.
+ * Profile `relays` only. `nip46` is discovery metadata, not a bunker pointer.
  */
 export async function queryProfile(
   identifier: string,

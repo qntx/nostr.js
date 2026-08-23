@@ -4,12 +4,6 @@ import type { Filter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
 import { SecretKey, finalizeEvent, getPublicKey, verifyEvent } from "../core/key.ts";
 import { isHex32 } from "../core/util.ts";
-import {
-  bunkerRelaysFromNip46,
-  isNip05,
-  queryNip05Document,
-  type Nip05Fetch,
-} from "../nips/nip05.ts";
 import { decrypt, encrypt, getConversationKey } from "../nips/nip44.ts";
 import {
   Nip46Error,
@@ -61,12 +55,9 @@ export type Nip46SignerOptions = {
    */
   relays?: string[];
   /**
-   * Bunker connection secret when resolving a NIP-05 identifier
-   * (not taken from the well-known document).
+   * Bunker connection secret when the pointer or bunker:// URL has none.
    */
   secret?: string | null;
-  /** Injected fetch for NIP-05 lookups. Defaults to `globalThis.fetch`. */
-  fetch?: Nip05Fetch;
   /** Local client key used to encrypt RPC (not the remote user key). */
   clientSecretKey?: SecretKey | Uint8Array | string;
   /** Called when bunker returns `auth_url` for a pending request. */
@@ -118,10 +109,7 @@ function applyPointerOpts(pointer: BunkerPointer, opts: Nip46SignerOptions): Bun
   return { ...next, relays };
 }
 
-async function resolveBunkerPointer(
-  input: string | BunkerPointer,
-  opts: Nip46SignerOptions,
-): Promise<BunkerPointer> {
+function resolveBunkerPointer(input: string | BunkerPointer): BunkerPointer {
   if (typeof input !== "string") {
     return {
       pubkey: input.pubkey.toLowerCase(),
@@ -133,25 +121,7 @@ async function resolveBunkerPointer(
   const bunker = parseBunkerURL(input);
   if (bunker) return bunker;
 
-  if (isNip05(input)) {
-    const fetched = await queryNip05Document(input, { fetch: opts.fetch });
-    if (!fetched) {
-      throw new Nip46Error(`NIP-05 lookup failed for ${input}`);
-    }
-    const pubkey = fetched.doc.names[fetched.address.local];
-    if (!pubkey) {
-      throw new Nip46Error(`NIP-05 lookup failed for ${input}`);
-    }
-    return {
-      pubkey,
-      relays: bunkerRelaysFromNip46(fetched.doc.nip46, pubkey),
-      secret: opts.secret ?? null,
-    };
-  }
-
-  throw new Nip46Error(
-    "invalid bunker input (expected bunker:// URL, NIP-05 identifier, or BunkerPointer)",
-  );
+  throw new Nip46Error("invalid bunker input (expected bunker:// URL or BunkerPointer)");
 }
 
 /**
@@ -227,7 +197,7 @@ export class Nip46Signer implements NostrSigner {
 
   /**
    * Subscribe to an already-known bunker pointer. Does not send the `connect` RPC
-   * (reconnect / jumble `isInitialConnection=false`).
+   * (reconnect without a new handshake).
    * Requires `clientSecretKey` — reconnect must reuse the original client identity.
    */
   static fromBunker(
@@ -246,16 +216,15 @@ export class Nip46Signer implements NostrSigner {
   }
 
   /**
-   * Connect using a `bunker://` URL, NIP-05 identifier, or pre-parsed pointer.
-   * NIP-05: pubkey from `names`; bunker relays from `nip46` (never profile `relays`).
-   * Empty `nip46` relays are filled from `opts.relays`; still empty → throw.
+   * Connect using a `bunker://` URL or pre-parsed pointer.
+   * Invalid strings throw. A NIP-05 identifier is not a bunker pointer.
    * When both pointer and `opts.relays` are nonempty, unique `opts.relays` are appended.
    */
   static async connect(
     input: string | BunkerPointer,
     opts: Nip46SignerOptions = {},
   ): Promise<Nip46Signer> {
-    const pointer = await resolveBunkerPointer(input, opts);
+    const pointer = resolveBunkerPointer(input);
     const signer = Nip46Signer.fromBunker(pointer, {
       ...opts,
       clientSecretKey: resolveClientSecret(opts.clientSecretKey),
