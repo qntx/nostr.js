@@ -94,7 +94,7 @@ export type ClientOptions = {
   signer?: NostrSigner;
   relays?: readonly string[];
   websocketImplementation?: WebSocketConstructor;
-  /** Injected EVENT verifier. Must be synchronous; Relay calls it on the message path. */
+  /** Injected EVENT verifier. Default is core BIP-340. */
   verifyEvent?: (event: Event) => boolean;
   connectTimeoutMs?: number;
   publishTimeoutMs?: number;

@@ -354,6 +354,7 @@ describe("Client", () => {
       .relays(["wss://no-ping.example"])
       .websocketImplementation(MockWebSocketCtor)
       .enableReconnect(false)
+      .pingIntervalMs(10)
       .build();
 
     await client.connect();
