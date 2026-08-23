@@ -39,7 +39,8 @@ function deriveKey(password: string, salt: Uint8Array, logn: number): Uint8Array
     r: SCRYPT_R,
     p: SCRYPT_P,
     dkLen: 32,
-    maxmem: 128 * SCRYPT_R * (N + SCRYPT_P),
+    // noble 2.3: V (N blocks) + p B blocks + one tmp scratch block.
+    maxmem: 128 * SCRYPT_R * (N + SCRYPT_P + 1),
   });
 }
 
