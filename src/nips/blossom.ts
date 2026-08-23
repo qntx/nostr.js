@@ -1,5 +1,5 @@
 /**
- * Blossom BUD-01/02/04/06 HTTP helpers and NIP-B7 kind 10063 server lists.
+ * Blossom BUD-01/02/04/06 HTTP helpers, NIP-B7 kind 10063 server lists, and URL healing.
  * Auth is kind 24242, not NIP-98; the Authorization value is base64url.
  *
  * @see https://github.com/hzrd149/blossom
@@ -218,6 +218,96 @@ export async function checkUpload(
   });
 }
 
+/** Strict HEAD probe. 2xx → true. 404 → false. Other HTTP (including 405) / network → throw BlossomError. AbortError propagates. No GET fallback. */
+export async function blobExists(
+  server: string,
+  sha256Hex: string,
+  opts?: { fetch?: BlossomFetch; signal?: AbortSignal },
+): Promise<boolean> {
+  const hash = assertHex32(sha256Hex, "blob sha256");
+  const url = blossomUrl(server, `/${hash}`);
+  const res = await fetchRedirectManual(opts?.fetch, url, { method: "HEAD", signal: opts?.signal });
+  if (res.status === 404) return false;
+  if (res.ok) return true;
+  throw blossomHttpError("HEAD", url, res);
+}
+
+/** GET body, then verifyBlob. Non-2xx or sha256 mismatch → throw BlossomError. */
+export async function getBlob(
+  server: string,
+  sha256Hex: string,
+  opts?: { fetch?: BlossomFetch; signal?: AbortSignal },
+): Promise<Uint8Array> {
+  const hash = assertHex32(sha256Hex, "blob sha256");
+  const url = blossomUrl(server, `/${hash}`);
+  const res = await fetchRedirectManual(opts?.fetch, url, { method: "GET", signal: opts?.signal });
+  if (!res.ok) throw blossomHttpError("GET", url, res);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (!(await verifyBlob(bytes, hash))) {
+    throw new BlossomError("blob sha256 mismatch");
+  }
+  return bytes;
+}
+
+/**
+ * If `url` is not available, try `servers` for the same hash (NIP-B7 SHOULD).
+ * Never throws on HTTP status. AbortError still throws.
+ * Returns the original URL when no hash, original still available, or nothing else responds.
+ */
+export async function healBlobUrl(
+  url: string,
+  servers: readonly string[],
+  opts?: { fetch?: BlossomFetch; signal?: AbortSignal },
+): Promise<string> {
+  const hash = getHashFromURL(url);
+  if (!hash) return url;
+
+  const ext = extensionFromHashUrl(url, hash);
+  const fetchImpl = opts?.fetch ?? defaultFetch();
+
+  const originalStatus = await headStatus(fetchImpl, url, opts?.signal);
+  // 2xx/3xx: still available. NIP-B7 only heals URLs that are not.
+  if (originalStatus !== undefined && originalStatus >= 200 && originalStatus < 400) {
+    return url;
+  }
+
+  for (const server of servers) {
+    const base = parseHttpUrl(server);
+    if (!base) continue;
+    const candidate = `${base}/${hash}${ext}`;
+    const status = await headStatus(fetchImpl, candidate, opts?.signal);
+    if (status !== undefined && status >= 200 && status < 300) return candidate;
+  }
+  return url;
+}
+
+/** PUT /upload to each server in order until one descriptor succeeds. */
+export async function uploadToServers(
+  servers: readonly string[],
+  file: Blob,
+  auth: Event,
+  opts?: { fetch?: BlossomFetch; signal?: AbortSignal },
+): Promise<BlobDescriptor> {
+  if (servers.length === 0) {
+    throw new BlossomError("no servers");
+  }
+  let last: BlossomError | undefined;
+  for (const server of servers) {
+    try {
+      return await upload(server, file, auth, opts);
+    } catch (err) {
+      if (isAbortError(err)) throw err;
+      last =
+        err instanceof BlossomError
+          ? err
+          : new BlossomError("blossom upload failed", {
+              cause: err instanceof Error ? err : undefined,
+            });
+    }
+  }
+  throw last ?? new BlossomError("no servers");
+}
+
 export function blossomServerListEventBuilder(servers: readonly string[]): EventBuilder {
   const tags: Tag[] = [];
   const seen = new Set<string>();
@@ -274,6 +364,66 @@ function defaultFetch(): BlossomFetch {
   return globalThis.fetch.bind(globalThis);
 }
 
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
+/** Path suffix after the last 64-hex segment (`HASH.png` → `.png`). */
+function extensionFromHashUrl(url: string, hash: string): string {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return "";
+  }
+  const i = pathname.toLowerCase().lastIndexOf(hash);
+  if (i < 0) return "";
+  const m = pathname.slice(i + 64).match(/^\.[^/]+/);
+  return m?.[0] ?? "";
+}
+
+function blossomHttpError(method: string, url: string, res: Response): BlossomError {
+  let reason: string | undefined;
+  try {
+    reason = res.headers.get("x-reason") ?? undefined;
+  } catch {
+    reason = undefined;
+  }
+  return new BlossomError(reason?.trim() || `blossom ${method} ${url} failed (${res.status})`, {
+    status: res.status,
+  });
+}
+
+async function fetchRedirectManual(
+  fetchImpl: BlossomFetch | undefined,
+  url: string,
+  init: { method: string; signal?: AbortSignal },
+): Promise<Response> {
+  try {
+    return await (fetchImpl ?? defaultFetch())(url, { ...init, redirect: "manual" });
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    throw new BlossomError(`blossom ${init.method} ${url} failed`, {
+      cause: err instanceof Error ? err : undefined,
+    });
+  }
+}
+
+/** HEAD with redirect:manual. Network → undefined. AbortError propagates. Never throws on HTTP status. */
+async function headStatus(
+  fetchImpl: BlossomFetch,
+  url: string,
+  signal?: AbortSignal,
+): Promise<number | undefined> {
+  try {
+    const res = await fetchImpl(url, { method: "HEAD", redirect: "manual", signal });
+    return res.status;
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    return undefined;
+  }
+}
+
 async function blossomRequest(
   fetchImpl: BlossomFetch | undefined,
   url: string,
@@ -286,15 +436,7 @@ async function blossomRequest(
 ): Promise<Response> {
   const res = await (fetchImpl ?? defaultFetch())(url, { ...init, redirect: "manual" });
   if (res.ok) return res;
-  let reason: string | undefined;
-  try {
-    reason = res.headers.get("x-reason") ?? undefined;
-  } catch {
-    reason = undefined;
-  }
-  throw new BlossomError(reason?.trim() || `blossom ${init.method} ${url} failed (${res.status})`, {
-    status: res.status,
-  });
+  throw blossomHttpError(init.method, url, res);
 }
 
 async function readJson(res: Response): Promise<unknown> {
