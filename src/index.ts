@@ -144,6 +144,13 @@ export {
   type Nip05Document,
   type Nip05Fetch,
 } from "./nips/nip05.ts";
+export {
+  Nip11Error,
+  fetchRelayInformation,
+  relayInfoHttpUrl,
+  type Nip11Fetch,
+  type RelayInformation,
+} from "./nips/nip11.ts";
 export { makeAuthEvent, isAuthRequired } from "./nips/nip42.ts";
 export {
   calcPaddedLen,
