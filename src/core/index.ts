@@ -96,6 +96,7 @@ export {
   createSubscriptionId,
   encodeClientMessage,
   encodeRelayMessage,
+  mergeCountHll,
   parseClientMessage,
   parseRelayMessage,
   type ClientMessage,
