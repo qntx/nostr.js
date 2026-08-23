@@ -1,3 +1,4 @@
+import type { Event } from "../core/event.ts";
 import type { NostrSigner } from "../signer/types.ts";
 import type { WebSocketConstructor } from "../relay/websocket.ts";
 import type { EventStore } from "../storage/types.ts";
@@ -8,10 +9,14 @@ export type ClientBuilderOptions = {
   signer?: NostrSigner;
   relays?: readonly string[];
   websocketImplementation?: WebSocketConstructor;
+  verifyEvent?: (event: Event) => boolean;
   connectTimeoutMs?: number;
   publishTimeoutMs?: number;
   automaticAuth?: boolean;
   enableReconnect?: boolean;
+  enablePing?: boolean;
+  pingIntervalMs?: number;
+  pingTimeoutMs?: number;
   storage?: EventStore;
   persistEvents?: boolean;
   gossip?: Gossip;
@@ -22,10 +27,14 @@ export class ClientBuilder {
   #signer: NostrSigner | undefined;
   #relays: string[] = [];
   #websocketImplementation: WebSocketConstructor | undefined;
+  #verifyEvent: ((event: Event) => boolean) | undefined;
   #connectTimeoutMs: number | undefined;
   #publishTimeoutMs: number | undefined;
   #automaticAuth: boolean | undefined;
   #enableReconnect: boolean | undefined;
+  #enablePing: boolean | undefined;
+  #pingIntervalMs: number | undefined;
+  #pingTimeoutMs: number | undefined;
   #storage: EventStore | undefined;
   #persistEvents: boolean | undefined;
   #gossip: Gossip | undefined;
@@ -50,6 +59,11 @@ export class ClientBuilder {
     return this;
   }
 
+  verifyEvent(fn: (event: Event) => boolean): this {
+    this.#verifyEvent = fn;
+    return this;
+  }
+
   connectTimeoutMs(ms: number): this {
     this.#connectTimeoutMs = ms;
     return this;
@@ -67,6 +81,21 @@ export class ClientBuilder {
 
   enableReconnect(enabled: boolean): this {
     this.#enableReconnect = enabled;
+    return this;
+  }
+
+  enablePing(enabled: boolean): this {
+    this.#enablePing = enabled;
+    return this;
+  }
+
+  pingIntervalMs(ms: number): this {
+    this.#pingIntervalMs = ms;
+    return this;
+  }
+
+  pingTimeoutMs(ms: number): this {
+    this.#pingTimeoutMs = ms;
     return this;
   }
 
@@ -91,10 +120,14 @@ export class ClientBuilder {
       signer: this.#signer,
       relays: this.#relays,
       websocketImplementation: this.#websocketImplementation,
+      verifyEvent: this.#verifyEvent,
       connectTimeoutMs: this.#connectTimeoutMs,
       publishTimeoutMs: this.#publishTimeoutMs,
       automaticAuth: this.#automaticAuth,
       enableReconnect: this.#enableReconnect,
+      enablePing: this.#enablePing,
+      pingIntervalMs: this.#pingIntervalMs,
+      pingTimeoutMs: this.#pingTimeoutMs,
       storage: this.#storage,
       persistEvents: this.#persistEvents,
       gossip: this.#gossip,
