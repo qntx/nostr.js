@@ -6,6 +6,13 @@ export type SubscriptionHandlers = {
   onevent?: (event: Event) => void;
   oneose?: () => void;
   onclose?: (reason: string) => void;
+  /** Skip verify + onevent when true. Evaluated after parse, before verify. */
+  alreadyHaveEvent?: (id: string) => boolean;
+  /**
+   * Fired for every EVENT id this sub sees, including duplicates and
+   * alreadyHaveEvent hits, after parse and before the verify skip.
+   */
+  receivedEvent?: (id: string) => void;
 };
 
 export type SubscribeOptions = SubscriptionHandlers & {
@@ -34,6 +41,8 @@ export class Subscription {
       onevent: opts.onevent,
       oneose: opts.oneose,
       onclose: opts.onclose,
+      alreadyHaveEvent: opts.alreadyHaveEvent,
+      receivedEvent: opts.receivedEvent,
     };
 
     if (opts.signal) {

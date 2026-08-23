@@ -243,6 +243,7 @@ export {
   RelayConnectionError,
   RelayError,
   RelayPublishError,
+  isInsecureRelayUrl,
   useWebSocketImplementation,
   type PoolOptions,
   type PoolCountResult,

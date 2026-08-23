@@ -7,6 +7,11 @@ export type WebSocketLike = {
   close(code?: number, reason?: string): void;
   addEventListener(type: string, listener: (ev: unknown) => void): void;
   removeEventListener(type: string, listener: (ev: unknown) => void): void;
+  ping?(): void;
+  /** Node `ws` emits `pong` on the EventEmitter; `addEventListener("pong")` is a no-op. */
+  once?(event: string, listener: (...args: unknown[]) => void): void;
+  on?(event: string, listener: (...args: unknown[]) => void): void;
+  off?(event: string, listener: (...args: unknown[]) => void): void;
 };
 
 export type WebSocketConstructor = {

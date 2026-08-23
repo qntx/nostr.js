@@ -41,6 +41,9 @@ export type RelayOptions = {
   enableReconnect?: boolean;
   /** Backoff delays in ms between reconnect attempts. */
   reconnectBackoffMs?: number[];
+  enablePing?: boolean;
+  pingIntervalMs?: number;
+  pingTimeoutMs?: number;
 };
 
 export type PublishResult = {
@@ -73,7 +76,22 @@ type NegSession = {
   error: Error | undefined;
 };
 
+type PingWaiter = {
+  resolve: (alive: boolean) => void;
+};
+
 const DEFAULT_BACKOFF = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000, 60_000];
+const DEFAULT_PING_INTERVAL_MS = 29_000;
+const DEFAULT_PING_TIMEOUT_MS = 20_000;
+const PING_DUMMY_ID = "a".repeat(64);
+const PING_DUMMY_FILTER: Filter = { ids: [PING_DUMMY_ID], limit: 0 };
+
+/** node `ws` delivers `pong` on the EventEmitter, not via addEventListener. */
+function canNativePing(ws: WebSocketLike): boolean {
+  return (
+    typeof ws.ping === "function" && (typeof ws.once === "function" || typeof ws.on === "function")
+  );
+}
 
 /**
  * Single-relay NIP-01 client.
@@ -103,6 +121,12 @@ export class Relay {
   #skipReconnect = false;
   /** Collapses error+close pairs into a single terminal/reconnect action. */
   #deathHandled = false;
+  #enablePing: boolean;
+  #pingIntervalMs: number;
+  #pingTimeoutMs: number;
+  #pingTimer: ReturnType<typeof setInterval> | undefined;
+  #pingWaiters = new Map<SubscriptionId, PingWaiter>();
+  #pingInFlight = false;
 
   onnotice: ((msg: string) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -119,6 +143,9 @@ export class Relay {
     this.#connectTimeoutMs = opts.connectTimeoutMs ?? 5000;
     this.#enableReconnect = opts.enableReconnect ?? false;
     this.#backoff = opts.reconnectBackoffMs ?? DEFAULT_BACKOFF;
+    this.#enablePing = opts.enablePing ?? false;
+    this.#pingIntervalMs = opts.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS;
+    this.#pingTimeoutMs = opts.pingTimeoutMs ?? DEFAULT_PING_TIMEOUT_MS;
   }
 
   /** Latest NIP-42 challenge, if any. */
@@ -132,6 +159,11 @@ export class Relay {
 
   get reconnectEnabled(): boolean {
     return this.#enableReconnect;
+  }
+
+  /** User subscriptions only; dummy ping REQs are not counted. */
+  get subscriptionCount(): number {
+    return this.#subs.size;
   }
 
   static async connect(
@@ -207,6 +239,7 @@ export class Relay {
         this.#challenge = undefined;
         this.#authPromise = undefined;
         this.#resubscribeAll();
+        this.#startPingLoop();
         if (wasReconnect) this.onreconnect?.();
         finish();
       };
@@ -277,6 +310,7 @@ export class Relay {
     this.#intentionalClose = true;
     this.#skipReconnect = true;
     this.#clearReconnectTimer();
+    this.#stopPingLoop();
     this.#closeAllSubscriptions("relay closed");
     this.#rejectPublishes(new RelayClosedError("relay closed", this.url));
     this.#rejectCounts(new RelayClosedError("relay closed", this.url));
@@ -344,6 +378,7 @@ export class Relay {
   #handleSocketDeath(reason: string, opts?: { fromConnectAttempt?: boolean }): void {
     if (this.#deathHandled) return;
     this.#deathHandled = true;
+    this.#stopPingLoop();
     this.#detachSocketHandlers();
     this.#connected = false;
     this.#ws = undefined;
@@ -422,14 +457,18 @@ export class Relay {
     switch (msg[0]) {
       case "EVENT": {
         const [, subId, event] = msg;
+        if (this.#pingWaiters.has(subId)) return;
         const sub = this.#subs.get(subId);
         if (!sub || sub.closed) return;
+        sub.handlers.receivedEvent?.(event.id);
+        if (sub.handlers.alreadyHaveEvent?.(event.id)) return;
         if (!this.#verify(event)) return;
         sub.handlers.onevent?.(event);
         break;
       }
       case "EOSE": {
         const [, subId] = msg;
+        if (this.#finishDummyPing(subId)) return;
         const sub = this.#subs.get(subId);
         if (!sub || sub.closed) return;
         sub.eosed = true;
@@ -438,6 +477,7 @@ export class Relay {
       }
       case "CLOSED": {
         const [, subId, reason] = msg;
+        if (this.#finishDummyPing(subId)) return;
         const sub = this.#subs.get(subId);
         if (!sub) return;
         this.#subs.delete(subId);
@@ -824,6 +864,111 @@ export class Relay {
   nextSubId(prefix = "sub"): string {
     this.#serial += 1;
     return `${prefix}:${this.#serial}`;
+  }
+
+  #startPingLoop(): void {
+    this.#stopPingLoop();
+    if (!this.#enablePing) return;
+    this.#pingTimer = setInterval(() => {
+      void this.#pingpong();
+    }, this.#pingIntervalMs);
+  }
+
+  #stopPingLoop(): void {
+    if (this.#pingTimer !== undefined) {
+      clearInterval(this.#pingTimer);
+      this.#pingTimer = undefined;
+    }
+    this.#clearPingWaiters();
+    this.#pingInFlight = false;
+  }
+
+  #clearPingWaiters(): void {
+    for (const waiter of this.#pingWaiters.values()) waiter.resolve(false);
+    this.#pingWaiters.clear();
+  }
+
+  #finishDummyPing(id: string): boolean {
+    const waiter = this.#pingWaiters.get(id);
+    if (!waiter) return false;
+    this.#pingWaiters.delete(id);
+    waiter.resolve(true);
+    try {
+      if (this.#connected) this.#send(["CLOSE", id]);
+    } catch {
+      // socket already gone
+    }
+    return true;
+  }
+
+  async #pingpong(): Promise<void> {
+    const ws = this.#ws;
+    if (!ws || ws.readyState !== this.#WS.OPEN) return;
+    if (this.#pingInFlight) return;
+    this.#pingInFlight = true;
+    try {
+      const ok = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), this.#pingTimeoutMs);
+        const ping = canNativePing(ws) ? this.#waitForNativePing(ws) : this.#waitForDummyPing();
+        void ping.then((alive) => {
+          clearTimeout(timer);
+          resolve(alive);
+        });
+      });
+      if (!ok) {
+        this.#clearPingWaiters();
+        if (ws.readyState === this.#WS.OPEN) {
+          try {
+            ws.close();
+          } catch {
+            // ignore
+          }
+        }
+      }
+    } finally {
+      this.#pingInFlight = false;
+    }
+  }
+
+  #waitForNativePing(ws: WebSocketLike): Promise<boolean> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve(true);
+      };
+      if (typeof ws.once === "function") {
+        ws.once("pong", finish);
+      } else {
+        const onPong = () => {
+          ws.off?.("pong", onPong);
+          finish();
+        };
+        ws.on!("pong", onPong);
+      }
+      try {
+        ws.ping!();
+      } catch {
+        if (!settled) {
+          settled = true;
+          resolve(false);
+        }
+      }
+    });
+  }
+
+  #waitForDummyPing(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const id = this.nextSubId("__ping__");
+      this.#pingWaiters.set(id, { resolve });
+      try {
+        this.#send(["REQ", id, PING_DUMMY_FILTER]);
+      } catch {
+        this.#pingWaiters.delete(id);
+        resolve(false);
+      }
+    });
   }
 }
 
