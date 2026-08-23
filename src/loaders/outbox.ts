@@ -2,6 +2,7 @@ import type { Event } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { sortedEvents } from "../core/event.ts";
 import { Kind } from "../core/kind.ts";
+import { normalizeURL } from "../core/util.ts";
 import type { Gossip } from "../gossip/gossip.ts";
 import type { Pool } from "../relay/pool.ts";
 import type { EventStore } from "../storage/types.ts";
@@ -41,6 +42,20 @@ function boundKey(pubkey: string, kind: number): string {
   return `${pubkey.toLowerCase()}:${kind}`;
 }
 
+/** Same skip/dedup as Gossip.setRoutes so prefer can match Client.relays. */
+function canonicalRelayUrls(urls: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const raw of urls) {
+    try {
+      const url = normalizeURL(raw);
+      if (!out.includes(url)) out.push(url);
+    } catch {
+      // not a relay URL
+    }
+  }
+  return out;
+}
+
 /**
  * Group authors by outbox relay (discovery fallback).
  * `prefer` reorders existing candidates only; it never appends a URL
@@ -55,11 +70,12 @@ export function groupAuthorsByOutboxRelay(
   prefer: readonly string[] = [],
 ): Map<string, string[]> {
   const map = new Map<string, string[]>();
-  const preferSet = new Set(prefer);
+  const preferSet = new Set(canonicalRelayUrls(prefer));
+  const discovery = canonicalRelayUrls(discoveryRelays);
   for (const author of authors) {
     const pk = author.toLowerCase();
     let relays = gossip.outboxRelays(pk);
-    if (relays.length === 0) relays = [...discoveryRelays];
+    if (relays.length === 0) relays = discovery;
     const preferred: string[] = [];
     const rest: string[] = [];
     for (const url of relays) {

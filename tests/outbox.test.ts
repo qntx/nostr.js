@@ -166,6 +166,28 @@ describe("groupAuthorsByOutboxRelay", () => {
     expect(urls.includes(extra)).toBe(false);
     expect([...map.keys()].some((u) => u.includes("discovery"))).toBe(false);
   });
+
+  test("discovery fallback prefers a connected URL after canonicalize", () => {
+    const gossip = new Gossip();
+    const a = Keys.fromSecretKey(SK_A);
+    const discovery = ["wss://a.example", "wss://b.example", "wss://c.example", "wss://d.example"];
+
+    const withSlash = groupAuthorsByOutboxRelay([a.publicKey], gossip, discovery, 3, [
+      normalizeURL("wss://d.example"),
+    ]);
+    const slashed = [...withSlash.keys()];
+    expect(slashed).toHaveLength(3);
+    expect(slashed[0]).toBe(normalizeURL("wss://d.example"));
+    expect(slashed).toContain(normalizeURL("wss://a.example"));
+    expect(slashed).toContain(normalizeURL("wss://b.example"));
+    expect(slashed.some((u) => u.includes("c.example"))).toBe(false);
+
+    const withoutSlash = groupAuthorsByOutboxRelay([a.publicKey], gossip, discovery, 3, [
+      "wss://d.example",
+    ]);
+    expect([...withoutSlash.keys()][0]).toBe(normalizeURL("wss://d.example"));
+    expect([...withoutSlash.keys()]).toEqual(slashed);
+  });
 });
 
 describe("OutboxFeed", () => {
