@@ -1,4 +1,4 @@
-# nostr.js
+# @qntx/nostr
 
 Nostr protocol implementation and SDK in TypeScript (`@qntx/nostr`).
 
