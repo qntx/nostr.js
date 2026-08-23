@@ -52,6 +52,15 @@ describe("makeZapRequest", () => {
     expect(typeof relayTags[0]![1]).toBe("string");
   });
 
+  test("empty relays throws", () => {
+    expect(() => makeZapRequest({ pubkey: keys.publicKey, amount: 1, relays: [] })).toThrow(
+      EventValidationError,
+    );
+    expect(() => makeZapRequest({ pubkey: keys.publicKey, amount: 1, relays: [] })).toThrow(
+      /relays tag requires one or more URLs/,
+    );
+  });
+
   test("event zap: e, k, p from event.pubkey; no a on kind 1", () => {
     const event = EventBuilder.textNote("hi").signWithKeys(keys);
     const zr = makeZapRequest({
@@ -91,6 +100,18 @@ describe("makeZapRequest", () => {
 
   test("addressable event without d throws", () => {
     const event = new EventBuilder(Kind.LongFormContent, "article").signWithKeys(keys);
+    expect(() => makeZapRequest({ event, amount: 21, relays: ["wss://r.example"] })).toThrow(
+      EventValidationError,
+    );
+    expect(() => makeZapRequest({ event, amount: 21, relays: ["wss://r.example"] })).toThrow(
+      /d tag not found or is empty/,
+    );
+  });
+
+  test("addressable event with empty d throws", () => {
+    const event = new EventBuilder(Kind.LongFormContent, "article")
+      .tag(["d", ""])
+      .signWithKeys(keys);
     expect(() => makeZapRequest({ event, amount: 21, relays: ["wss://r.example"] })).toThrow(
       EventValidationError,
     );

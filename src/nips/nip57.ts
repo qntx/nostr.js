@@ -28,6 +28,10 @@ export type EventZapRequest = {
 };
 
 export function makeZapRequest(params: ProfileZapRequest | EventZapRequest): EventTemplate {
+  if (params.relays.length === 0) {
+    throw new EventValidationError("relays tag requires one or more URLs");
+  }
+
   const recipient = "event" in params ? params.event.pubkey : params.pubkey;
   const tags: Tag[] = [
     ["p", recipient],
