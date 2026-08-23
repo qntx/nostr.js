@@ -42,6 +42,32 @@ function collectReqFilters(): ReqFilter[] {
   return filters;
 }
 
+function reqMessages(ws: MockWebSocket): unknown[][] {
+  const out: unknown[][] = [];
+  for (const raw of ws.sent) {
+    const msg = JSON.parse(raw) as unknown[];
+    if (msg[0] === "REQ") out.push(msg);
+  }
+  return out;
+}
+
+function kind1ReqFilters(msg: unknown[]): ReqFilter[] {
+  return (msg.slice(2) as ReqFilter[]).filter((f) => f.kinds?.includes(Kind.TextNote));
+}
+
+async function waitForSharedKind1Reqs(minCount = 1): Promise<unknown[][]> {
+  const start = Date.now();
+  while (Date.now() - start < 500) {
+    const ws = MockWebSocket.instances.find((s) => s.url.includes("shared.example"));
+    if (ws) {
+      const reqs = reqMessages(ws).filter((msg) => kind1ReqFilters(msg).length > 0);
+      if (reqs.length >= minCount) return reqs;
+    }
+    await sleep(5);
+  }
+  throw new Error("timeout waiting for shared kind-1 REQ");
+}
+
 function eoseAllReqs(): void {
   for (const ws of MockWebSocket.instances) {
     for (const raw of ws.sent) {
@@ -262,17 +288,72 @@ describe("OutboxFeed", () => {
     });
 
     const syncP = feed.sync({ skipHydrate: true, limit: 20 });
-    await waitForReq();
-    const filters = collectReqFilters().filter((f) => f.kinds?.includes(Kind.TextNote));
+    const reqs = await waitForSharedKind1Reqs(1);
+    expect(reqs).toHaveLength(1);
+    const msg = reqs[0]!;
+    expect(msg.length).toBe(4);
+    const filters = msg.slice(2) as ReqFilter[];
     eoseAllReqs();
     await syncP;
 
+    expect(filters).toHaveLength(2);
     const forA = filters.filter((f) => f.authors?.includes(a.publicKey));
     const forB = filters.filter((f) => f.authors?.includes(b.publicKey));
-    expect(forA.length).toBeGreaterThan(0);
-    expect(forB.length).toBeGreaterThan(0);
     expect(forA.some((f) => f.since === 79 && !f.authors?.includes(b.publicKey))).toBe(true);
     expect(forB.some((f) => f.since === undefined && !f.authors?.includes(a.publicKey))).toBe(true);
+
+    feed.close();
+    await client.shutdown();
+  });
+
+  test("caller since wins for mixed groups including since 0", async () => {
+    const a = Keys.fromSecretKey(SK_A);
+    const b = Keys.fromSecretKey(SK_B);
+    const stored = EventBuilder.textNote("a newest").createdAt(100).signWithKeys(a);
+
+    const store = new MemoryEventStore();
+    await store.put(stored);
+    const gossip = new Gossip();
+    gossip.setRoutes(a.publicKey, [{ url: "wss://shared.example", read: true, write: true }]);
+    gossip.setRoutes(b.publicKey, [{ url: "wss://shared.example", read: true, write: true }]);
+
+    const client = Client.builder()
+      .storage(store)
+      .gossip(gossip)
+      .relays(["wss://discovery.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+
+    await client.connect();
+    const feed = new OutboxFeed({
+      pool: client.pool,
+      gossip,
+      storage: store,
+      discoveryRelays: client.relays,
+      authors: [a.publicKey, b.publicKey],
+      kinds: [Kind.TextNote],
+      observe: (e) => client.observe(e),
+    });
+
+    let seen = 0;
+    for (const since of [50, 0] as const) {
+      const syncP = feed.sync({ skipHydrate: true, since, limit: 20 });
+      const reqs = await waitForSharedKind1Reqs(seen + 1);
+      const msg = reqs[reqs.length - 1]!;
+      seen = reqs.length;
+      expect(msg.length).toBe(3);
+      const filters = kind1ReqFilters(msg);
+      eoseAllReqs();
+      await syncP;
+
+      expect(filters).toHaveLength(1);
+      const filter = filters[0]!;
+      expect(filter.authors?.includes(a.publicKey)).toBe(true);
+      expect(filter.authors?.includes(b.publicKey)).toBe(true);
+      expect(filter.authors).toHaveLength(2);
+      expect(filter.since).toBe(since);
+    }
 
     feed.close();
     await client.shutdown();
