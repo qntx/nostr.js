@@ -3,7 +3,12 @@ import { validateSignedEvent } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
 import { SecretKey, finalizeEvent, getPublicKey, verifyEvent } from "../core/key.ts";
-import { isNip05, queryProfile, type Nip05Fetch } from "../nips/nip05.ts";
+import {
+  bunkerRelaysFromNip46,
+  isNip05,
+  queryNip05Document,
+  type Nip05Fetch,
+} from "../nips/nip05.ts";
 import { decrypt, encrypt, getConversationKey } from "../nips/nip44.ts";
 import {
   Nip46Error,
@@ -81,56 +86,64 @@ function resolveTransport(opts: Nip46SignerOptions): { pool: Nip46Transport; own
   );
 }
 
+function applyPointerOpts(pointer: BunkerPointer, opts: Nip46SignerOptions): BunkerPointer {
+  let next: BunkerPointer = {
+    pubkey: pointer.pubkey.toLowerCase(),
+    relays: [...pointer.relays],
+    secret: pointer.secret,
+  };
+  if (opts.secret !== undefined && next.secret == null) {
+    next = { ...next, secret: opts.secret };
+  }
+
+  const relays = next.relays.length > 0 ? next.relays : [...(opts.relays ?? [])];
+  if (relays.length === 0) {
+    throw new Nip46Error("no relays for bunker connection");
+  }
+  if (next.relays.length > 0 && opts.relays?.length) {
+    const merged = [...next.relays];
+    for (const r of opts.relays) {
+      if (!merged.includes(r)) merged.push(r);
+    }
+    return { ...next, relays: merged };
+  }
+  return { ...next, relays };
+}
+
 async function resolveBunkerPointer(
   input: string | BunkerPointer,
   opts: Nip46SignerOptions,
 ): Promise<BunkerPointer> {
-  let pointer: BunkerPointer;
-
   if (typeof input !== "string") {
-    pointer = {
+    return {
       pubkey: input.pubkey.toLowerCase(),
       relays: [...input.relays],
       secret: input.secret,
     };
-  } else {
-    const bunker = parseBunkerURL(input);
-    if (bunker) {
-      pointer = bunker;
-    } else if (isNip05(input)) {
-      const profile = await queryProfile(input, { fetch: opts.fetch });
-      if (!profile) {
-        throw new Nip46Error(`NIP-05 lookup failed for ${input}`);
-      }
-      pointer = {
-        pubkey: profile.pubkey,
-        relays: profile.relays ? [...profile.relays] : [],
-        secret: opts.secret ?? null,
-      };
-    } else {
-      throw new Nip46Error(
-        "invalid bunker input (expected bunker:// URL, NIP-05 identifier, or BunkerPointer)",
-      );
-    }
   }
 
-  if (opts.secret !== undefined && pointer.secret == null) {
-    pointer = { ...pointer, secret: opts.secret };
+  const bunker = parseBunkerURL(input);
+  if (bunker) return bunker;
+
+  if (isNip05(input)) {
+    const fetched = await queryNip05Document(input, { fetch: opts.fetch });
+    if (!fetched) {
+      throw new Nip46Error(`NIP-05 lookup failed for ${input}`);
+    }
+    const pubkey = fetched.doc.names[fetched.address.local];
+    if (!pubkey) {
+      throw new Nip46Error(`NIP-05 lookup failed for ${input}`);
+    }
+    return {
+      pubkey,
+      relays: bunkerRelaysFromNip46(fetched.doc.nip46, pubkey),
+      secret: opts.secret ?? null,
+    };
   }
 
-  const relays = pointer.relays.length > 0 ? pointer.relays : [...(opts.relays ?? [])];
-  if (relays.length === 0) {
-    throw new Nip46Error("no relays for bunker connection");
-  }
-  // Prefer pointer relays; allow opts.relays to extend when pointer already has some.
-  if (pointer.relays.length > 0 && opts.relays?.length) {
-    const merged = [...pointer.relays];
-    for (const r of opts.relays) {
-      if (!merged.includes(r)) merged.push(r);
-    }
-    return { ...pointer, relays: merged };
-  }
-  return { ...pointer, relays };
+  throw new Nip46Error(
+    "invalid bunker input (expected bunker:// URL, NIP-05 identifier, or BunkerPointer)",
+  );
 }
 
 /**
@@ -195,21 +208,29 @@ export class Nip46Signer implements NostrSigner {
   }
 
   /**
+   * Subscribe to an already-known bunker pointer. Does not send the `connect` RPC
+   * (reconnect / jumble `isInitialConnection=false`).
+   */
+  static fromBunker(pointer: BunkerPointer, opts: Nip46SignerOptions): Nip46Signer {
+    const resolved = applyPointerOpts(pointer, opts);
+    const sk = resolveClientSecret(opts.clientSecretKey);
+    const { pool, ownsPool } = resolveTransport(opts);
+    const signer = new Nip46Signer(sk, resolved, pool, ownsPool, opts);
+    signer.#startSubscription();
+    return signer;
+  }
+
+  /**
    * Connect using a `bunker://` URL, NIP-05 identifier, or pre-parsed pointer.
-   * NIP-05 path: resolves pubkey + relay hints from `/.well-known/nostr.json`;
-   * pass `opts.secret` for the bunker token and `opts.relays` to override/extend hints.
+   * NIP-05: pubkey from `names`; bunker relays from `nip46` (never profile `relays`).
+   * Empty `nip46` relays are filled from `opts.relays`; still empty → throw.
    */
   static async connect(
     input: string | BunkerPointer,
     opts: Nip46SignerOptions = {},
   ): Promise<Nip46Signer> {
     const pointer = await resolveBunkerPointer(input, opts);
-
-    const sk = resolveClientSecret(opts.clientSecretKey);
-    const { pool, ownsPool } = resolveTransport(opts);
-
-    const signer = new Nip46Signer(sk, pointer, pool, ownsPool, opts);
-    signer.#startSubscription();
+    const signer = Nip46Signer.fromBunker(pointer, opts);
     await signer.connectRemote();
     return signer;
   }

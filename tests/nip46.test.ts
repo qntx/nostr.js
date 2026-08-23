@@ -5,6 +5,7 @@ import {
   Pool,
   createNostrConnectURI,
   getPublicKey,
+  parseBunkerInput,
   parseBunkerURL,
   parseNostrConnectURI,
   toBunkerURL,
@@ -66,6 +67,112 @@ describe("nip46 protocol", () => {
     expect(parsed.relays).toEqual(["wss://relay.example"]);
     expect(parsed.name).toBe("test");
     expect(parsed.perms).toEqual(["sign_event"]);
+  });
+});
+
+describe("parseBunkerInput", () => {
+  const bunkerPk = getPublicKey(BUNKER_SK);
+
+  test("parses bunker:// without fetch", async () => {
+    const url = toBunkerURL({
+      pubkey: bunkerPk,
+      relays: ["wss://bunker.example"],
+      secret: "tok",
+    });
+    expect(await parseBunkerInput(url)).toEqual({
+      pubkey: bunkerPk,
+      relays: ["wss://bunker.example"],
+      secret: "tok",
+    });
+  });
+
+  test("pubkey-map nip46", async () => {
+    const pointer = await parseBunkerInput("bunker@example.com", {
+      fetch: async () => ({
+        status: 200,
+        json: async () => ({
+          names: { bunker: bunkerPk },
+          nip46: { [bunkerPk]: ["wss://map.example"] },
+          relays: { [bunkerPk]: ["wss://profile.example"] },
+        }),
+      }),
+    });
+    expect(pointer).toEqual({
+      pubkey: bunkerPk,
+      relays: ["wss://map.example"],
+      secret: null,
+    });
+  });
+
+  test("spec nip46 relays and nostrconnect_url", async () => {
+    const pointer = await parseBunkerInput("bunker@example.com", {
+      fetch: async () => ({
+        status: 200,
+        json: async () => ({
+          names: { bunker: bunkerPk },
+          nip46: {
+            relays: ["wss://spec.example"],
+            nostrconnect_url: "nostrconnect://unused",
+          },
+        }),
+      }),
+    });
+    expect(pointer).toEqual({
+      pubkey: bunkerPk,
+      relays: ["wss://spec.example"],
+      secret: null,
+    });
+  });
+
+  test("prefers pubkey map over spec relays; ignores profile relays", async () => {
+    const otherPk = getPublicKey(USER_SK);
+    const pointer = await parseBunkerInput("bunker@example.com", {
+      fetch: async () => ({
+        status: 200,
+        json: async () => ({
+          names: { bunker: bunkerPk },
+          relays: { [bunkerPk]: ["wss://profile.example"] },
+          nip46: {
+            relays: ["wss://spec.example"],
+            [bunkerPk]: ["wss://map.example"],
+            [otherPk]: ["wss://other.example"],
+          },
+        }),
+      }),
+    });
+    expect(pointer?.relays).toEqual(["wss://map.example"]);
+  });
+
+  test("missing nip46 returns null", async () => {
+    expect(
+      await parseBunkerInput("bunker@example.com", {
+        fetch: async () => ({
+          status: 200,
+          json: async () => ({
+            names: { bunker: bunkerPk },
+            relays: { [bunkerPk]: ["wss://profile.example"] },
+          }),
+        }),
+      }),
+    ).toBeNull();
+  });
+
+  test("empty nip46 relay list returns null", async () => {
+    expect(
+      await parseBunkerInput("bunker@example.com", {
+        fetch: async () => ({
+          status: 200,
+          json: async () => ({
+            names: { bunker: bunkerPk },
+            nip46: { relays: [] },
+          }),
+        }),
+      }),
+    ).toBeNull();
+  });
+
+  test("invalid identifier returns null", async () => {
+    expect(await parseBunkerInput("not a bunker")).toBeNull();
   });
 });
 
@@ -171,18 +278,88 @@ describe("Nip46Signer", () => {
           status: 200,
           json: async () => ({
             names: { bunker: bunkerPk },
-            relays: { [bunkerPk]: ["wss://bunker.example"] },
+            relays: { [bunkerPk]: ["wss://profile.example"] },
+            nip46: { [bunkerPk]: ["wss://bunker.example"] },
           }),
         }),
       });
 
       expect(signer.bunker.pubkey).toBe(bunkerPk);
-      expect(signer.bunker.relays.some((r) => r.includes("bunker.example"))).toBe(true);
+      expect(signer.bunker.relays).toEqual(["wss://bunker.example"]);
       expect(await signer.getPublicKey()).toBe(getPublicKey(USER_SK));
       await signer.close();
     } finally {
       stop();
     }
+  });
+
+  test("connect via NIP-05 names-only uses opts.relays", async () => {
+    const bunkerPk = getPublicKey(BUNKER_SK);
+    const clientPk = getPublicKey(CLIENT_SK);
+    const stop = armBunkerResponder({
+      bunkerSk: BUNKER_SK,
+      userSk: USER_SK,
+      clientPubkey: clientPk,
+    });
+
+    try {
+      const signer = await Nip46Signer.connect("bunker@example.com", {
+        clientSecretKey: CLIENT_SK,
+        createPool: testPool,
+        timeoutMs: 3000,
+        secret: "tok",
+        relays: ["wss://bunker.example"],
+        fetch: async () => ({
+          status: 200,
+          json: async () => ({ names: { bunker: bunkerPk } }),
+        }),
+      });
+      expect(signer.bunker.relays).toEqual(["wss://bunker.example"]);
+      expect(await signer.getPublicKey()).toBe(getPublicKey(USER_SK));
+      await signer.close();
+    } finally {
+      stop();
+    }
+  });
+
+  test("connect via NIP-05 names-only without opts.relays throws", async () => {
+    const bunkerPk = getPublicKey(BUNKER_SK);
+    await expect(
+      Nip46Signer.connect("bunker@example.com", {
+        clientSecretKey: CLIENT_SK,
+        createPool: testPool,
+        fetch: async () => ({
+          status: 200,
+          json: async () => ({ names: { bunker: bunkerPk } }),
+        }),
+      }),
+    ).rejects.toThrow(/no relays for bunker connection/);
+  });
+
+  test("fromBunker does not send connect", async () => {
+    const bunkerPk = getPublicKey(BUNKER_SK);
+    const signer = Nip46Signer.fromBunker(
+      {
+        pubkey: bunkerPk,
+        relays: ["wss://bunker.example"],
+        secret: "tok",
+      },
+      {
+        clientSecretKey: CLIENT_SK,
+        createPool: testPool,
+        timeoutMs: 3000,
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 40));
+    for (const ws of MockWebSocket.instances) {
+      for (const raw of ws.sent) {
+        const msg = JSON.parse(raw) as unknown[];
+        expect(msg[0]).not.toBe("EVENT");
+      }
+    }
+
+    await signer.close();
   });
 
   test("fromNostrConnectURI completes handshake", async () => {

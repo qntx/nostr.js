@@ -58,6 +58,52 @@ describe("nip05 parse", () => {
     });
     expect(lookupFromDocument(doc, { local: "missing", domain: "example.com" })).toBeUndefined();
   });
+
+  test("parseNip05Document nip46 pubkey map and spec shape", () => {
+    const mapped = parseNip05Document({
+      names: { bob: PK },
+      nip46: { [PK.toUpperCase()]: ["wss://bunker.example"] },
+    });
+    expect(mapped.nip46?.relaysByPubkey?.[PK]).toEqual(["wss://bunker.example"]);
+    expect(mapped.nip46?.relays).toBeUndefined();
+
+    const spec = parseNip05Document({
+      names: { bob: PK },
+      nip46: {
+        relays: ["wss://spec.example", ""],
+        nostrconnect_url: "nostrconnect://abc",
+      },
+    });
+    expect(spec.nip46).toEqual({
+      relays: ["wss://spec.example"],
+      nostrconnectUrl: "nostrconnect://abc",
+    });
+
+    const mixed = parseNip05Document({
+      names: { bob: PK },
+      relays: { [PK]: ["wss://profile.example"] },
+      nip46: {
+        relays: ["wss://spec.example"],
+        nostrconnect_url: "nostrconnect://abc",
+        [PK]: ["wss://map.example"],
+      },
+    });
+    expect(mixed.nip46?.relaysByPubkey?.[PK]).toEqual(["wss://map.example"]);
+    expect(mixed.nip46?.relays).toEqual(["wss://spec.example"]);
+    expect(mixed.nip46?.nostrconnectUrl).toBe("nostrconnect://abc");
+    expect(lookupFromDocument(mixed, { local: "bob", domain: "example.com" })).toEqual({
+      pubkey: PK,
+      relays: ["wss://profile.example"],
+    });
+  });
+
+  test("parseNip05Document omits empty nip46", () => {
+    const doc = parseNip05Document({
+      names: { bob: PK },
+      nip46: { ignored: ["wss://x"] },
+    });
+    expect(doc.nip46).toBeUndefined();
+  });
 });
 
 describe("nip05 query", () => {

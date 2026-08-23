@@ -144,6 +144,7 @@ export {
   type Nip05Address,
   type Nip05Document,
   type Nip05Fetch,
+  type Nip05Nip46,
 } from "./nips/nip05.ts";
 export {
   Nip11Error,
@@ -213,8 +214,10 @@ export {
   decodeNip46Response,
   encodeNip46Request,
   encodeNip46Response,
+  parseBunkerInput,
   parseBunkerURL,
   parseNostrConnectURI,
+  queryBunkerProfile,
   toBunkerURL,
   type BunkerPointer,
   type ClientMetadata,
