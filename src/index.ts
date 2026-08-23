@@ -245,7 +245,17 @@ export {
   type Nip46Response,
   type NostrConnectParams,
 } from "./nips/nip46.ts";
-export { makeZapRequest, type EventZapRequest, type ProfileZapRequest } from "./nips/nip57.ts";
+export {
+  makeZapRequest,
+  parseBolt11,
+  parseZapRequestFromReceipt,
+  validateZapReceipt,
+  type Bolt11Fields,
+  type EventZapRequest,
+  type ProfileZapRequest,
+  type ZapReceiptContext,
+  type ZapReceiptValidation,
+} from "./nips/nip57.ts";
 export {
   encrypt as nip49Encrypt,
   decrypt as nip49Decrypt,
