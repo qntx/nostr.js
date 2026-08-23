@@ -1,6 +1,7 @@
 import { base64, base64urlnopad } from "@scure/base";
 import { describe, expect, test } from "vite-plus/test";
 import {
+  BlossomError,
   EventValidationError,
   Kind,
   Keys,
@@ -18,6 +19,7 @@ import {
   sha256Blob,
   upload,
   utf8Encoder,
+  verifyBlob,
   type BlobDescriptor,
   type BlossomFetch,
   type Event,
@@ -57,6 +59,11 @@ describe("getHashFromURL", () => {
     expect(getHashFromURL(`https://cdn.example.com/${HASH.toUpperCase()}.bin`)).toBe(HASH);
     expect(getHashFromURL("https://cdn.example.com/media/photo.png")).toBeNull();
   });
+
+  test("invalid or relative URL returns null", () => {
+    expect(getHashFromURL("not a url")).toBeNull();
+    expect(getHashFromURL(`/${HASH}.pdf`)).toBeNull();
+  });
 });
 
 describe("sha256Blob", () => {
@@ -65,6 +72,13 @@ describe("sha256Blob", () => {
     expect(await sha256Blob(bytes)).toBe(ABC_SHA256);
     expect(await sha256Blob(bytes.buffer)).toBe(ABC_SHA256);
     expect(await sha256Blob(new Blob(["abc"]))).toBe(ABC_SHA256);
+  });
+
+  test("verifyBlob matches known hash", async () => {
+    const bytes = new Uint8Array([0x61, 0x62, 0x63]);
+    expect(await verifyBlob(bytes, ABC_SHA256)).toBe(true);
+    expect(await verifyBlob(bytes, ABC_SHA256.toUpperCase())).toBe(true);
+    expect(await verifyBlob(bytes, HASH)).toBe(false);
   });
 });
 
@@ -142,6 +156,54 @@ describe("http", () => {
     expect(headers["X-SHA-256"]).toBe(ABC_SHA256);
   });
 
+  test("upload keeps 10063 path prefix when joining /upload", async () => {
+    const file = new Blob(["abc"]);
+    const auth = await createUploadAuth(async (t) => signAuth(t), file);
+    const keys = Keys.fromSecretKey(SK);
+    const event = blossomServerListEventBuilder(["https://cdn.example.com/v1/"]).signWithKeys(keys);
+    const servers = parseBlossomServerList(event);
+    expect(servers).toEqual(["https://cdn.example.com/v1"]);
+    let seen: string | undefined;
+    const fetchImpl: BlossomFetch = async (input) => {
+      seen = String(input);
+      return jsonResponse({
+        url: `https://cdn.example.com/v1/${ABC_SHA256}.txt`,
+        sha256: ABC_SHA256,
+        size: 3,
+      });
+    };
+    await upload(servers[0]!, file, auth, { fetch: fetchImpl });
+    expect(seen).toBe("https://cdn.example.com/v1/upload");
+  });
+
+  test("upload rejects descriptor whose sha256 does not match the file", async () => {
+    const file = new Blob(["abc"]);
+    const auth = await createUploadAuth(async (t) => signAuth(t), file);
+    const fetchImpl: BlossomFetch = async () =>
+      jsonResponse({
+        url: `https://cdn.example.com/${HASH}.txt`,
+        sha256: HASH,
+        size: 3,
+      });
+    await expect(
+      upload("https://cdn.example.com", file, auth, { fetch: fetchImpl }),
+    ).rejects.toThrow(BlossomError);
+    await expect(
+      upload("https://cdn.example.com", file, auth, { fetch: fetchImpl }),
+    ).rejects.toThrow(/sha256 mismatch/);
+  });
+
+  test("listBlobs rejects non-integer size", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const fetchImpl: BlossomFetch = async () =>
+      jsonResponse([
+        { url: `https://cdn.example.com/${ABC_SHA256}`, sha256: ABC_SHA256, size: 1.5 },
+      ]);
+    await expect(
+      listBlobs("https://cdn.example.com", keys.publicKey, undefined, { fetch: fetchImpl }),
+    ).rejects.toThrow(BlossomError);
+  });
+
   test("checkUpload HEAD /upload", async () => {
     const file = new Blob(["abc"], { type: "text/plain" });
     const auth = await createUploadAuth(async (t) => signAuth(t), file);
@@ -210,6 +272,20 @@ describe("http", () => {
     expect(await mirrorBlob("https://cdn.example.com", blob, { auth, fetch: fetchImpl })).toEqual(
       mirrored,
     );
+  });
+
+  test("mirrorBlob rejects descriptor whose sha256 does not match the source blob", async () => {
+    const blob: BlobDescriptor = {
+      url: `https://origin.example.com/${ABC_SHA256}.txt`,
+      sha256: ABC_SHA256,
+      size: 3,
+    };
+    const auth = signAuth(createAuthTemplate("upload", { sha256: ABC_SHA256 }));
+    const fetchImpl: BlossomFetch = async () =>
+      jsonResponse({ url: `https://cdn.example.com/${HASH}.txt`, sha256: HASH, size: 3 });
+    await expect(
+      mirrorBlob("https://cdn.example.com", blob, { auth, fetch: fetchImpl }),
+    ).rejects.toThrow(/sha256 mismatch/);
   });
 });
 

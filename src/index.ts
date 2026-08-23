@@ -268,6 +268,7 @@ export {
   parseBlossomServerList,
   sha256Blob,
   upload,
+  verifyBlob,
   type BlobDescriptor,
   type BlossomAuthVerb,
   type BlossomFetch,

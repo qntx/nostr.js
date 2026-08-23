@@ -45,9 +45,14 @@ export class BlossomError extends NostrError {
   }
 }
 
-/** Last 64-char hex in the URL path (extension ignored). Null if none. */
+/** Last 64-char hex in the URL path (extension ignored). Null if none or the URL is invalid. */
 export function getHashFromURL(url: string | URL): string | null {
-  const path = (url instanceof URL ? url : new URL(url)).pathname;
+  let path: string;
+  try {
+    path = (url instanceof URL ? url : new URL(url)).pathname;
+  } catch {
+    return null;
+  }
   const matches = path.match(/[0-9a-f]{64}/gi);
   if (!matches?.length) return null;
   return matches[matches.length - 1]!.toLowerCase();
@@ -63,6 +68,15 @@ export async function sha256Blob(data: Blob | ArrayBuffer | Uint8Array): Promise
     bytes = new Uint8Array(await data.arrayBuffer());
   }
   return bytesToHex(sha256(bytes));
+}
+
+/** True when `sha256Blob(data)` equals the expected hex (any case). */
+export async function verifyBlob(
+  data: Blob | ArrayBuffer | Uint8Array,
+  sha256Hex: string,
+): Promise<boolean> {
+  const expected = assertHex32(sha256Hex, "blob sha256");
+  return (await sha256Blob(data)) === expected;
 }
 
 /**
@@ -123,7 +137,7 @@ export async function upload(
     body: file,
     signal: opts?.signal,
   });
-  return parseBlobDescriptor(await readJson(res));
+  return requireDescriptorHash(parseBlobDescriptor(await readJson(res)), hash);
 }
 
 export async function listBlobs(
@@ -166,10 +180,11 @@ export async function mirrorBlob(
   blob: BlobDescriptor,
   opts: { auth: Event; fetch?: BlossomFetch; signal?: AbortSignal },
 ): Promise<BlobDescriptor> {
+  const hash = assertHex32(blob.sha256, "blob sha256");
   const headers: Record<string, string> = {
     Authorization: encodeAuthorizationHeader(opts.auth),
     "Content-Type": "application/json",
-    "X-SHA-256": blob.sha256,
+    "X-SHA-256": hash,
     "X-Content-Length": String(blob.size),
   };
   if (blob.type) headers["X-Content-Type"] = blob.type;
@@ -179,7 +194,7 @@ export async function mirrorBlob(
     body: JSON.stringify({ url: blob.url }),
     signal: opts.signal,
   });
-  return parseBlobDescriptor(await readJson(res));
+  return requireDescriptorHash(parseBlobDescriptor(await readJson(res)), hash);
 }
 
 /** BUD-06 preflight. Does not PUT the body. */
@@ -236,20 +251,20 @@ function parseHttpUrl(raw: string): string | undefined {
     const u = new URL(raw);
     if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
     const path = u.pathname.replace(/\/+$/, "");
-    return `${u.origin}${path}${u.search}`;
+    return `${u.origin}${path}`;
   } catch {
     return undefined;
   }
 }
 
+/** Join `/upload` etc. onto the stored server, keeping a path prefix (`/v1/upload`). */
 function blossomUrl(server: string, path: string): string {
-  try {
-    return new URL(path, server).href;
-  } catch (cause) {
-    throw new BlossomError(`invalid blossom server URL: ${server}`, {
-      cause: cause instanceof Error ? cause : undefined,
-    });
+  const base = parseHttpUrl(server);
+  if (!base) {
+    throw new BlossomError(`invalid blossom server URL: ${server}`);
   }
+  const suffix = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${suffix}`;
 }
 
 function defaultFetch(): BlossomFetch {
@@ -305,11 +320,20 @@ function parseBlobDescriptor(json: unknown): BlobDescriptor {
     throw new BlossomError("blob descriptor missing sha256");
   }
   const hash = assertHex32(raw.sha256, "blob sha256");
-  if (typeof raw.size !== "number" || !Number.isFinite(raw.size)) {
+  if (typeof raw.size !== "number" || !Number.isInteger(raw.size) || raw.size < 0) {
     throw new BlossomError("blob descriptor missing size");
   }
   const desc: BlobDescriptor = { url: raw.url, sha256: hash, size: raw.size };
   if (typeof raw.type === "string") desc.type = raw.type;
-  if (typeof raw.uploaded === "number") desc.uploaded = raw.uploaded;
+  if (typeof raw.uploaded === "number" && Number.isInteger(raw.uploaded) && raw.uploaded >= 0) {
+    desc.uploaded = raw.uploaded;
+  }
+  return desc;
+}
+
+function requireDescriptorHash(desc: BlobDescriptor, expected: string): BlobDescriptor {
+  if (desc.sha256 !== expected) {
+    throw new BlossomError("blob descriptor sha256 mismatch");
+  }
   return desc;
 }
