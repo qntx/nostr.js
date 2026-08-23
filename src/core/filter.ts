@@ -9,10 +9,15 @@ export type Filter = {
   readonly since?: number;
   readonly until?: number;
   readonly limit?: number;
+  /**
+   * NIP-50 full-text search. Relays interpret this.
+   * Local `matchFilter` / `query` ignore it.
+   */
   readonly search?: string;
   readonly [key: `#${string}`]: readonly string[] | undefined;
 };
 
+/** Local NIP-01 match. `search` is ignored; relays interpret NIP-50. */
 export function matchFilter(filter: Filter, event: Event): boolean {
   if (filter.ids && !filter.ids.some((id) => id.toLowerCase() === event.id.toLowerCase())) {
     return false;

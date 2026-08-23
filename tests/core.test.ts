@@ -209,6 +209,12 @@ describe("filter", () => {
     expect(matchFilter({ ids: [base.id.toUpperCase()] }, base)).toBe(true);
   });
 
+  test("matchFilter ignores NIP-50 search", () => {
+    expect(matchFilter({ search: "nope" }, base)).toBe(true);
+    expect(matchFilter({ kinds: [1], search: "nope" }, base)).toBe(true);
+    expect(matchFilter({ kinds: [2], search: "nope" }, base)).toBe(false);
+  });
+
   test("matchFilters is OR across filters", () => {
     expect(matchFilters([{ kinds: [2] }, { kinds: [1] }], base)).toBe(true);
     expect(matchFilters([{ kinds: [2] }, { kinds: [3] }], base)).toBe(false);
