@@ -1,7 +1,8 @@
+import { EventValidationError } from "./error.ts";
 import type { Event, EventTemplate, UnsignedEvent } from "./event.ts";
-import { Kind } from "./kind.ts";
+import { Kind, isAddressableKind, isReplaceableKind } from "./kind.ts";
 import { Keys, finalizeEvent } from "./key.ts";
-import type { Tag } from "./tag.ts";
+import { Tag, getDTag } from "./tag.ts";
 
 /** Profile metadata JSON (kind 0 content). NIP-05 is not verified here. */
 export type ProfileMetadata = {
@@ -47,9 +48,19 @@ export class EventBuilder {
     return b;
   }
 
-  static deletion(ids: string[], reason = ""): EventBuilder {
+  static deletion(
+    ids: string[],
+    reason = "",
+    opts?: { kinds?: readonly number[]; addresses?: readonly string[] },
+  ): EventBuilder {
     const b = new EventBuilder(Kind.EventDeletion, reason);
-    for (const id of ids) b.#tags.push(["e", id]);
+    for (const id of ids) b.#tags.push(Tag.e(id));
+    if (opts?.kinds) {
+      for (const kind of opts.kinds) b.#tags.push(Tag.k(kind));
+    }
+    if (opts?.addresses) {
+      for (const address of opts.addresses) b.#tags.push(Tag.a(address));
+    }
     return b;
   }
 
@@ -69,6 +80,36 @@ export class EventBuilder {
     const b = new EventBuilder(Kind.Repost, JSON.stringify(target));
     b.#tags.push(["e", target.id]);
     b.#tags.push(["p", target.pubkey]);
+    return b;
+  }
+
+  static genericRepost(
+    target: Event,
+    opts?: { relayHint?: string; pPubkey?: string },
+  ): EventBuilder {
+    const replaceable = isReplaceableKind(target.kind);
+    const addressable = isAddressableKind(target.kind);
+    const d = getDTag(target.tags);
+    if (addressable && d === undefined) {
+      throw new EventValidationError("addressable event is missing d tag");
+    }
+
+    let protectedEvent = false;
+    for (const tag of target.tags) {
+      if (tag[0] === "-") {
+        protectedEvent = true;
+        break;
+      }
+    }
+
+    const content = protectedEvent || replaceable || addressable ? "" : JSON.stringify(target);
+    const b = new EventBuilder(Kind.GenericRepost, content);
+    b.#tags.push(Tag.e(target.id, opts?.relayHint));
+    b.#tags.push(Tag.p(opts?.pPubkey ?? target.pubkey));
+    b.#tags.push(Tag.k(target.kind));
+    if (replaceable || addressable) {
+      b.#tags.push(Tag.a(`${target.kind}:${target.pubkey}:${d ?? ""}`));
+    }
     return b;
   }
 

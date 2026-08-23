@@ -23,6 +23,8 @@ export {
   isHex32,
   isHex64,
   normalizeURL,
+  utf8Decoder,
+  utf8Encoder,
   Kind,
   classifyKind,
   isAddressableKind,

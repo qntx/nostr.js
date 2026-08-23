@@ -124,6 +124,20 @@ describe("kinds", () => {
     expect(classifyKind(1)).toBe("regular");
     expect(classifyKind(30023)).toBe("addressable");
   });
+
+  test("catalog includes jumble-used kinds", () => {
+    expect(Kind.Highlights).toBe(9802);
+    expect(Kind.BlossomServerList).toBe(10063);
+    expect(Kind.RelaySets).toBe(30002);
+    expect(Kind.FileMessage).toBe(15);
+    expect(Kind.ReactionToWebsite).toBe(17);
+    expect(Kind.Picture).toBe(20);
+    expect(Kind.Video).toBe(21);
+    expect(Kind.ShortVideo).toBe(22);
+    expect(Kind.ClientKeyAnnouncement).toBe(4454);
+    expect(Kind.KeyTransfer).toBe(4455);
+    expect(Kind.EncryptionKeyAnnouncement).toBe(10044);
+  });
 });
 
 describe("filter", () => {
