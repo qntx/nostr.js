@@ -60,7 +60,8 @@ export function parseThreadTags(event: Pick<Event, "tags">): ThreadReferences {
         result.reply = pointer;
         continue;
       }
-      if (marker === "mention") {
+      // Preferred markers are root/reply only; any other string is not an unmarked positional tag.
+      if (marker) {
         result.mentions.push(pointer);
         continue;
       }
