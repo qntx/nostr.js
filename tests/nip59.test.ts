@@ -3,6 +3,7 @@ import {
   Kind,
   Keys,
   KeysSigner,
+  Nip59Error,
   TWO_DAYS_SECS,
   createGiftWrap,
   createRumor,
@@ -11,8 +12,12 @@ import {
   finalizeEvent,
   isGiftWrapKind,
   randomPastTimestamp,
+  requireNip44Decryptor,
+  requireNip59Crypto,
   unwrapGift,
   wrapGift,
+  type SealOptions,
+  type WrapOptions,
 } from "../src/index.ts";
 import { encryptToPubkey } from "../src/nips/nip44.ts";
 import { verifyEvent } from "../src/core/key.ts";
@@ -159,7 +164,10 @@ describe("nip59", () => {
     );
     const wrap = createGiftWrap(seal, bobKeys.publicKey);
     expect(wrap.kind).toBe(Kind.GiftWrap);
+    expect(wrap.kind).not.toBe(Kind.GiftWrapEphemeral);
     expect(isGiftWrapKind(wrap.kind)).toBe(true);
+    expect(isGiftWrapKind(Kind.GiftWrapEphemeral)).toBe(true);
+    expect(isGiftWrapKind(Kind.Seal)).toBe(false);
     expect(wrap.pubkey).not.toBe(aliceKeys.publicKey);
     expect(wrap.pubkey).not.toBe(bobKeys.publicKey);
   });
@@ -215,33 +223,86 @@ describe("nip59", () => {
     ]);
 
     const sealJson = await bob.nip44Decrypt!(wrap.pubkey, wrap.content);
-    const seal = JSON.parse(sealJson) as { tags: unknown };
+    const seal = JSON.parse(sealJson) as { tags: unknown; kind: number };
+    expect(seal.kind).toBe(Kind.Seal);
     expect(seal.tags).toEqual([]);
+
+    const inner = await unwrapGift(bob, wrap);
+    expect(inner.content).toBe("x");
   });
 
-  test("createSeal extraTags is the only way to tag a seal", async () => {
-    const { alice, aliceKeys, bobKeys } = pair();
-    const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "x" });
-    const seal = await createSeal(alice, bobKeys.publicKey, rumor, {
-      extraTags: [["n", aliceKeys.publicKey]],
-    });
-    expect(seal.tags).toEqual([["n", aliceKeys.publicKey]]);
-  });
-
-  test("encryptTo ≠ recipient: ciphertext decrypts only with encryptTo", async () => {
+  test("createSeal always signs empty tags; ciphertext is for the recipient", async () => {
     const { alice, bob, aliceKeys, bobKeys } = pair();
     const mallory = new KeysSigner(MALLORY_SK);
-    const malloryKeys = Keys.fromSecretKey(MALLORY_SK);
-    const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "for enc key" });
-    const wrap = await wrapGift(alice, bobKeys.publicKey, rumor, {
-      encryptTo: malloryKeys.publicKey,
-    });
-    expect(wrap.tags).toEqual([["p", bobKeys.publicKey]]);
+    const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "sealed" });
+    const seal = await createSeal(alice, bobKeys.publicKey, rumor);
+    expect(seal.kind).toBe(Kind.Seal);
+    expect(seal.tags).toEqual([]);
+    expect(seal.pubkey).toBe(aliceKeys.publicKey);
 
-    await expect(unwrapGift(bob, wrap)).rejects.toThrow(/failed to decrypt/);
-    const inner = await unwrapGift(mallory, wrap);
-    expect(inner.content).toBe("for enc key");
-    expect(inner.pubkey).toBe(aliceKeys.publicKey);
+    const rumorJson = await bob.nip44Decrypt!(aliceKeys.publicKey, seal.content);
+    expect(JSON.parse(rumorJson).content).toBe("sealed");
+    await expect(mallory.nip44Decrypt!(aliceKeys.publicKey, seal.content)).rejects.toThrow();
+  });
+
+  test("wrap ciphertext decrypts only for the p-tag recipient", async () => {
+    const { alice, bob, aliceKeys, bobKeys } = pair();
+    const mallory = new KeysSigner(MALLORY_SK);
+    const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "for bob" });
+    const wrap = await wrapGift(alice, bobKeys.publicKey, rumor);
+    expect(wrap.tags[0]).toEqual(["p", bobKeys.publicKey]);
+
+    const inner = await unwrapGift(bob, wrap);
+    expect(inner.content).toBe("for bob");
+    await expect(unwrapGift(mallory, wrap)).rejects.toThrow(/failed to decrypt/);
+  });
+
+  test("encryptTo and seal extraTags are not wrap/seal options; emit stays 1059", () => {
+    const wrapNoEncryptTo: "encryptTo" extends keyof WrapOptions ? never : true = true;
+    const wrapHasExtraTags: "extraTags" extends keyof WrapOptions ? true : never = true;
+    const wrapNoKind: "kind" extends keyof WrapOptions ? never : true = true;
+    const sealNoEncryptTo: "encryptTo" extends keyof SealOptions ? never : true = true;
+    const sealNoExtraTags: "extraTags" extends keyof SealOptions ? never : true = true;
+    expect(wrapNoEncryptTo).toBe(true);
+    expect(wrapHasExtraTags).toBe(true);
+    expect(wrapNoKind).toBe(true);
+    expect(sealNoEncryptTo).toBe(true);
+    expect(sealNoExtraTags).toBe(true);
+  });
+
+  test("createSeal and createGiftWrap reject an invalid recipient", async () => {
+    const { alice, aliceKeys, bobKeys } = pair();
+    const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "x" });
+    await expect(createSeal(alice, "not-a-pubkey", rumor)).rejects.toThrow(/invalid public key/);
+    const seal = await createSeal(alice, bobKeys.publicKey, rumor);
+    expect(() => createGiftWrap(seal, "not-a-pubkey")).toThrow(/invalid public key/);
+  });
+
+  test("createSeal wraps encrypt failures as Nip59Error", async () => {
+    const { alice, aliceKeys, bobKeys } = pair();
+    const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "x" });
+    const broken = {
+      getPublicKey: () => alice.getPublicKey(),
+      signEvent: (unsigned: Parameters<KeysSigner["signEvent"]>[0]) => alice.signEvent(unsigned),
+      nip44Encrypt: async () => {
+        throw new Error("boom");
+      },
+      nip44Decrypt: (peer: string, payload: string) => alice.nip44Decrypt!(peer, payload),
+    };
+    await expect(createSeal(broken, bobKeys.publicKey, rumor)).rejects.toThrow(Nip59Error);
+    await expect(createSeal(broken, bobKeys.publicKey, rumor)).rejects.toThrow(/failed to encrypt/);
+  });
+
+  test("requireNip59Crypto and requireNip44Decryptor reject missing nip44", () => {
+    expect(() =>
+      requireNip59Crypto({
+        getPublicKey: async () => "00".repeat(32),
+        signEvent: async () => {
+          throw new Error("unused");
+        },
+      }),
+    ).toThrow(/NIP-44 is required/);
+    expect(() => requireNip44Decryptor({})).toThrow(/NIP-44 is required/);
   });
 
   test('randomize: "wrap" keeps seal.created_at equal to rumor.created_at', async () => {

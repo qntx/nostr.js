@@ -9,6 +9,8 @@ import {
   requireDmRelays,
   unwrapGift,
   wrapDirectMessage,
+  type SealOptions,
+  type WrapOptions,
 } from "../src/index.ts";
 
 const ALICE_SK = "000000000000000000000000000000000000000000000000000000000000a1ce";
@@ -103,8 +105,16 @@ describe("nip17 chat helpers", () => {
     type Opts = NonNullable<Parameters<typeof wrapDirectMessage>[3]>;
     const noExtraTags: "extraTags" extends keyof Opts ? never : true = true;
     const noEncryptTo: "encryptTo" extends keyof Opts ? never : true = true;
+    const wrapKeepsExtraTags: "extraTags" extends keyof WrapOptions ? true : never = true;
+    const wrapDropsEncryptTo: "encryptTo" extends keyof WrapOptions ? never : true = true;
+    const sealDropsExtraTags: "extraTags" extends keyof SealOptions ? never : true = true;
+    const sealDropsEncryptTo: "encryptTo" extends keyof SealOptions ? never : true = true;
     expect(noExtraTags).toBe(true);
     expect(noEncryptTo).toBe(true);
+    expect(wrapKeepsExtraTags).toBe(true);
+    expect(wrapDropsEncryptTo).toBe(true);
+    expect(sealDropsExtraTags).toBe(true);
+    expect(sealDropsEncryptTo).toBe(true);
 
     const wraps = await wrapDirectMessage(alice, recipients, rumor, {
       extraTags: [["n", "nope"]],

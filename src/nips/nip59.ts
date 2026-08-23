@@ -25,7 +25,6 @@ export type Rumor = UnsignedEvent & {
  * Structural crypto used by NIP-59.
  * Satisfied by NostrSigner when nip44Encrypt/nip44Decrypt are present.
  * This module must not import src/signer/.
- * `signEvent` and `nip44Encrypt` may use different keys; the caller supplies both.
  */
 export type Nip59Crypto = {
   getPublicKey(): Promise<string>;
@@ -54,24 +53,13 @@ export type WrapOptions = {
   /** When set, used as-is. Overrides now/randomInt for this call. */
   readonly timestamps?: GiftWrapTimestamps;
   readonly relayHint?: string;
-  /** Encrypt wrap ciphertext to this pubkey instead of `recipient`. Default: recipient. */
-  readonly encryptTo?: string;
   /** Appended after the required wrap `p` tag. Never applied to the seal. */
   readonly extraTags?: readonly Tag[];
   /** Default `"seal+wrap"` (NIP-59). `"wrap"` = only wrap timestamp is randomized; seal uses rumor.created_at. */
   readonly randomize?: TimestampRandomize;
 };
 
-export type SealOptions = Pick<
-  WrapOptions,
-  "now" | "randomInt" | "timestamps" | "encryptTo" | "randomize"
-> & {
-  /**
-   * Seal tags. NIP-59: kind 13 tags MUST be empty. This exists only so jumble
-   * dual-key can inject `[["n", encPk]]` via `createSeal` — not via `wrap()`.
-   */
-  readonly extraTags?: readonly Tag[];
-};
+export type SealOptions = Pick<WrapOptions, "now" | "randomInt" | "timestamps" | "randomize">;
 
 export class Nip59Error extends NostrError {
   constructor(message: string, options?: ErrorOptions) {
@@ -187,10 +175,9 @@ export async function createSeal(
 ): Promise<Event> {
   const sealer = requireNip59Crypto(crypto);
   const recipientPk = assertHex32(recipient, "public key");
-  const encryptTo = opts?.encryptTo ? assertHex32(opts.encryptTo, "public key") : recipientPk;
   let content: string;
   try {
-    content = await sealer.nip44Encrypt(encryptTo, rumorToJson(rumor));
+    content = await sealer.nip44Encrypt(recipientPk, rumorToJson(rumor));
   } catch (error) {
     throw new Nip59Error("failed to encrypt", { cause: error });
   }
@@ -202,16 +189,15 @@ export async function createSeal(
     kind: Kind.Seal,
     content,
     created_at,
-    tags: opts?.extraTags ? [...opts.extraTags] : [],
+    tags: [],
     pubkey,
   });
 }
 
 export function createGiftWrap(seal: Event, recipient: string, opts?: WrapOptions): Event {
   const recipientPk = assertHex32(recipient, "public key");
-  const encryptTo = opts?.encryptTo ? assertHex32(opts.encryptTo, "public key") : recipientPk;
   const ephemeral = Keys.generate();
-  const content = encryptToPubkey(eventToJson(seal), ephemeral.secretKey.bytes, encryptTo);
+  const content = encryptToPubkey(eventToJson(seal), ephemeral.secretKey.bytes, recipientPk);
   const created_at = opts?.timestamps?.wrap ?? randomPastTimestamp(opts);
   const tags: Tag[] = [TagBuilder.p(recipientPk, opts?.relayHint), ...(opts?.extraTags ?? [])];
   return finalizeEvent(
@@ -231,14 +217,7 @@ export async function wrap(
   rumor: Rumor,
   opts?: WrapOptions,
 ): Promise<Event> {
-  // extraTags are wrap-only; NIP-59 kind 13 tags MUST be empty unless createSeal is used.
-  const seal = await createSeal(crypto, recipient, rumor, {
-    now: opts?.now,
-    randomInt: opts?.randomInt,
-    timestamps: opts?.timestamps,
-    encryptTo: opts?.encryptTo,
-    randomize: opts?.randomize,
-  });
+  const seal = await createSeal(crypto, recipient, rumor, opts);
   return createGiftWrap(seal, recipient, opts);
 }
 
