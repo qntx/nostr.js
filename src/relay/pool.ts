@@ -237,13 +237,17 @@ export class Pool {
       if (pendingEose === 0) fireEose();
     };
 
-    const closeAll = (reason?: string) => {
-      if (closed) return;
+    const settleClose = () => {
       closed = true;
       if (eoseTimer !== undefined) {
         clearTimeout(eoseTimer);
         eoseTimer = undefined;
       }
+    };
+
+    const closeAll = (reason?: string) => {
+      if (closed) return;
+      settleClose();
       for (const c of closers) c.close(reason);
       opts.onclose?.(reason ?? "closed by client");
     };
@@ -262,10 +266,15 @@ export class Pool {
 
     for (const url of relays) {
       if (!this.#allowed(url, "read")) continue;
-      const norm = normalizeURL(url);
+      let key: string;
+      try {
+        key = normalizeURL(url);
+      } catch {
+        key = url;
+      }
       pending += 1;
-      if (!attempted.has(norm)) {
-        attempted.add(norm);
+      if (!attempted.has(key)) {
+        attempted.add(key);
         pendingEose += 1;
       }
       void this.ensureRelay(url, {
@@ -299,6 +308,7 @@ export class Pool {
               markEose(relay.url);
               pending -= 1;
               if (pending <= 0 && !closed) {
+                settleClose();
                 // Aggregate close: tools passes per-relay reasons; we pass last reason for simplicity.
                 opts.onclose?.(reason);
               }
@@ -307,9 +317,10 @@ export class Pool {
           closers.push(sub);
         })
         .catch(() => {
-          markEose(norm);
+          markEose(key);
           pending -= 1;
           if (pending <= 0 && closers.length === 0 && !closed) {
+            settleClose();
             opts.onclose?.("all relays failed");
           }
         });
@@ -325,7 +336,7 @@ export class Pool {
     if (pending === 0) {
       queueMicrotask(() => {
         if (closed) return;
-        closed = true;
+        settleClose();
         opts.onclose?.("no relays");
       });
     }

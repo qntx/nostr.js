@@ -937,6 +937,7 @@ export class Relay {
         this.#dropSubscription(sub, reason);
         return;
       }
+      sub.eosed = false;
       this.#send(["REQ", sub.id, ...sub.replayFilters()]);
     } catch {
       this.#dropSubscription(sub, reason);
