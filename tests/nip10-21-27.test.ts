@@ -74,7 +74,82 @@ describe("nip10", () => {
     const thread = parseThreadTags(event);
     expect(thread.root?.id).toBe(rootId);
     expect(thread.mentions.map((m) => m.id)).toEqual([mentionId]);
+    expect(thread.reply?.id).toBe(rootId);
     expect(thread.quotes).toEqual([{ id: quoteId, relays: ["wss://quote.example"] }]);
+  });
+
+  test("parseThreadTags lone mention-marked e is extras not reply", () => {
+    const mentionId = "77".repeat(32);
+    const event = signedNote(keysA, "mention only", [["e", mentionId, "", "mention"]]);
+
+    const thread = parseThreadTags(event);
+    expect(thread.root).toBeUndefined();
+    expect(thread.reply).toBeUndefined();
+    expect(thread.mentions.map((m) => m.id)).toEqual([mentionId]);
+  });
+
+  test("parseThreadTags unknown e markers are mentions only", () => {
+    const extraId = "88".repeat(32);
+    const event = signedNote(keysA, "unknown marker", [["e", extraId, "", "fork"]]);
+
+    const thread = parseThreadTags(event);
+    expect(thread.root).toBeUndefined();
+    expect(thread.reply).toBeUndefined();
+    expect(thread.mentions.map((m) => m.id)).toEqual([extraId]);
+  });
+
+  test("parseThreadTags single unmarked e is positional reply", () => {
+    const parentId = "12".repeat(32);
+    const event = signedNote(keysA, "one e", [["e", parentId]]);
+
+    const thread = parseThreadTags(event);
+    expect(thread.root?.id).toBe(parentId);
+    expect(thread.reply?.id).toBe(parentId);
+    expect(thread.mentions).toEqual([]);
+  });
+
+  test("parseThreadTags empty marker is positional unmarked", () => {
+    const rootId = "99".repeat(32);
+    const parentId = "ab".repeat(32);
+    const event = signedNote(keysA, "empty marker", [
+      ["e", rootId, "", ""],
+      ["e", parentId, "", ""],
+    ]);
+
+    const thread = parseThreadTags(event);
+    expect(thread.root?.id).toBe(rootId);
+    expect(thread.reply?.id).toBe(parentId);
+    expect(thread.mentions).toEqual([]);
+  });
+
+  test("parseThreadTags NIP-01 e 4-tuple is positional with author", () => {
+    const parentId = "a1".repeat(32);
+    const author = keysB.publicKey;
+    const event = signedNote(keysA, "nip01 e", [
+      ["e", parentId, "wss://relay.example", author.toUpperCase()],
+    ]);
+
+    const thread = parseThreadTags(event);
+    expect(thread.root?.id).toBe(parentId);
+    expect(thread.reply?.id).toBe(parentId);
+    expect(thread.root?.author).toBe(author);
+    expect(thread.reply?.author).toBe(author);
+    expect(thread.root?.relays).toEqual(["wss://relay.example"]);
+    expect(thread.mentions).toEqual([]);
+  });
+
+  test("parseThreadTags unknown marker does not fill positional root/reply", () => {
+    const extraId = "cd".repeat(32);
+    const parentId = "ef".repeat(32);
+    const event = signedNote(keysA, "mixed", [
+      ["e", extraId, "", "mention"],
+      ["e", parentId],
+    ]);
+
+    const thread = parseThreadTags(event);
+    expect(thread.root?.id).toBe(parentId);
+    expect(thread.reply?.id).toBe(parentId);
+    expect(thread.mentions.map((m) => m.id)).toEqual([extraId]);
   });
 
   test("buildReplyTags for root parent", () => {

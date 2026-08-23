@@ -23,10 +23,17 @@ export type ThreadReferences = {
 
 function eventPointerFromETag(tag: readonly string[]): EventPointer | undefined {
   if (tag[0] !== "e" || !tag[1] || !isHex32(tag[1])) return undefined;
+  // NIP-10 5-tuple pubkey is index 4; NIP-01 4-tuple pubkey is index 3.
+  const author =
+    tag[4] && isHex32(tag[4])
+      ? tag[4].toLowerCase()
+      : tag[3] && isHex32(tag[3])
+        ? tag[3].toLowerCase()
+        : undefined;
   return {
     id: tag[1].toLowerCase(),
     relays: tag[2] ? [tag[2]] : [],
-    author: tag[4] && isHex32(tag[4]) ? tag[4].toLowerCase() : undefined,
+    author,
   };
 }
 
@@ -60,7 +67,8 @@ export function parseThreadTags(event: Pick<Event, "tags">): ThreadReferences {
         result.reply = pointer;
         continue;
       }
-      if (marker === "mention") {
+      // Preferred markers are root/reply only. A hex32 at index 3 is NIP-01 pubkey, not a marker.
+      if (marker && !isHex32(marker)) {
         result.mentions.push(pointer);
         continue;
       }
