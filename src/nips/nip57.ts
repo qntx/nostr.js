@@ -8,6 +8,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bech32 } from "@scure/base";
 import { EventValidationError } from "../core/error.ts";
 import { validateSignedEvent, type Event, type EventTemplate } from "../core/event.ts";
+import { verifyEvent } from "../core/key.ts";
 import { isAddressableKind, Kind } from "../core/kind.ts";
 import { eventAddress, getDTag, type Tag } from "../core/tag.ts";
 import { hexToBytes, utf8Encoder } from "../core/util.ts";
@@ -136,33 +137,46 @@ function parseMsatsTag(value: string): number | undefined {
   return Number.isSafeInteger(n) ? n : undefined;
 }
 
-/** Decode a BOLT11 invoice. Never throws. */
+function countTags(tags: readonly Tag[], name: string): number {
+  let n = 0;
+  for (const tag of tags) {
+    if (tag[0] === name) n++;
+  }
+  return n;
+}
+
+const BOLT11_TIMESTAMP_WORDS = 7;
+const BOLT11_SIGNATURE_WORDS = 104;
+const BOLT11_HASH_WORDS = 52;
+const HASH_BYTES = 32;
+
+/** Decode a BOLT11 invoice. Never throws. Requires a 32-byte payment hash (type 1). */
 export function parseBolt11(pr: string): Bolt11Fields | undefined {
   try {
     // Invoices exceed bech32's default 90-char limit.
     const { prefix, words } = bech32.decode(pr.toLowerCase() as `${string}1${string}`, false);
     if (!prefix.startsWith("ln")) return undefined;
+    // timestamp (7) + tagged fields + secp256k1 signature (104)
+    if (words.length < BOLT11_TIMESTAMP_WORDS + BOLT11_SIGNATURE_WORDS) return undefined;
     const fields: Bolt11Fields = {};
     const amountMsats = amountMsatsFromHrp(prefix);
     if (amountMsats !== undefined) fields.amountMsats = amountMsats;
-    // Skip 7-word timestamp. TLV: 5-bit type, 10-bit length in 5-bit words, data.
-    let i = 7;
-    while (i + 3 <= words.length) {
+    const tlvEnd = words.length - BOLT11_SIGNATURE_WORDS;
+    let i = BOLT11_TIMESTAMP_WORDS;
+    while (i + 3 <= tlvEnd) {
       const type = words[i]!;
       const dataLen = (words[i + 1]! << 5) | words[i + 2]!;
       i += 3;
-      if (i + dataLen > words.length) break;
+      if (i + dataLen > tlvEnd) break;
       const data = words.slice(i, i + dataLen);
       i += dataLen;
-      if (type !== 1 && type !== 23) continue;
+      if ((type !== 1 && type !== 23) || dataLen !== BOLT11_HASH_WORDS) continue;
       const bytes = bech32.fromWordsUnsafe(data);
-      if (!bytes) continue;
-      if (type === 1) {
-        fields.paymentHash ??= bytes;
-      } else {
-        fields.descriptionHash ??= bytes;
-      }
+      if (!bytes || bytes.length !== HASH_BYTES) continue;
+      if (type === 1) fields.paymentHash ??= bytes;
+      else fields.descriptionHash ??= bytes;
     }
+    if (!fields.paymentHash) return undefined;
     return fields;
   } catch {
     return undefined;
@@ -176,6 +190,7 @@ export function parseZapRequestFromReceipt(receipt: Event): Event | undefined {
     if (raw === undefined) return undefined;
     const parsed: unknown = JSON.parse(raw);
     if (!validateSignedEvent(parsed) || parsed.kind !== Kind.ZapRequest) return undefined;
+    if (!verifyEvent(parsed)) return undefined;
     return parsed;
   } catch {
     return undefined;
@@ -185,7 +200,7 @@ export function parseZapRequestFromReceipt(receipt: Event): Event | undefined {
 /** Validate a kind 9735 zap receipt. Never throws. */
 export function validateZapReceipt(receipt: Event, ctx: ZapReceiptContext): ZapReceiptValidation {
   try {
-    if (receipt.kind !== Kind.Zap || !validateSignedEvent(receipt)) {
+    if (receipt.kind !== Kind.Zap || !verifyEvent(receipt)) {
       return fail("invalid receipt");
     }
     if (receipt.pubkey.toLowerCase() !== ctx.nostrPubkey.toLowerCase()) {
@@ -195,11 +210,14 @@ export function validateZapReceipt(receipt: Event, ctx: ZapReceiptContext): ZapR
     const descriptionRaw = firstTagValue(receipt.tags, "description");
     const request = parseZapRequestFromReceipt(receipt);
     if (descriptionRaw === undefined || !request) return fail("invalid zap request");
+    if (countTags(request.tags, "p") !== 1) return fail("invalid p count");
+    if (countTags(request.tags, "e") > 1) return fail("too many e tags");
+    if (!firstTagValue(request.tags, "relays")) return fail("missing relays");
 
     const bolt11Tag = firstTagValue(receipt.tags, "bolt11");
     if (bolt11Tag === undefined) return fail("missing bolt11");
     const bolt11 = parseBolt11(bolt11Tag);
-    if (!bolt11) return fail("invalid bolt11");
+    if (!bolt11 || !bolt11.descriptionHash) return fail("invalid bolt11");
 
     const requestAmount = firstTagValue(request.tags, "amount");
     if (requestAmount !== undefined && bolt11.amountMsats !== undefined) {
@@ -207,11 +225,9 @@ export function validateZapReceipt(receipt: Event, ctx: ZapReceiptContext): ZapR
       if (msats !== bolt11.amountMsats) return fail("amount mismatch");
     }
 
-    if (bolt11.descriptionHash) {
-      // Hash the tag payload, not JSON.stringify(parsed) (key order may differ).
-      const digest = sha256(utf8Encoder.encode(descriptionRaw));
-      if (!bytesEq(digest, bolt11.descriptionHash)) return fail("description hash mismatch");
-    }
+    // Hash the tag payload, not JSON.stringify(parsed) (key order may differ).
+    const digest = sha256(utf8Encoder.encode(descriptionRaw));
+    if (!bytesEq(digest, bolt11.descriptionHash)) return fail("description hash mismatch");
 
     const requestLnurl = firstTagValue(request.tags, "lnurl");
     if (requestLnurl !== undefined && ctx.lnurl !== undefined) {
