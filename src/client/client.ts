@@ -884,16 +884,27 @@ export class Client {
 
   /**
    * NIP-77 sync against the given relays (or Client default relays).
-   * Each relay runs an independent session; summaries are merged.
+   * Independent sessions run in parallel. Fulfilled summaries are merged;
+   * if every relay rejects, throws the first rejection in URL order.
    */
   async sync(filter: Filter, opts?: SyncOptions): Promise<SyncSummary> {
     this.#assertAlive();
     const urls = this.#defaultRelays(opts?.relays ? [...opts.relays] : undefined);
+    const results = await Promise.allSettled(
+      urls.map((url) => this.syncToRelay(url, filter, opts)),
+    );
     let merged = emptySummary();
-    for (const url of urls) {
-      const part = await this.syncToRelay(url, filter, opts);
-      merged = mergeSyncSummary(merged, part);
+    let fulfilled = 0;
+    let firstRejection: unknown;
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        fulfilled += 1;
+        merged = mergeSyncSummary(merged, result.value);
+      } else {
+        firstRejection ??= result.reason;
+      }
     }
+    if (urls.length > 0 && fulfilled === 0) throw firstRejection;
     return merged;
   }
 }

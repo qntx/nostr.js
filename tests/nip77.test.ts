@@ -322,6 +322,35 @@ describe("Relay.negReconcile + Client.sync", () => {
     expect(await store.get(remote.id)).toBeUndefined();
     await client.shutdown();
   });
+
+  test("Client.sync mixed success does not throw; merges the good relay", async () => {
+    const remote = note(SK_B, "from-good", 30);
+    bus.seed("wss://neg.example", [remote]);
+
+    class SwallowSilent extends MockWebSocket {
+      send(data: string): void {
+        if (this.url.includes("silent-neg.example")) return;
+        super.send(data);
+      }
+    }
+
+    const store = new MemoryEventStore();
+    const client = Client.builder()
+      .storage(store)
+      .relays(["wss://silent-neg.example", "wss://neg.example"])
+      .websocketImplementation(SwallowSilent as unknown as typeof MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    await client.connect();
+    const summary = await client.sync(
+      { kinds: [1] },
+      { direction: SyncDirection.Down, timeoutMs: 150 },
+    );
+    expect(summary.remote).toEqual([remote.id]);
+    expect(summary.received).toEqual([remote.id]);
+    expect(await store.get(remote.id)).toBeDefined();
+    await client.shutdown();
+  });
 });
 
 describe("Negentropy session timeout", () => {
@@ -349,6 +378,21 @@ describe("Negentropy session timeout", () => {
     const elapsed = Date.now() - started;
     expect(elapsed).toBeGreaterThanOrEqual(70);
     expect(elapsed).toBeLessThan(1500);
+    await client.shutdown();
+  });
+
+  test("Client.sync throws the first rejection in URL order when every relay rejects", async () => {
+    const store = new MemoryEventStore();
+    const client = Client.builder()
+      .storage(store)
+      .relays(["wss://silent-a.example", "wss://silent-b.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    await client.connect();
+    await expect(
+      client.sync({ kinds: [1] }, { direction: SyncDirection.Down, timeoutMs: 80 }),
+    ).rejects.toThrow(/negentropy timed out \(wss:\/\/silent-a\.example\/\)/);
     await client.shutdown();
   });
 });
