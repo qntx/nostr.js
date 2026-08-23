@@ -352,14 +352,58 @@ describe("Nip46Signer", () => {
     );
 
     await new Promise((r) => setTimeout(r, 40));
-    for (const ws of MockWebSocket.instances) {
-      for (const raw of ws.sent) {
-        const msg = JSON.parse(raw) as unknown[];
-        expect(msg[0]).not.toBe("EVENT");
-      }
-    }
+    expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(1);
+    const frames = MockWebSocket.instances.flatMap((ws) =>
+      ws.sent.map((raw) => JSON.parse(raw) as unknown[]),
+    );
+    expect(frames.some((m) => m[0] === "REQ")).toBe(true);
+    expect(frames.some((m) => m[0] === "EVENT")).toBe(false);
 
     await signer.close();
+  });
+
+  test("fromBunker requires clientSecretKey", () => {
+    expect(() =>
+      Nip46Signer.fromBunker(
+        {
+          pubkey: getPublicKey(BUNKER_SK),
+          relays: ["wss://bunker.example"],
+          secret: null,
+        },
+        { createPool: testPool } as never,
+      ),
+    ).toThrow(/fromBunker requires clientSecretKey/);
+  });
+
+  test("connect closes signer when connectRemote fails", async () => {
+    let poolClosed = false;
+    let subClosed = false;
+    await expect(
+      Nip46Signer.connect(
+        {
+          pubkey: getPublicKey(BUNKER_SK),
+          relays: ["wss://bunker.example"],
+          secret: "tok",
+        },
+        {
+          clientSecretKey: CLIENT_SK,
+          createPool: () => ({
+            subscribe: () => ({
+              close: () => {
+                subClosed = true;
+              },
+            }),
+            publish: async () => {},
+            close: () => {
+              poolClosed = true;
+            },
+          }),
+          timeoutMs: 50,
+        },
+      ),
+    ).rejects.toThrow(/timed out/);
+    expect(subClosed).toBe(true);
+    expect(poolClosed).toBe(true);
   });
 
   test("fromNostrConnectURI completes handshake", async () => {

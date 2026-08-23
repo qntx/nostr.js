@@ -54,7 +54,10 @@ export type Nip46SignerOptions = {
    * Typical: `() => new Pool({ websocketImplementation, enableReconnect: true })`.
    */
   createPool?: () => Nip46Transport;
-  /** Fallback relays when bunker pointer has none. */
+  /**
+   * Relays used when the bunker pointer has none, and merged uniquely onto a
+   * nonempty pointer (pointer first).
+   */
   relays?: string[];
   /**
    * Bunker connection secret when resolving a NIP-05 identifier
@@ -210,8 +213,15 @@ export class Nip46Signer implements NostrSigner {
   /**
    * Subscribe to an already-known bunker pointer. Does not send the `connect` RPC
    * (reconnect / jumble `isInitialConnection=false`).
+   * Requires `clientSecretKey` — reconnect must reuse the original client identity.
    */
-  static fromBunker(pointer: BunkerPointer, opts: Nip46SignerOptions): Nip46Signer {
+  static fromBunker(
+    pointer: BunkerPointer,
+    opts: Nip46SignerOptions & { clientSecretKey: SecretKey | Uint8Array | string },
+  ): Nip46Signer {
+    if (opts.clientSecretKey === undefined) {
+      throw new Nip46Error("fromBunker requires clientSecretKey");
+    }
     const resolved = applyPointerOpts(pointer, opts);
     const sk = resolveClientSecret(opts.clientSecretKey);
     const { pool, ownsPool } = resolveTransport(opts);
@@ -224,15 +234,24 @@ export class Nip46Signer implements NostrSigner {
    * Connect using a `bunker://` URL, NIP-05 identifier, or pre-parsed pointer.
    * NIP-05: pubkey from `names`; bunker relays from `nip46` (never profile `relays`).
    * Empty `nip46` relays are filled from `opts.relays`; still empty → throw.
+   * When both pointer and `opts.relays` are nonempty, unique `opts.relays` are appended.
    */
   static async connect(
     input: string | BunkerPointer,
     opts: Nip46SignerOptions = {},
   ): Promise<Nip46Signer> {
     const pointer = await resolveBunkerPointer(input, opts);
-    const signer = Nip46Signer.fromBunker(pointer, opts);
-    await signer.connectRemote();
-    return signer;
+    const signer = Nip46Signer.fromBunker(pointer, {
+      ...opts,
+      clientSecretKey: resolveClientSecret(opts.clientSecretKey),
+    });
+    try {
+      await signer.connectRemote();
+      return signer;
+    } catch (err) {
+      await signer.close();
+      throw err;
+    }
   }
 
   /**
