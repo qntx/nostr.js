@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
-import { EventBuilder, IndexedDbEventStore, Keys, Kind, itemCompare } from "../src/index.ts";
+import { itemCompare } from "../src/core/index.ts";
+import { EventBuilder, IndexedDbEventStore, Keys, Kind } from "../src/index.ts";
 import { installIdbMock, seedIdbV1, type IdbMock } from "./helpers/idb-mock.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
@@ -447,6 +448,30 @@ describe("IndexedDbEventStore", () => {
     );
     expect(items.map((i) => i.id).sort()).not.toEqual(queried.map((e) => e.id).sort());
     expect(mock.eventsGetAllCount()).toBe(0);
+    store.close();
+  });
+
+  test("negentropyItems same created_at sorts by id lexicographically", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "same-ts" });
+    await store.open();
+    const high = {
+      id: "ff".repeat(32),
+      pubkey: keys.publicKey,
+      kind: Kind.TextNote,
+      created_at: 5,
+      tags: [] as [],
+      content: "",
+      sig: "ab".repeat(32),
+    };
+    const low = { ...high, id: "00".repeat(32) };
+    await store.put(high);
+    await store.put(low);
+    expect(await store.negentropyItems({ kinds: [Kind.TextNote] })).toEqual([
+      { id: low.id, created_at: 5 },
+      { id: high.id, created_at: 5 },
+    ]);
+    expect(itemCompare(low, high)).toBeLessThan(0);
     store.close();
   });
 

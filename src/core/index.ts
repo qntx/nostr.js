@@ -55,6 +55,7 @@ export {
   getEventHash,
   isMarkedVerified,
   isReplaceableWinner,
+  itemCompare,
   serializeEvent,
   signedMatchesUnsigned,
   sortEvents,

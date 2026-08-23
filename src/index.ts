@@ -48,6 +48,7 @@ export {
   getEventHash,
   isMarkedVerified,
   isReplaceableWinner,
+  itemCompare,
   serializeEvent,
   signedMatchesUnsigned,
   sortEvents,
@@ -274,7 +275,6 @@ export {
   Responder,
   storageFromEvents,
   storageFromItems,
-  itemCompare,
   type NegItem,
   type ReconcileOutcome,
 } from "./nips/nip77.ts";
