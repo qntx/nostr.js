@@ -5,8 +5,9 @@ import { matchFilter } from "../core/filter.ts";
 import { isEphemeralKind, Kind } from "../core/kind.ts";
 import { eventAddress } from "../core/tag.ts";
 import { CryptoError } from "../core/error.ts";
+import { itemCompare } from "../nips/nip77.ts";
 import { coordinateRemovals, DeletionState, planDeletion, type DeletionPlan } from "./deletion.ts";
-import type { EventStore, PutResult } from "./types.ts";
+import type { EventStore, NegentropyItem, PutResult } from "./types.ts";
 
 const IDB_VERSION = 2;
 const EVENTS = "events";
@@ -25,13 +26,15 @@ type IDBKeyRangeLike = {
 };
 
 type IDBCursorLike = {
-  value: unknown;
+  value?: unknown;
   key: unknown;
+  primaryKey: unknown;
   continue(): void;
 };
 
 type IDBIndexLike = {
   openCursor(range?: IDBKeyRangeLike, direction?: IDBCursorDirectionLike): IDBRequestLike;
+  openKeyCursor(range?: IDBKeyRangeLike, direction?: IDBCursorDirectionLike): IDBRequestLike;
 };
 
 type IDBRequestLike = {
@@ -145,7 +148,8 @@ export class IndexedDbEventStore implements EventStore {
     this.#replaceable.clear();
     const tombs = await reqOf<unknown[]>(tx.objectStore(TOMBSTONES).getAll());
     this.#deletion.absorb(tombstonesToPlan(tombs ?? []));
-    await walkCursor<AddressRow>(tx.objectStore(ADDRESSES), undefined, "next", (row) => {
+    await walkCursor(tx.objectStore(ADDRESSES), undefined, "next", (cursor) => {
+      const row = cursor.value as AddressRow;
       this.#replaceable.set(row.address, row.id);
       return false;
     });
@@ -272,91 +276,183 @@ export class IndexedDbEventStore implements EventStore {
     return events;
   }
 
+  async count(filters: Filter[]): Promise<number> {
+    const db = await this.#ensure();
+    const tx = db.transaction([EVENTS, TAG_REFS], "readonly");
+    const done = txDone(tx);
+    const seen = new Set<string>();
+    for (const filter of filters) {
+      const local = new Set<string>();
+      await this.#scan(tx, filter, "prev", this.#useKeyCursor(filter), (event, id, created_at) => {
+        if (local.has(id)) return false;
+        if (!this.#acceptHit(filter, event, id, created_at)) return false;
+        local.add(id);
+        return filter.limit !== undefined && local.size >= filter.limit;
+      });
+      for (const id of local) seen.add(id);
+    }
+    await done;
+    return seen.size;
+  }
+
+  async negentropyItems(filter: Filter): Promise<NegentropyItem[]> {
+    const db = await this.#ensure();
+    const tx = db.transaction([EVENTS, TAG_REFS], "readonly");
+    const done = txDone(tx);
+    const items: NegentropyItem[] = [];
+    const seenIds = new Set<string>();
+    await this.#scan(tx, filter, "next", this.#useKeyCursor(filter), (event, id, created_at) => {
+      if (seenIds.has(id)) return false;
+      if (!this.#acceptHit(filter, event, id, created_at)) return false;
+      seenIds.add(id);
+      items.push({ id, created_at });
+      return false;
+    });
+    await done;
+    if (filter.limit !== undefined) {
+      items.sort(queryItemOrder);
+      if (items.length > filter.limit) items.length = filter.limit;
+    }
+    items.sort(itemCompare);
+    return items;
+  }
+
+  #acceptHit(filter: Filter, event: Event | undefined, id: string, created_at: number): boolean {
+    if (this.#deletion.ids.has(id)) return false;
+    if (filter.since !== undefined && created_at < filter.since) return false;
+    if (filter.until !== undefined && created_at > filter.until) return false;
+    if (event) {
+      if (this.#deletion.covers(event)) return false;
+      if (!matchFilter(filter, event)) return false;
+    }
+    return true;
+  }
+
   async #queryOne(tx: IDBTransactionLike, filter: Filter): Promise<Event[]> {
     const matched: Event[] = [];
-    if (filter.limit === 0) return matched;
-    if (filter.since !== undefined && filter.until !== undefined && filter.since > filter.until) {
-      return matched;
-    }
-
-    const events = tx.objectStore(EVENTS);
     const seenIds = new Set<string>();
-    const take = (event: Event | undefined): boolean => {
+    await this.#scan(tx, filter, "prev", false, (event, id) => {
       if (!event) return false;
-      const id = event.id.toLowerCase();
       if (seenIds.has(id)) return false;
       if (this.#deletion.ids.has(id) || this.#deletion.covers(event)) return false;
       if (!matchFilter(filter, event)) return false;
       seenIds.add(id);
       matched.push(event);
       return filter.limit !== undefined && matched.length >= filter.limit;
+    });
+    sortEvents(matched);
+    return matched;
+  }
+
+  async #scan(
+    tx: IDBTransactionLike,
+    filter: Filter,
+    direction: IDBCursorDirectionLike,
+    keyOnly: boolean,
+    take: (event: Event | undefined, id: string, created_at: number) => boolean,
+  ): Promise<void> {
+    if (filter.limit === 0) return;
+    if (filter.since !== undefined && filter.until !== undefined && filter.since > filter.until) {
+      return;
+    }
+
+    const events = tx.objectStore(EVENTS);
+    let stopped = false;
+    const handleEvent = (event: Event | undefined): boolean => {
+      if (!event) return false;
+      stopped = take(event, event.id.toLowerCase(), event.created_at);
+      return stopped;
+    };
+    const handleCursor = (cursor: IDBCursorLike): boolean => {
+      if (keyOnly) {
+        stopped = take(
+          undefined,
+          String(cursor.primaryKey).toLowerCase(),
+          createdAtFromKey(cursor.key),
+        );
+        return stopped;
+      }
+      return handleEvent(cursor.value as Event);
     };
 
     if (filter.ids) {
       for (const id of filter.ids) {
         const event = await reqOf<Event | undefined>(events.get(id.toLowerCase()));
-        if (take(event)) break;
+        if (handleEvent(event)) break;
       }
-    } else if (filter.authors && filter.kinds) {
+      return;
+    }
+
+    if (filter.authors && filter.kinds) {
       const index = events.index("kind_pubkey_created_at");
       loop: for (const kind of filter.kinds) {
         for (const pk of filter.authors) {
-          await walkCursor<Event>(
+          await walkCursor(
             index,
             prefixRange([kind, pk.toLowerCase()], filter.since, filter.until),
-            "prev",
-            take,
+            direction,
+            handleCursor,
+            keyOnly,
           );
-          if (filter.limit !== undefined && matched.length >= filter.limit) break loop;
+          if (stopped) break loop;
         }
       }
-    } else if (filter.authors) {
-      const index = events.index("pubkey_created_at");
-      for (const pk of filter.authors) {
-        await walkCursor<Event>(
-          index,
-          prefixRange([pk.toLowerCase()], filter.since, filter.until),
-          "prev",
-          take,
-        );
-        if (filter.limit !== undefined && matched.length >= filter.limit) break;
-      }
-    } else if (filter.kinds) {
-      const index = events.index("kind_created_at");
-      for (const kind of filter.kinds) {
-        await walkCursor<Event>(
-          index,
-          prefixRange([kind], filter.since, filter.until),
-          "prev",
-          take,
-        );
-        if (filter.limit !== undefined && matched.length >= filter.limit) break;
-      }
-    } else {
-      const tag = singleEpTag(filter);
-      if (tag) {
-        const index = tx.objectStore(TAG_REFS).index("name_value_created");
-        loop: for (const value of tag.values) {
-          await walkTagRefs(
-            index,
-            events,
-            prefixRange([tag.name, value.toLowerCase()], filter.since, filter.until),
-            take,
-          );
-          if (filter.limit !== undefined && matched.length >= filter.limit) break loop;
-        }
-      } else {
-        await walkCursor<Event>(
-          events.index("created_at"),
-          createdAtRange(filter.since, filter.until),
-          "prev",
-          take,
-        );
-      }
+      return;
     }
 
-    sortEvents(matched);
-    return matched;
+    if (filter.authors) {
+      const index = events.index("pubkey_created_at");
+      for (const pk of filter.authors) {
+        await walkCursor(
+          index,
+          prefixRange([pk.toLowerCase()], filter.since, filter.until),
+          direction,
+          handleCursor,
+          keyOnly,
+        );
+        if (stopped) break;
+      }
+      return;
+    }
+
+    if (filter.kinds) {
+      const index = events.index("kind_created_at");
+      for (const kind of filter.kinds) {
+        await walkCursor(
+          index,
+          prefixRange([kind], filter.since, filter.until),
+          direction,
+          handleCursor,
+          keyOnly,
+        );
+        if (stopped) break;
+      }
+      return;
+    }
+
+    const tag = singleEpTag(filter);
+    if (tag) {
+      const index = tx.objectStore(TAG_REFS).index("name_value_created");
+      loop: for (const value of tag.values) {
+        await walkTagRefs(
+          index,
+          events,
+          prefixRange([tag.name, value.toLowerCase()], filter.since, filter.until),
+          direction,
+          handleEvent,
+        );
+        if (stopped) break loop;
+      }
+      return;
+    }
+
+    await walkCursor(
+      events.index("created_at"),
+      createdAtRange(filter.since, filter.until),
+      direction,
+      handleCursor,
+      keyOnly,
+    );
   }
 
   async remove(ids: string[]): Promise<number> {
@@ -412,6 +508,29 @@ export class IndexedDbEventStore implements EventStore {
     events.delete(event.id);
     return true;
   }
+
+  #useKeyCursor(filter: Filter): boolean {
+    if (filter.ids) return false;
+    if (this.#deletion.coordinates.size > 0 || this.#deletion.pending.size > 0) return false;
+    for (const key of Object.keys(filter)) {
+      if (key.charAt(0) === "#") return false;
+    }
+    return true;
+  }
+}
+
+function createdAtFromKey(key: unknown): number {
+  if (typeof key === "number") return key;
+  if (Array.isArray(key) && key.length > 0) {
+    const last = key[key.length - 1];
+    if (typeof last === "number") return last;
+  }
+  return 0;
+}
+
+function queryItemOrder(a: NegentropyItem, b: NegentropyItem): number {
+  if (a.created_at !== b.created_at) return b.created_at - a.created_at;
+  return a.id.localeCompare(b.id);
 }
 
 function prefixRange(
@@ -644,16 +763,20 @@ function txDone(tx: IDBTransactionLike): Promise<void> {
   });
 }
 
-function walkCursor<T>(
+function walkCursor(
   source: {
     openCursor(range?: IDBKeyRangeLike, direction?: IDBCursorDirectionLike): IDBRequestLike;
+    openKeyCursor?(range?: IDBKeyRangeLike, direction?: IDBCursorDirectionLike): IDBRequestLike;
   },
   range: IDBKeyRangeLike | undefined,
   direction: IDBCursorDirectionLike,
-  visit: (value: T) => boolean,
+  visit: (cursor: IDBCursorLike) => boolean,
+  keyOnly = false,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const req = source.openCursor(range, direction);
+    const req = keyOnly
+      ? source.openKeyCursor!(range, direction)
+      : source.openCursor(range, direction);
     req.onerror = () => reject(req.error ?? new Error("IndexedDB cursor failed"));
     req.onsuccess = () => {
       const cursor = req.result as IDBCursorLike | undefined;
@@ -661,7 +784,7 @@ function walkCursor<T>(
         resolve();
         return;
       }
-      if (visit(cursor.value as T)) {
+      if (visit(cursor)) {
         resolve();
         return;
       }
@@ -674,10 +797,11 @@ function walkTagRefs(
   index: IDBIndexLike,
   events: IDBObjectStoreLike,
   range: IDBKeyRangeLike,
+  direction: IDBCursorDirectionLike,
   take: (event: Event | undefined) => boolean,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const req = index.openCursor(range, "prev");
+    const req = index.openCursor(range, direction);
     req.onerror = () => reject(req.error ?? new Error("IndexedDB cursor failed"));
     req.onsuccess = () => {
       const cursor = req.result as IDBCursorLike | undefined;

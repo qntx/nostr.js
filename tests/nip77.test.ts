@@ -244,6 +244,43 @@ describe("Relay.negReconcile + Client.sync", () => {
     await client.shutdown();
   });
 
+  test("Client.syncToRelay dryRun uses negentropyItems not query", async () => {
+    const remote = note(SK_B, "stay", 22);
+    const local = note(SK_A, "mine", 21);
+    bus.seed("wss://neg.example", [remote]);
+    const inner = new MemoryEventStore();
+    await inner.put(local);
+    const store: EventStore = {
+      put: (event) => inner.put(event),
+      get: (id) => inner.get(id),
+      query: async () => {
+        throw new Error("query should not be called");
+      },
+      count: (filters) => inner.count(filters),
+      negentropyItems: (filter) => inner.negentropyItems(filter),
+      remove: (ids) => inner.remove(ids),
+      clear: () => inner.clear(),
+    };
+    const client = Client.builder()
+      .storage(store)
+      .relays(["wss://neg.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .persistEvents(false)
+      .build();
+    await client.connect();
+    const summary = await client.syncToRelay(
+      "wss://neg.example",
+      { kinds: [1] },
+      { direction: SyncDirection.Both, dryRun: true, timeoutMs: 2000 },
+    );
+    expect(summary.local).toEqual([local.id]);
+    expect(summary.remote).toEqual([remote.id]);
+    expect(summary.sent).toEqual([]);
+    expect(summary.received).toEqual([]);
+    await client.shutdown();
+  });
+
   test("Client.sync down does not list received when store.put throws", async () => {
     const remote = note(SK_B, "unsaved", 23);
     bus.seed("wss://neg.example", [remote]);
@@ -255,6 +292,12 @@ describe("Relay.negReconcile + Client.sync", () => {
         return undefined;
       },
       async query(_filters: Filter[]) {
+        return [];
+      },
+      async count() {
+        return 0;
+      },
+      async negentropyItems() {
         return [];
       },
       async remove() {
