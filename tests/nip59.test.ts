@@ -258,6 +258,30 @@ describe("nip59", () => {
     expect(seal.created_at).toBe(rumor.created_at);
   });
 
+  test('default and randomize: "seal+wrap" jitter both timestamps', async () => {
+    const { alice, bob, aliceKeys, bobKeys } = pair();
+    const rumor = createRumor(aliceKeys.publicKey, {
+      kind: 14,
+      content: "jitter both",
+      created_at: 1_700_000_000,
+    });
+    const now = 1_710_000_000;
+    const offset = 42;
+    for (const randomize of [undefined, "seal+wrap"] as const) {
+      const wrap = await wrapGift(alice, bobKeys.publicKey, rumor, {
+        now,
+        randomInt: () => offset,
+        ...(randomize ? { randomize } : {}),
+      });
+      expect(wrap.created_at).toBe(now - offset);
+      expect(wrap.created_at).not.toBe(rumor.created_at);
+      const sealJson = await bob.nip44Decrypt!(wrap.pubkey, wrap.content);
+      const seal = JSON.parse(sealJson) as { created_at: number };
+      expect(seal.created_at).toBe(now - offset);
+      expect(seal.created_at).not.toBe(rumor.created_at);
+    }
+  });
+
   test("unwrap NIP-59 spec example wrap", async () => {
     const recipient = new KeysSigner(
       "e108399bd8424357a710b606ae0c13166d853d327e47a6e5e038197346bdbf45",

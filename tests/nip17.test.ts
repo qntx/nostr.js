@@ -109,9 +109,15 @@ describe("nip17 chat helpers", () => {
     const wraps = await wrapDirectMessage(alice, recipients, rumor, {
       extraTags: [["n", "nope"]],
       encryptTo: alicePk,
+      randomize: "wrap",
     } as never);
     expect(wraps.map((w) => w.wrap.tags)).toEqual([[["p", alicePk]], [["p", bobPk]]]);
-    const toBob = await unwrapGift(bob, wraps[1]!.wrap);
+    const bobWrap = wraps[1]!.wrap;
+    const sealJson = await bob.nip44Decrypt!(bobWrap.pubkey, bobWrap.content);
+    const seal = JSON.parse(sealJson) as { tags: unknown; created_at: number };
+    expect(seal.tags).toEqual([]);
+    expect(seal.created_at).toBe(rumor.created_at);
+    const toBob = await unwrapGift(bob, bobWrap);
     expect(toBob.content).toBe("x");
   });
 

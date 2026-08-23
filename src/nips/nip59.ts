@@ -25,6 +25,7 @@ export type Rumor = UnsignedEvent & {
  * Structural crypto used by NIP-59.
  * Satisfied by NostrSigner when nip44Encrypt/nip44Decrypt are present.
  * This module must not import src/signer/.
+ * `signEvent` and `nip44Encrypt` may use different keys; the caller supplies both.
  */
 export type Nip59Crypto = {
   getPublicKey(): Promise<string>;
