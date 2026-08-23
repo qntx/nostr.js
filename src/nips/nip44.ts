@@ -4,26 +4,14 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { extract as hkdf_extract, expand as hkdf_expand } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { randomBytes } from "@noble/hashes/utils.js";
+import { concatBytes, randomBytes } from "@noble/hashes/utils.js";
 import { base64 } from "@scure/base";
 import { CryptoError } from "../core/error.ts";
-import { assertHex32, bytesToHex, hexToBytes, utf8Decoder, utf8Encoder } from "../core/util.ts";
+import { assertHex32, hexToBytes, utf8Decoder, utf8Encoder } from "../core/util.ts";
 
 const minPlaintextSize = 0x0001;
 const maxPlaintextSize = 0xffffffff;
 const extendedPrefixThreshold = 0x10000;
-
-function concatBytes(...arrays: Uint8Array[]): Uint8Array {
-  let total = 0;
-  for (const a of arrays) total += a.length;
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const a of arrays) {
-    out.set(a, offset);
-    offset += a.length;
-  }
-  return out;
-}
 
 export function getConversationKey(privkeyA: Uint8Array, pubkeyB: string): Uint8Array {
   assertHex32(pubkeyB, "public key");
@@ -178,18 +166,3 @@ export function decryptFromPubkey(
 ): string {
   return decrypt(payload, getConversationKey(secretKey, peerPubkey));
 }
-
-export const v2 = {
-  utils: {
-    getConversationKey,
-    calcPaddedLen,
-    pad,
-    unpad,
-    /** @internal test helper */
-    conversationKeyHex(privkeyA: Uint8Array, pubkeyB: string): string {
-      return bytesToHex(getConversationKey(privkeyA, pubkeyB));
-    },
-  },
-  encrypt,
-  decrypt,
-};

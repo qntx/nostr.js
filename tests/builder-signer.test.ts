@@ -44,6 +44,22 @@ describe("EventBuilder", () => {
     expect(react.content).toBe("+");
   });
 
+  test("repost uses empty content for NIP-70 and optional relayHint", () => {
+    const keys = Keys.fromSecretKey(SK);
+    const target = EventBuilder.textNote("n").createdAt(1).signWithKeys(keys);
+    const protectedTarget = EventBuilder.textNote("p").tag(["-"]).createdAt(1).signWithKeys(keys);
+    expect(EventBuilder.repost(protectedTarget).currentContent).toBe("");
+    expect(
+      EventBuilder.repost(target, { relayHint: "wss://r" }).currentTags.find((t) => t[0] === "e"),
+    ).toEqual(["e", target.id, "wss://r"]);
+  });
+
+  test("genericRepost rejects kind 1", () => {
+    const keys = Keys.fromSecretKey(SK);
+    const target = EventBuilder.textNote("n").createdAt(1).signWithKeys(keys);
+    expect(() => EventBuilder.genericRepost(target)).toThrow(EventValidationError);
+  });
+
   test("genericRepost kind 20 embeds JSON and omits a", () => {
     const keys = Keys.fromSecretKey(SK);
     const target = new EventBuilder(Kind.Picture, "img").createdAt(1).signWithKeys(keys);
@@ -81,7 +97,10 @@ describe("EventBuilder", () => {
 
   test("genericRepost NIP-70 protected event has empty content", () => {
     const keys = Keys.fromSecretKey(SK);
-    const target = EventBuilder.textNote("secret").tag(["-"]).createdAt(1).signWithKeys(keys);
+    const target = new EventBuilder(Kind.Picture, "secret")
+      .tag(["-"])
+      .createdAt(1)
+      .signWithKeys(keys);
     const draft = EventBuilder.genericRepost(target);
     expect(draft.currentContent).toBe("");
     expect(draft.currentKind).toBe(Kind.GenericRepost);

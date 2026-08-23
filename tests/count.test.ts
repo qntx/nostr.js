@@ -56,6 +56,17 @@ describe("Relay.count", () => {
     relay.close();
   });
 
+  test("CLOSED on COUNT id rejects", async () => {
+    const relay = await Relay.connect("wss://count.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const countP = relay.count([{ kinds: [1] }], { id: "count:closed", timeoutMs: 2000 });
+    await Promise.resolve();
+    MockWebSocket.last().receive(JSON.stringify(["CLOSED", "count:closed", "unsupported: COUNT"]));
+    await expect(countP).rejects.toThrow(/unsupported: COUNT/);
+    relay.close();
+  });
+
   test("requires connection and non-empty filters", async () => {
     const relay = new Relay("wss://count.example", {
       websocketImplementation: MockWebSocketCtor,

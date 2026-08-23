@@ -1,6 +1,6 @@
-/** Events are regular — expected to be stored by relays. */
+/** NIP-01 regular: stored by relays. */
 export function isRegularKind(kind: number): boolean {
-  return kind < 10000 && kind !== 0 && kind !== 3;
+  return kind === 1 || kind === 2 || (kind >= 4 && kind < 45) || (kind >= 1000 && kind < 10000);
 }
 
 /** Replaceable: latest per (pubkey, kind) wins. */

@@ -479,6 +479,11 @@ export class Relay {
       case "CLOSED": {
         const [, subId, reason] = msg;
         if (this.#finishDummyPing(subId)) return;
+        const countWaiter = this.#counts.get(subId);
+        if (countWaiter) {
+          countWaiter.reject(new RelayClosedError(reason || "COUNT closed", this.url));
+          return;
+        }
         const sub = this.#subs.get(subId);
         if (!sub) return;
         this.#subs.delete(subId);

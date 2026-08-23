@@ -70,6 +70,28 @@ describe("events", () => {
     expect(verifyEvent(event)).toBe(true);
   });
 
+  test("validateEvent rejects kind outside 0..65535", () => {
+    const pubkey = getPublicKey(SK_HEX);
+    expect(
+      validateEvent({
+        kind: 65536,
+        tags: [],
+        content: "",
+        created_at: 1,
+        pubkey,
+      }),
+    ).toBe(false);
+    expect(
+      validateEvent({
+        kind: -1,
+        tags: [],
+        content: "",
+        created_at: 1,
+        pubkey,
+      }),
+    ).toBe(false);
+  });
+
   test("serializeEvent matches NIP-01 array form", () => {
     const pubkey = getPublicKey(SK_HEX);
     const unsigned = {
@@ -117,6 +139,11 @@ describe("events", () => {
 describe("kinds", () => {
   test("classification ranges", () => {
     expect(isRegularKind(1)).toBe(true);
+    expect(isRegularKind(7)).toBe(true);
+    expect(isRegularKind(1111)).toBe(true);
+    expect(isRegularKind(45)).toBe(false);
+    expect(isRegularKind(999)).toBe(false);
+    expect(classifyKind(45)).toBe("unknown");
     expect(isReplaceableKind(0)).toBe(true);
     expect(isReplaceableKind(10002)).toBe(true);
     expect(isEphemeralKind(22242)).toBe(true);

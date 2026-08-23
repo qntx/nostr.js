@@ -4,6 +4,13 @@ import { Kind, isAddressableKind, isReplaceableKind } from "./kind.ts";
 import { Keys, finalizeEvent } from "./key.ts";
 import { Tag, getDTag } from "./tag.ts";
 
+function hasProtectedTag(event: Event): boolean {
+  for (const tag of event.tags) {
+    if (tag[0] === "-") return true;
+  }
+  return false;
+}
+
 /** Profile metadata JSON (kind 0 content). NIP-05 is not verified here. */
 export type ProfileMetadata = {
   name?: string;
@@ -76,10 +83,11 @@ export class EventBuilder {
     return b;
   }
 
-  static repost(target: Event): EventBuilder {
-    const b = new EventBuilder(Kind.Repost, JSON.stringify(target));
-    b.#tags.push(["e", target.id]);
-    b.#tags.push(["p", target.pubkey]);
+  static repost(target: Event, opts?: { relayHint?: string }): EventBuilder {
+    const content = hasProtectedTag(target) ? "" : JSON.stringify(target);
+    const b = new EventBuilder(Kind.Repost, content);
+    b.#tags.push(Tag.e(target.id, opts?.relayHint));
+    b.#tags.push(Tag.p(target.pubkey));
     return b;
   }
 
@@ -87,6 +95,9 @@ export class EventBuilder {
     target: Event,
     opts?: { relayHint?: string; pPubkey?: string },
   ): EventBuilder {
+    if (target.kind === Kind.TextNote) {
+      throw new EventValidationError("kind 1 uses EventBuilder.repost");
+    }
     const replaceable = isReplaceableKind(target.kind);
     const addressable = isAddressableKind(target.kind);
     const d = getDTag(target.tags);
@@ -94,15 +105,8 @@ export class EventBuilder {
       throw new EventValidationError("addressable event is missing d tag");
     }
 
-    let protectedEvent = false;
-    for (const tag of target.tags) {
-      if (tag[0] === "-") {
-        protectedEvent = true;
-        break;
-      }
-    }
-
-    const content = protectedEvent || replaceable || addressable ? "" : JSON.stringify(target);
+    const content =
+      hasProtectedTag(target) || replaceable || addressable ? "" : JSON.stringify(target);
     const b = new EventBuilder(Kind.GenericRepost, content);
     b.#tags.push(Tag.e(target.id, opts?.relayHint));
     b.#tags.push(Tag.p(opts?.pPubkey ?? target.pubkey));

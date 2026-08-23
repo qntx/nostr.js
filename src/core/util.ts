@@ -1,5 +1,5 @@
 import { HexError, UrlError } from "./error.ts";
-import { EVENT_ID_BYTES, PUBLIC_KEY_BYTES, SECRET_KEY_BYTES, SIGNATURE_BYTES } from "./limits.ts";
+import { SECRET_KEY_BYTES } from "./limits.ts";
 
 export const utf8Encoder = new TextEncoder();
 export const utf8Decoder = new TextDecoder();
@@ -53,18 +53,6 @@ export function assertByteLength(bytes: Uint8Array, expected: number, label: str
 
 export function assertSecretKeyBytes(bytes: Uint8Array): void {
   assertByteLength(bytes, SECRET_KEY_BYTES, "secret key");
-}
-
-export function assertPublicKeyBytes(bytes: Uint8Array): void {
-  assertByteLength(bytes, PUBLIC_KEY_BYTES, "public key");
-}
-
-export function assertEventIdBytes(bytes: Uint8Array): void {
-  assertByteLength(bytes, EVENT_ID_BYTES, "event id");
-}
-
-export function assertSignatureBytes(bytes: Uint8Array): void {
-  assertByteLength(bytes, SIGNATURE_BYTES, "signature");
 }
 
 /**

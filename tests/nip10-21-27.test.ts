@@ -6,6 +6,7 @@ import {
   eTag,
   isNostrURI,
   npubEncode,
+  nsecEncode,
   noteEncode,
   parseContentBlocks,
   parseNostrURI,
@@ -148,6 +149,12 @@ describe("nip21", () => {
   test("parseNostrURI rejects garbage", () => {
     expect(() => parseNostrURI("https://example.com")).toThrow(/invalid Nostr URI/);
     expect(() => parseNostrURI("nostr:zzz")).toThrow(/invalid Nostr URI/);
+  });
+
+  test("NIP-21 excludes nsec", () => {
+    const uri = `nostr:${nsecEncode(keysA.secretKey.bytes)}`;
+    expect(isNostrURI(uri)).toBe(false);
+    expect(() => parseNostrURI(uri)).toThrow(/exclude nsec/);
   });
 });
 

@@ -57,7 +57,14 @@ const isRecord = (obj: unknown): obj is Record<string, unknown> =>
 /** Structural validation of an unsigned event (no crypto). */
 export function validateEvent(event: unknown): event is UnsignedEvent {
   if (!isRecord(event)) return false;
-  if (typeof event.kind !== "number" || !Number.isInteger(event.kind)) return false;
+  if (
+    typeof event.kind !== "number" ||
+    !Number.isInteger(event.kind) ||
+    event.kind < 0 ||
+    event.kind > 65535
+  ) {
+    return false;
+  }
   if (typeof event.content !== "string") return false;
   if (typeof event.created_at !== "number" || !Number.isInteger(event.created_at)) return false;
   if (typeof event.pubkey !== "string" || !isHex32(event.pubkey)) return false;

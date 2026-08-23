@@ -17,13 +17,18 @@ export type NostrURI = {
 };
 
 export function isNostrURI(value: unknown): value is `nostr:${string}` {
-  return typeof value === "string" && /^nostr:[a-z0-9]+1[02-9ac-hj-np-z]+$/i.test(value);
+  if (typeof value !== "string") return false;
+  if (!/^nostr:[a-z0-9]+1[02-9ac-hj-np-z]+$/i.test(value)) return false;
+  return !value.toLowerCase().startsWith("nostr:nsec1");
 }
 
-/** Parse and decode a full `nostr:…` URI. */
+/** Parse and decode a full `nostr:…` URI. NIP-21 excludes `nsec`. */
 export function parseNostrURI(uri: string): NostrURI {
   const match = uri.match(/^nostr:([a-z0-9]+1[02-9ac-hj-np-z]+)$/i);
   if (!match?.[1]) throw new NostrError(`invalid Nostr URI: ${uri}`);
+  if (match[1].toLowerCase().startsWith("nsec1")) {
+    throw new NostrError("NIP-21 identifiers exclude nsec");
+  }
   return {
     uri: `nostr:${match[1]}` as `nostr:${string}`,
     value: match[1],

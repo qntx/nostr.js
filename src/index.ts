@@ -95,7 +95,6 @@ export {
 // --- nips ---
 export {
   Bech32MaxSize,
-  NostrTypeGuard,
   decode as nip19Decode,
   decodeNostrURI,
   naddrEncode,
@@ -161,7 +160,6 @@ export {
   encrypt as nip44Encrypt,
   encryptToPubkey,
   getConversationKey,
-  v2 as nip44v2,
 } from "./nips/nip44.ts";
 export {
   markerOf,

@@ -11,15 +11,6 @@ export type Note = `note1${string}`;
 
 export const Bech32MaxSize = 5000;
 
-export const NostrTypeGuard = {
-  isNProfile: (value?: string | null): value is NProfile => /^nprofile1[a-z\d]+$/.test(value || ""),
-  isNEvent: (value?: string | null): value is NEvent => /^nevent1[a-z\d]+$/.test(value || ""),
-  isNAddr: (value?: string | null): value is NAddr => /^naddr1[a-z\d]+$/.test(value || ""),
-  isNSec: (value?: string | null): value is NSec => /^nsec1[a-z\d]{58}$/.test(value || ""),
-  isNPub: (value?: string | null): value is NPub => /^npub1[a-z\d]{58}$/.test(value || ""),
-  isNote: (value?: string | null): value is Note => /^note1[a-z\d]+$/.test(value || ""),
-};
-
 export type ProfilePointer = {
   pubkey: string;
   relays?: string[];

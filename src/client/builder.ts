@@ -1,5 +1,4 @@
 import type { NostrSigner } from "../signer/types.ts";
-import type { PoolOptions } from "../relay/pool.ts";
 import type { WebSocketConstructor } from "../relay/websocket.ts";
 import type { EventStore } from "../storage/types.ts";
 import type { Gossip } from "../gossip/gossip.ts";
@@ -9,7 +8,6 @@ export type ClientBuilderOptions = {
   signer?: NostrSigner;
   relays?: readonly string[];
   websocketImplementation?: WebSocketConstructor;
-  pool?: PoolOptions;
   connectTimeoutMs?: number;
   publishTimeoutMs?: number;
   automaticAuth?: boolean;
