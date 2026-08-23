@@ -254,10 +254,17 @@ describe("Relay", () => {
   });
 
   test("forged EVENT with huge created_at does not move watermark", async () => {
-    const relay = await Relay.connect("wss://forged-wm.example");
+    let verifies = 0;
+    const relay = await Relay.connect("wss://forged-wm.example", {
+      verifyEvent: (event) => {
+        verifies += 1;
+        return verifyEvent(event);
+      },
+    });
     const keys = Keys.fromSecretKey(SK);
     const good = EventBuilder.textNote("ok").createdAt(10).signWithKeys(keys);
-    const forged = { ...good, created_at: 999_999 };
+    const forgedId = "bb".repeat(32);
+    const forged = { ...good, id: forgedId, created_at: 999_999 };
     const events: string[] = [];
     const sub = relay.subscribe([{ kinds: [1], since: 5 }], {
       onevent: (e) => events.push(e.id),
@@ -266,15 +273,18 @@ describe("Relay", () => {
     const ws = MockWebSocket.last();
     ws.receive(JSON.stringify(["EVENT", sub.id, good]));
     expect(events).toEqual([good.id]);
+    expect(verifies).toBe(1);
     expect(sub.lastCreatedAt).toBe(10);
     expect([...sub.idsAtWatermark]).toEqual([good.id]);
     expect(sub.filters[0]!.since).toBe(5);
     expect(sub.replayFilters()[0]!.since).toBe(10);
 
     ws.receive(JSON.stringify(["EVENT", sub.id, forged]));
+    expect(verifies).toBe(2);
     expect(events).toEqual([good.id]);
     expect(sub.lastCreatedAt).toBe(10);
     expect(sub.idsAtWatermark.has(good.id)).toBe(true);
+    expect(sub.idsAtWatermark.has(forgedId)).toBe(false);
     expect(sub.idsAtWatermark.size).toBe(1);
     relay.close();
   });
