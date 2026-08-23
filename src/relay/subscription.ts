@@ -30,6 +30,10 @@ export class Subscription {
   closed = false;
   /** True after one CLOSED `auth-required:` retry. */
   authRetried = false;
+  /** Inclusive NIP-01 `since` watermark from verified EVENTs. */
+  lastCreatedAt: number | undefined;
+  /** Event ids at `lastCreatedAt` (same-second reconnect dedup). Not all seen ids. */
+  readonly idsAtWatermark = new Set<string>();
   #abort: (() => void) | undefined;
 
   constructor(
@@ -64,6 +68,30 @@ export class Subscription {
     this.#abort?.();
     this.sendClose(this.id);
     this.handlers.onclose?.(reason);
+  }
+
+  /** Advance the reconnect watermark after a verified EVENT. */
+  noteVerified(event: Event): void {
+    if (this.lastCreatedAt === undefined || event.created_at > this.lastCreatedAt) {
+      this.lastCreatedAt = event.created_at;
+      this.idsAtWatermark.clear();
+      this.idsAtWatermark.add(event.id);
+      return;
+    }
+    if (event.created_at === this.lastCreatedAt) this.idsAtWatermark.add(event.id);
+  }
+
+  /**
+   * Filters for re-REQ. Original `filters` stay unchanged.
+   * NIP-01 `since` is inclusive — never `lastCreatedAt + 1`.
+   */
+  replayFilters(): Filter[] {
+    const since = this.lastCreatedAt;
+    if (since === undefined) return this.filters;
+    return this.filters.map((f) => ({
+      ...f,
+      since: f.since === undefined ? since : Math.max(f.since, since),
+    }));
   }
 }
 

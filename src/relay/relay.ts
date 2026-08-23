@@ -540,8 +540,9 @@ export class Relay {
     for (const sub of this.#subs.values()) {
       if (sub.closed) continue;
       sub.eosed = false;
+      sub.authRetried = false;
       try {
-        this.#send(["REQ", sub.id, ...sub.filters]);
+        this.#send(["REQ", sub.id, ...sub.replayFilters()]);
       } catch {
         // not connected yet — ignore
       }
@@ -571,8 +572,10 @@ export class Relay {
         const sub = this.#subs.get(subId);
         if (!sub || sub.closed) return;
         sub.handlers.receivedEvent?.(event.id);
+        if (sub.idsAtWatermark.has(event.id)) return;
         if (sub.handlers.alreadyHaveEvent?.(event.id)) return;
         if (!this.#verify(event)) return;
+        sub.noteVerified(event);
         sub.handlers.onevent?.(event);
         break;
       }
@@ -931,7 +934,7 @@ export class Relay {
         this.#dropSubscription(sub, reason);
         return;
       }
-      this.#send(["REQ", sub.id, ...sub.filters]);
+      this.#send(["REQ", sub.id, ...sub.replayFilters()]);
     } catch {
       this.#dropSubscription(sub, reason);
     }
