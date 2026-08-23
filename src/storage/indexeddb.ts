@@ -152,7 +152,8 @@ export class IndexedDbEventStore implements EventStore {
     await done;
   }
 
-  async put(event: Event): Promise<PutResult> {
+  async put(raw: Event): Promise<PutResult> {
+    const event = normalizeEvent(raw);
     const db = await this.#ensure();
     const tx = db.transaction(WRITE_STORES, "readwrite");
     const events = tx.objectStore(EVENTS);
@@ -242,11 +243,12 @@ export class IndexedDbEventStore implements EventStore {
   }
 
   async get(id: string): Promise<Event | undefined> {
-    if (this.#deletion.ids.has(id)) return undefined;
+    const key = id.toLowerCase();
+    if (this.#deletion.ids.has(key)) return undefined;
     const db = await this.#ensure();
     const tx = db.transaction(EVENTS, "readonly");
     const done = txDone(tx);
-    const event = await reqOf<Event | undefined>(tx.objectStore(EVENTS).get(id));
+    const event = await reqOf<Event | undefined>(tx.objectStore(EVENTS).get(key));
     await done;
     return event;
   }
@@ -278,10 +280,14 @@ export class IndexedDbEventStore implements EventStore {
     }
 
     const events = tx.objectStore(EVENTS);
+    const seenIds = new Set<string>();
     const take = (event: Event | undefined): boolean => {
       if (!event) return false;
-      if (this.#deletion.ids.has(event.id) || this.#deletion.covers(event)) return false;
+      const id = event.id.toLowerCase();
+      if (seenIds.has(id)) return false;
+      if (this.#deletion.ids.has(id) || this.#deletion.covers(event)) return false;
       if (!matchFilter(filter, event)) return false;
+      seenIds.add(id);
       matched.push(event);
       return filter.limit !== undefined && matched.length >= filter.limit;
     };
@@ -297,7 +303,7 @@ export class IndexedDbEventStore implements EventStore {
         for (const pk of filter.authors) {
           await walkCursor<Event>(
             index,
-            prefixRange([kind, pk], filter.since, filter.until),
+            prefixRange([kind, pk.toLowerCase()], filter.since, filter.until),
             "prev",
             take,
           );
@@ -307,7 +313,12 @@ export class IndexedDbEventStore implements EventStore {
     } else if (filter.authors) {
       const index = events.index("pubkey_created_at");
       for (const pk of filter.authors) {
-        await walkCursor<Event>(index, prefixRange([pk], filter.since, filter.until), "prev", take);
+        await walkCursor<Event>(
+          index,
+          prefixRange([pk.toLowerCase()], filter.since, filter.until),
+          "prev",
+          take,
+        );
         if (filter.limit !== undefined && matched.length >= filter.limit) break;
       }
     } else if (filter.kinds) {
@@ -329,7 +340,7 @@ export class IndexedDbEventStore implements EventStore {
           await walkTagRefs(
             index,
             events,
-            prefixRange([tag.name, value], filter.since, filter.until),
+            prefixRange([tag.name, value.toLowerCase()], filter.since, filter.until),
             take,
           );
           if (filter.limit !== undefined && matched.length >= filter.limit) break loop;
@@ -354,7 +365,8 @@ export class IndexedDbEventStore implements EventStore {
     const tombstones = tx.objectStore(TOMBSTONES);
     const done = txDone(tx);
     let n = 0;
-    for (const id of ids) {
+    for (const raw of ids) {
+      const id = raw.toLowerCase();
       if (await this.#deleteEventRows(tx, id)) n += 1;
       tombstones.put({ key: `id:${id}`, type: "id" } satisfies Tombstone);
       tombstones.delete(`pending:${id}`);
@@ -382,12 +394,12 @@ export class IndexedDbEventStore implements EventStore {
 
   async #deleteEventRows(tx: IDBTransactionLike, id: string): Promise<boolean> {
     const events = tx.objectStore(EVENTS);
-    const event = await reqOf<Event | undefined>(events.get(id));
+    const event = await reqOf<Event | undefined>(events.get(id.toLowerCase()));
     if (!event) return false;
     const tagRefs = tx.objectStore(TAG_REFS);
     for (const tag of event.tags) {
       if ((tag[0] === "e" || tag[0] === "p") && tag[1] !== undefined) {
-        tagRefs.delete(`${tag[0]}:${tag[1]}:${event.id}`);
+        tagRefs.delete(tagRefKey(tag[0], tag[1], event.id));
       }
     }
     const addr = eventAddress(event);
@@ -433,16 +445,28 @@ function singleEpTag(filter: Filter): { name: "e" | "p"; values: readonly string
   return undefined;
 }
 
+function tagRefKey(name: string, value: string, id: string): string {
+  return `${name}:${value.toLowerCase()}:${id.toLowerCase()}`;
+}
+
+function normalizeEvent(event: Event): Event {
+  const id = event.id.toLowerCase();
+  const pubkey = event.pubkey.toLowerCase();
+  if (id === event.id && pubkey === event.pubkey) return event;
+  return { ...event, id, pubkey };
+}
+
 function writeTagRefs(store: IDBObjectStoreLike, event: Event): void {
   for (const tag of event.tags) {
     if ((tag[0] !== "e" && tag[0] !== "p") || tag[1] === undefined) continue;
     const name = tag[0];
-    const value = tag[1];
+    const value = tag[1].toLowerCase();
+    const id = event.id.toLowerCase();
     store.put({
-      key: `${name}:${value}:${event.id}`,
+      key: tagRefKey(name, value, id),
       name,
       value,
-      id: event.id,
+      id,
       created_at: event.created_at,
     } satisfies TagRef);
   }
@@ -464,7 +488,11 @@ function persistPlanTombstones(
   }
   for (const p of plan.pendingIds) {
     if (deletion.ids.has(p.id)) continue;
-    store.put({ key: `pending:${p.id}`, type: "pending", pubkey: p.pubkey } satisfies Tombstone);
+    store.put({
+      key: `pending:${p.id}`,
+      type: "pending",
+      pubkey: p.pubkey.toLowerCase(),
+    } satisfies Tombstone);
   }
   for (const c of plan.coordinates) {
     const prev = deletion.coordinates.get(c.key) ?? Number.NEGATIVE_INFINITY;
@@ -482,7 +510,7 @@ function tombstonesToPlan(rows: unknown[]): DeletionPlan {
     if (!row || typeof row !== "object") continue;
     const r = row as Record<string, unknown>;
     if (r.type === "id" && typeof r.key === "string" && r.key.startsWith("id:")) {
-      plan.removeIds.push(r.key.slice(3));
+      plan.removeIds.push(r.key.slice(3).toLowerCase());
       continue;
     }
     if (
@@ -491,7 +519,7 @@ function tombstonesToPlan(rows: unknown[]): DeletionPlan {
       r.key.startsWith("pending:") &&
       typeof r.pubkey === "string"
     ) {
-      plan.pendingIds.push({ id: r.key.slice(8), pubkey: r.pubkey });
+      plan.pendingIds.push({ id: r.key.slice(8).toLowerCase(), pubkey: r.pubkey.toLowerCase() });
       continue;
     }
     if (
@@ -544,7 +572,7 @@ function openDb(dbName: string): Promise<IDBDatabaseLike> {
 }
 
 function migrateV1Events(tx: IDBTransactionLike, events: Event[]): void {
-  const byId = new Map(events.map((e) => [e.id, e]));
+  const byId = new Map(events.map((e) => [e.id.toLowerCase(), e]));
   const deletion = new DeletionState();
   const dels = events
     .filter((e) => e.kind === Kind.EventDeletion)
@@ -556,7 +584,7 @@ function migrateV1Events(tx: IDBTransactionLike, events: Event[]): void {
       for (const ev of events) {
         if (ev.kind === Kind.EventDeletion) continue;
         if (eventAddress(ev) === c.key && ev.created_at <= c.until) {
-          deletion.ids.add(ev.id);
+          deletion.ids.add(ev.id.toLowerCase());
         }
       }
     }
@@ -571,7 +599,11 @@ function migrateV1Events(tx: IDBTransactionLike, events: Event[]): void {
     tombstones.put({ key: `id:${id}`, type: "id" } satisfies Tombstone);
   }
   for (const [id, pubkey] of deletion.pending) {
-    tombstones.put({ key: `pending:${id}`, type: "pending", pubkey } satisfies Tombstone);
+    tombstones.put({
+      key: `pending:${id}`,
+      type: "pending",
+      pubkey: pubkey.toLowerCase(),
+    } satisfies Tombstone);
   }
   for (const [key, until] of deletion.coordinates) {
     tombstones.put({ key: `coord:${key}`, type: "coord", until } satisfies Tombstone);
@@ -579,15 +611,18 @@ function migrateV1Events(tx: IDBTransactionLike, events: Event[]): void {
 
   const winners = new Map<string, Event>();
   for (const event of events) {
-    if (deletion.ids.has(event.id) || deletion.covers(event)) {
+    const stored = normalizeEvent(event);
+    if (deletion.ids.has(stored.id) || deletion.covers(stored)) {
       eventsStore.delete(event.id);
       continue;
     }
-    writeTagRefs(tagRefs, event);
-    const addr = eventAddress(event);
+    if (stored.id !== event.id) eventsStore.delete(event.id);
+    if (stored !== event) eventsStore.put(stored);
+    writeTagRefs(tagRefs, stored);
+    const addr = eventAddress(stored);
     if (addr) {
       const prev = winners.get(addr);
-      if (!prev || isReplaceableWinner(event, prev)) winners.set(addr, event);
+      if (!prev || isReplaceableWinner(stored, prev)) winners.set(addr, stored);
     }
   }
   for (const [address, event] of winners) {

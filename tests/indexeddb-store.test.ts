@@ -293,4 +293,66 @@ describe("IndexedDbEventStore", () => {
     expect(mock.eventsGetAllCount()).toBe(0);
     store.close();
   });
+
+  test("NIP-10 dual #e tags do not double-count toward limit", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "nip10-limit" });
+    await store.open();
+    const root = "11".repeat(32);
+    const parent = "22".repeat(32);
+    const reply = EventBuilder.textNote("reply")
+      .tag(["e", root])
+      .tag(["e", parent])
+      .createdAt(10)
+      .signWithKeys(keys);
+    const other = EventBuilder.textNote("other").tag(["e", parent]).createdAt(5).signWithKeys(keys);
+    await store.put(reply);
+    await store.put(other);
+    const found = await store.query([{ "#e": [root, parent], limit: 2 }]);
+    expect(found.map((e) => e.id)).toEqual([reply.id, other.id]);
+    store.close();
+  });
+
+  test("mixed-case authors and #e/#p match like matchFilter", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "case-hex" });
+    await store.open();
+    const note = EventBuilder.textNote("n").tag(["e", EID]).createdAt(1).signWithKeys(keys);
+    const mixed = {
+      ...note,
+      id: note.id.toUpperCase(),
+      pubkey: note.pubkey.toUpperCase(),
+      tags: [
+        ["e", EID.toUpperCase()],
+        ["p", keys.publicKey.toUpperCase()],
+      ] as typeof note.tags,
+    };
+    expect(await store.put(mixed)).toBe("accepted");
+    expect((await store.get(note.id.toUpperCase()))?.id).toBe(note.id);
+    expect(
+      await store.query([{ authors: [keys.publicKey.toUpperCase()], kinds: [1] }]),
+    ).toHaveLength(1);
+    expect(await store.query([{ "#e": [EID.toUpperCase()] }])).toHaveLength(1);
+    expect(await store.query([{ "#p": [keys.publicKey.toUpperCase()] }])).toHaveLength(1);
+    store.close();
+  });
+
+  test("v1 mixed-case pubkey and e-tag are queryable after upgrade", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("v1").tag(["e", EID]).createdAt(1).signWithKeys(keys);
+    await seedIdbV1("case-upgrade", [
+      {
+        ...note,
+        pubkey: note.pubkey.toUpperCase(),
+        tags: [["e", EID.toUpperCase()]],
+      },
+    ]);
+    const store = new IndexedDbEventStore({ dbName: "case-upgrade" });
+    await store.open();
+    mock.resetStats();
+    expect(await store.query([{ authors: [keys.publicKey], kinds: [1] }])).toHaveLength(1);
+    expect(await store.query([{ "#e": [EID] }])).toHaveLength(1);
+    expect(mock.eventsGetAllCount()).toBe(0);
+    store.close();
+  });
 });
