@@ -3,12 +3,21 @@ import type { Event, EventTemplate, UnsignedEvent } from "./event.ts";
 import { Kind, isAddressableKind, isReplaceableKind } from "./kind.ts";
 import { Keys, finalizeEvent } from "./key.ts";
 import { Tag, getDTag } from "./tag.ts";
+import { normalizeURL } from "./util.ts";
 
 function hasProtectedTag(event: Event): boolean {
   for (const tag of event.tags) {
     if (tag[0] === "-") return true;
   }
   return false;
+}
+
+/** NIP-18 e third entry MUST be a relay URL; empty string is not one. */
+function requireRelayUrl(relayHint: string | undefined): string {
+  if (!relayHint) {
+    throw new EventValidationError("relayHint must be a relay URL");
+  }
+  return normalizeURL(relayHint);
 }
 
 /** Profile metadata JSON (kind 0 content). NIP-05 is not verified here. */
@@ -71,33 +80,42 @@ export class EventBuilder {
     return b;
   }
 
-  static reaction(
-    targetId: string,
-    content = "+",
-    opts?: { author?: string; kind?: number },
-  ): EventBuilder {
+  static reaction(target: Event, content = "+", opts?: { relayHint?: string }): EventBuilder {
+    const hint = opts?.relayHint === undefined ? undefined : requireRelayUrl(opts.relayHint);
+    let coord: string | undefined;
+    if (isAddressableKind(target.kind)) {
+      const d = getDTag(target.tags);
+      if (!d) {
+        throw new EventValidationError("addressable event is missing d tag");
+      }
+      coord = `${target.kind}:${target.pubkey}:${d}`;
+    }
+
     const b = new EventBuilder(Kind.Reaction, content);
-    b.#tags.push(["e", targetId]);
-    if (opts?.author) b.#tags.push(["p", opts.author]);
-    if (opts?.kind !== undefined) b.#tags.push(["k", String(opts.kind)]);
+    // NIP-25 e is [e, id, relay, pubkey]; Tag.e third arg is a NIP-10 marker.
+    b.#tags.push(["e", target.id, hint ?? "", target.pubkey]);
+    b.#tags.push(hint === undefined ? ["p", target.pubkey] : ["p", target.pubkey, hint]);
+    b.#tags.push(["k", String(target.kind)]);
+    if (coord !== undefined) {
+      b.#tags.push(hint === undefined ? ["a", coord] : ["a", coord, hint]);
+    }
     return b;
   }
 
-  static repost(target: Event, opts?: { relayHint?: string }): EventBuilder {
+  static repost(target: Event, opts: { relayHint: string }): EventBuilder {
+    const hint = requireRelayUrl(opts?.relayHint);
     const content = hasProtectedTag(target) ? "" : JSON.stringify(target);
     const b = new EventBuilder(Kind.Repost, content);
-    b.#tags.push(Tag.e(target.id, opts?.relayHint ?? ""));
+    b.#tags.push(Tag.e(target.id, hint));
     b.#tags.push(Tag.p(target.pubkey));
     return b;
   }
 
-  static genericRepost(
-    target: Event,
-    opts?: { relayHint?: string; pPubkey?: string },
-  ): EventBuilder {
+  static genericRepost(target: Event, opts: { relayHint: string; pPubkey?: string }): EventBuilder {
     if (target.kind === Kind.TextNote) {
       throw new EventValidationError("kind 1 uses EventBuilder.repost");
     }
+    const hint = requireRelayUrl(opts?.relayHint);
     const replaceable = isReplaceableKind(target.kind);
     const addressable = isAddressableKind(target.kind);
     const d = getDTag(target.tags);
@@ -108,7 +126,7 @@ export class EventBuilder {
     const content =
       hasProtectedTag(target) || replaceable || addressable ? "" : JSON.stringify(target);
     const b = new EventBuilder(Kind.GenericRepost, content);
-    b.#tags.push(Tag.e(target.id, opts?.relayHint ?? ""));
+    b.#tags.push(Tag.e(target.id, hint));
     b.#tags.push(Tag.p(opts?.pPubkey ?? target.pubkey));
     b.#tags.push(Tag.k(target.kind));
     if (replaceable || addressable) {
