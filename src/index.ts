@@ -174,6 +174,20 @@ export {
   type RelayMarker,
 } from "./nips/nip65.ts";
 export {
+  bookmarkListEventBuilder,
+  muteListEventBuilder,
+  parseBookmarkList,
+  parseEmojiSet,
+  parseFavoriteRelays,
+  parseFollowPack,
+  parseMuteList,
+  parsePinList,
+  parseRelaySet,
+  parseUserEmojiList,
+  pinListEventBuilder,
+  type MuteItem,
+} from "./nips/nip51.ts";
+export {
   Nip59Error,
   TWO_DAYS_SECS,
   createRumor,

@@ -127,6 +127,11 @@
       "import": "./dist/nips/nip57.mjs",
       "default": "./dist/nips/nip57.mjs"
     },
+    "./nips/nip51": {
+      "types": "./dist/nips/nip51.d.mts",
+      "import": "./dist/nips/nip51.mjs",
+      "default": "./dist/nips/nip51.mjs"
+    },
     "./nips/nip59": {
       "types": "./dist/nips/nip59.d.mts",
       "import": "./dist/nips/nip59.mjs",
