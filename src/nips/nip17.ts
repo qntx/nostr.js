@@ -163,17 +163,25 @@ export async function wrapDirectMessage(
   crypto: Nip59Crypto,
   recipients: readonly Recipient[],
   rumor: Rumor,
-  opts?: Pick<WrapOptions, "now" | "randomInt">,
+  opts?: Pick<WrapOptions, "now" | "randomInt" | "timestamps" | "randomize">,
 ): Promise<ReadonlyArray<{ recipient: string; wrap: Event }>> {
   if (recipients.length === 0) {
     throw new Nip17Error("recipients must not be empty");
   }
   const targets = wrapTargets(rumor.pubkey, recipients);
   const out: Array<{ recipient: string; wrap: Event }> = [];
+  const timeOpts = opts
+    ? {
+        now: opts.now,
+        randomInt: opts.randomInt,
+        timestamps: opts.timestamps,
+        randomize: opts.randomize,
+      }
+    : undefined;
   for (const target of targets) {
-    const seal = await createSeal(crypto, target.pubkey, rumor, opts);
+    const seal = await createSeal(crypto, target.pubkey, rumor, timeOpts);
     const wrap = createGiftWrap(seal, target.pubkey, {
-      ...opts,
+      ...timeOpts,
       relayHint: target.relayHint,
     });
     out.push({ recipient: target.pubkey, wrap });

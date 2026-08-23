@@ -92,6 +92,29 @@ describe("nip17 chat helpers", () => {
     expect(wraps.map((w) => w.recipient)).toEqual([alicePk, bobPk]);
   });
 
+  test("wrapDirectMessage does not take extraTags or encryptTo", async () => {
+    const alice = new KeysSigner(ALICE_SK);
+    const bob = new KeysSigner(BOB_SK);
+    const alicePk = await alice.getPublicKey();
+    const bobPk = await bob.getPublicKey();
+    const recipients = normalizeRecipients([bobPk]);
+    const rumor = buildChatMessageRumor(alicePk, recipients, "x");
+
+    type Opts = NonNullable<Parameters<typeof wrapDirectMessage>[3]>;
+    const noExtraTags: "extraTags" extends keyof Opts ? never : true = true;
+    const noEncryptTo: "encryptTo" extends keyof Opts ? never : true = true;
+    expect(noExtraTags).toBe(true);
+    expect(noEncryptTo).toBe(true);
+
+    const wraps = await wrapDirectMessage(alice, recipients, rumor, {
+      extraTags: [["n", "nope"]],
+      encryptTo: alicePk,
+    } as never);
+    expect(wraps.map((w) => w.wrap.tags)).toEqual([[["p", alicePk]], [["p", bobPk]]]);
+    const toBob = await unwrapGift(bob, wraps[1]!.wrap);
+    expect(toBob.content).toBe("x");
+  });
+
   test("requireDmRelays throws on empty list", () => {
     const pk = Keys.fromSecretKey(ALICE_SK).publicKey;
     expect(() => requireDmRelays(pk, [])).toThrow(Nip17Error);

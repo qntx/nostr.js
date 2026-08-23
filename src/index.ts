@@ -192,6 +192,8 @@ export {
   type Nip44Decryptor,
   type GiftWrapTimestamps,
   type WrapOptions,
+  type SealOptions,
+  type TimestampRandomize,
 } from "./nips/nip59.ts";
 export {
   dmRelayListEventBuilder,

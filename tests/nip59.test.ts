@@ -174,6 +174,90 @@ describe("nip59", () => {
     expect(inner.content).toBe("ephemeral");
   });
 
+  test("createGiftWrap extraTags appear after the required p tag", () => {
+    const { aliceKeys, bobKeys } = pair();
+    const malloryKeys = Keys.fromSecretKey(MALLORY_SK);
+    const seal = finalizeEvent(
+      { kind: Kind.Seal, content: "cipher", tags: [], created_at: 1 },
+      aliceKeys.secretKey,
+    );
+    const wrap = createGiftWrap(seal, bobKeys.publicKey, {
+      extraTags: [
+        ["p", malloryKeys.publicKey],
+        ["n", malloryKeys.publicKey],
+      ],
+    });
+    expect(wrap.tags).toEqual([
+      ["p", bobKeys.publicKey],
+      ["p", malloryKeys.publicKey],
+      ["n", malloryKeys.publicKey],
+    ]);
+  });
+
+  test("wrap extraTags land only on the wrap; seal tags stay empty", async () => {
+    const { alice, bob, aliceKeys, bobKeys } = pair();
+    const malloryKeys = Keys.fromSecretKey(MALLORY_SK);
+    const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "x" });
+    const wrap = await wrapGift(alice, bobKeys.publicKey, rumor, {
+      extraTags: [["p", malloryKeys.publicKey]],
+    });
+    expect(wrap.tags).toEqual([
+      ["p", bobKeys.publicKey],
+      ["p", malloryKeys.publicKey],
+    ]);
+
+    const sealJson = await bob.nip44Decrypt!(wrap.pubkey, wrap.content);
+    const seal = JSON.parse(sealJson) as { tags: unknown };
+    expect(seal.tags).toEqual([]);
+  });
+
+  test("createSeal extraTags is the only way to tag a seal", async () => {
+    const { alice, aliceKeys, bobKeys } = pair();
+    const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "x" });
+    const seal = await createSeal(alice, bobKeys.publicKey, rumor, {
+      extraTags: [["n", aliceKeys.publicKey]],
+    });
+    expect(seal.tags).toEqual([["n", aliceKeys.publicKey]]);
+  });
+
+  test("encryptTo ≠ recipient: ciphertext decrypts only with encryptTo", async () => {
+    const { alice, bob, aliceKeys, bobKeys } = pair();
+    const mallory = new KeysSigner(MALLORY_SK);
+    const malloryKeys = Keys.fromSecretKey(MALLORY_SK);
+    const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "for enc key" });
+    const wrap = await wrapGift(alice, bobKeys.publicKey, rumor, {
+      encryptTo: malloryKeys.publicKey,
+    });
+    expect(wrap.tags).toEqual([["p", bobKeys.publicKey]]);
+
+    await expect(unwrapGift(bob, wrap)).rejects.toThrow(/failed to decrypt/);
+    const inner = await unwrapGift(mallory, wrap);
+    expect(inner.content).toBe("for enc key");
+    expect(inner.pubkey).toBe(aliceKeys.publicKey);
+  });
+
+  test('randomize: "wrap" keeps seal.created_at equal to rumor.created_at', async () => {
+    const { alice, bob, aliceKeys, bobKeys } = pair();
+    const rumor = createRumor(aliceKeys.publicKey, {
+      kind: 14,
+      content: "jitter wrap only",
+      created_at: 1_700_000_000,
+    });
+    const now = 1_710_000_000;
+    const wrap = await wrapGift(alice, bobKeys.publicKey, rumor, {
+      now,
+      randomize: "wrap",
+      randomInt: () => 42,
+    });
+    expect(wrap.created_at).toBe(now - 42);
+    expect(wrap.created_at).toBeGreaterThanOrEqual(now - TWO_DAYS_SECS);
+    expect(wrap.created_at).toBeLessThanOrEqual(now);
+
+    const sealJson = await bob.nip44Decrypt!(wrap.pubkey, wrap.content);
+    const seal = JSON.parse(sealJson) as { created_at: number };
+    expect(seal.created_at).toBe(rumor.created_at);
+  });
+
   test("unwrap NIP-59 spec example wrap", async () => {
     const recipient = new KeysSigner(
       "e108399bd8424357a710b606ae0c13166d853d327e47a6e5e038197346bdbf45",
