@@ -315,7 +315,11 @@ export class Relay {
     try {
       ws = new this.#WS(this.url);
     } catch (err) {
+      if (!isReconnect) this.#skipReconnect = true;
       finish(err);
+      if (gen === this.#gen) {
+        this.#handleSocketDeath("connection failed", { fromConnectAttempt: true, gen });
+      }
       await connecting;
       return;
     }
