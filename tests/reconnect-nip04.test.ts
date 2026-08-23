@@ -13,6 +13,29 @@ import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
 const SK2 = "0000000000000000000000000000000000000000000000000000000000000001";
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitUntil(pred: () => boolean, timeoutMs = 500): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (pred()) return;
+    await sleep(5);
+  }
+  throw new Error("timeout waiting for condition");
+}
+
+function sentMessages(ws: MockWebSocket): unknown[][] {
+  return ws.sent.map((s) => JSON.parse(s) as unknown[]);
+}
+
+function reqFilters(ws: MockWebSocket): Array<[string, string, ...Record<string, unknown>[]]> {
+  return sentMessages(ws).filter((m) => m[0] === "REQ") as Array<
+    [string, string, ...Record<string, unknown>[]]
+  >;
+}
+
 beforeEach(() => {
   MockWebSocket.reset();
   useWebSocketImplementation(MockWebSocketCtor);
@@ -88,6 +111,122 @@ describe("Relay reconnect", () => {
     relay.close();
     await new Promise((r) => setTimeout(r, 30));
     expect(MockWebSocket.instances.length).toBe(before);
+  });
+
+  test("reconnect REQ since is lastCreatedAt inclusive, not +1", async () => {
+    const relay = new Relay("wss://since.example", {
+      enableReconnect: true,
+      reconnectBackoffMs: [5],
+      websocketImplementation: MockWebSocketCtor,
+    });
+    await relay.connect();
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("wm").createdAt(50).signWithKeys(keys);
+    const later = EventBuilder.textNote("same-second unseen").createdAt(50).signWithKeys(keys);
+    const events: string[] = [];
+    const sub = relay.subscribe([{ kinds: [1] }], {
+      onevent: (e) => events.push(e.id),
+    });
+
+    const first = MockWebSocket.last();
+    first.receive(JSON.stringify(["EVENT", sub.id, note]));
+    expect(sub.lastCreatedAt).toBe(50);
+    expect(sub.filters).toEqual([{ kinds: [1] }]);
+    expect(sub.replayFilters()[0]!.since).toBe(50);
+
+    first.close();
+    await waitUntil(() => relay.connected && MockWebSocket.instances.length >= 2);
+    const second = MockWebSocket.last();
+    const reReq = reqFilters(second)[0]!;
+    expect(reReq[1]).toBe(sub.id);
+    expect(reReq[2]!.since).toBe(50);
+    expect(reReq[2]!.since).not.toBe(51);
+
+    second.receive(JSON.stringify(["EVENT", sub.id, later]));
+    expect(events).toEqual([note.id, later.id]);
+    relay.close();
+  });
+
+  test("same-second ids are watermarked; new id at watermark second is delivered", async () => {
+    const relay = new Relay("wss://same-sec.example", {
+      enableReconnect: true,
+      reconnectBackoffMs: [5],
+      websocketImplementation: MockWebSocketCtor,
+    });
+    await relay.connect();
+    const keys = Keys.fromSecretKey(SK);
+    const t = 100;
+    const a = EventBuilder.textNote("a").createdAt(t).signWithKeys(keys);
+    const b = EventBuilder.textNote("b").createdAt(t).signWithKeys(keys);
+    const c = EventBuilder.textNote("c").createdAt(t).signWithKeys(keys);
+    const events: string[] = [];
+    const received: string[] = [];
+    const sub = relay.subscribe([{ kinds: [1] }], {
+      onevent: (e) => events.push(e.id),
+      receivedEvent: (id) => received.push(id),
+    });
+
+    const first = MockWebSocket.last();
+    first.receive(JSON.stringify(["EVENT", sub.id, a]));
+    first.receive(JSON.stringify(["EVENT", sub.id, b]));
+    expect(events).toEqual([a.id, b.id]);
+    expect(sub.lastCreatedAt).toBe(t);
+    expect(sub.idsAtWatermark.has(a.id)).toBe(true);
+    expect(sub.idsAtWatermark.has(b.id)).toBe(true);
+
+    first.close();
+    await waitUntil(() => relay.connected && MockWebSocket.instances.length >= 2);
+    const second = MockWebSocket.last();
+    expect(reqFilters(second)[0]![2]!.since).toBe(t);
+
+    second.receive(JSON.stringify(["EVENT", sub.id, a]));
+    second.receive(JSON.stringify(["EVENT", sub.id, b]));
+    expect(events).toEqual([a.id, b.id]);
+    expect(received).toEqual([a.id, b.id, a.id, b.id]);
+
+    second.receive(JSON.stringify(["EVENT", sub.id, c]));
+    expect(events).toEqual([a.id, b.id, c.id]);
+    expect(sub.idsAtWatermark.has(c.id)).toBe(true);
+    relay.close();
+  });
+
+  test("reconnect CLOSED auth-required retries AUTH; post-AUTH REQ keeps inclusive since", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = new Relay("wss://auth-wm.example", {
+      enableReconnect: true,
+      reconnectBackoffMs: [5],
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    await relay.connect();
+    const note = EventBuilder.textNote("wm").createdAt(42).signWithKeys(keys);
+    const sub = relay.subscribe([{ kinds: [1] }], {});
+    MockWebSocket.last().receive(JSON.stringify(["EVENT", sub.id, note]));
+    expect(sub.lastCreatedAt).toBe(42);
+
+    MockWebSocket.last().close();
+    await waitUntil(() => relay.connected && MockWebSocket.instances.length >= 2);
+    const second = MockWebSocket.last();
+    expect(reqFilters(second)[0]![2]!.since).toBe(42);
+
+    second.receive(JSON.stringify(["AUTH", "new-challenge"]));
+    second.receive(JSON.stringify(["CLOSED", sub.id, "auth-required: login"]));
+    await waitUntil(() => sentMessages(second).some((m) => m[0] === "AUTH"));
+    const authFrame = sentMessages(second).find((m) => m[0] === "AUTH") as [string, { id: string }];
+    second.receive(JSON.stringify(["OK", authFrame[1].id, true, ""]));
+    await waitUntil(() => reqFilters(second).length >= 2);
+
+    const postAuth = reqFilters(second).at(-1)!;
+    expect(postAuth[1]).toBe(sub.id);
+    expect(postAuth[2]!.since).toBe(42);
+    expect(postAuth[2]!.since).not.toBe(43);
+    relay.close();
   });
 });
 
