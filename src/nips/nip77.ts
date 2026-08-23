@@ -170,17 +170,6 @@ function compareNegItems(a: NegItem, b: NegItem): number {
   return compareBytes(a.id, b.id);
 }
 
-/** Sort key for NIP-77 items: `created_at` ascending, then `id` lexicographically. */
-export function itemCompare(
-  a: { id: string; created_at: number },
-  b: { id: string; created_at: number },
-): number {
-  if (a.created_at !== b.created_at) return a.created_at - b.created_at;
-  if (a.id < b.id) return -1;
-  if (a.id > b.id) return 1;
-  return 0;
-}
-
 export class NegentropyStorageVector {
   #items: NegItem[] = [];
   #sealed = false;

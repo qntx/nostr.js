@@ -1,11 +1,10 @@
 import type { Event } from "../core/event.ts";
-import { isReplaceableWinner, sortEvents } from "../core/event.ts";
+import { isReplaceableWinner, itemCompare, sortEvents } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { matchFilter } from "../core/filter.ts";
 import { isEphemeralKind, Kind } from "../core/kind.ts";
 import { eventAddress } from "../core/tag.ts";
 import { CryptoError } from "../core/error.ts";
-import { itemCompare } from "../nips/nip77.ts";
 import { coordinateRemovals, DeletionState, planDeletion, type DeletionPlan } from "./deletion.ts";
 import type { EventStore, NegentropyItem, PutResult } from "./types.ts";
 

@@ -127,6 +127,20 @@ export function sortedEvents(events: readonly Event[]): Event[] {
 }
 
 /**
+ * Negentropy item order: `created_at` ascending, then `id` lexicographic (`<`/`>`).
+ * Time axis is opposite {@link sortEvents}; id tie-break is the same direction.
+ */
+export function itemCompare(
+  a: { id: string; created_at: number },
+  b: { id: string; created_at: number },
+): number {
+  if (a.created_at !== b.created_at) return a.created_at - b.created_at;
+  if (a.id < b.id) return -1;
+  if (a.id > b.id) return 1;
+  return 0;
+}
+
+/**
  * NIP-01 replaceable/addressable winner: higher `created_at`, or equal timestamp
  * and lexicographically lower `id`.
  */

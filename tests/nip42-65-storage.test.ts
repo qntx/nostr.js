@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
+import { itemCompare, sortedEvents } from "../src/core/index.ts";
 import {
   EventBuilder,
   Keys,
@@ -6,7 +7,6 @@ import {
   MemoryEventStore,
   Relay,
   isAuthRequired,
-  itemCompare,
   makeAuthEvent,
   parseRelayList,
   readRelays,
@@ -15,6 +15,7 @@ import {
   writeRelays,
   type Event,
 } from "../src/index.ts";
+import * as nip77 from "../src/nips/nip77.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
@@ -350,6 +351,69 @@ describe("MemoryEventStore", () => {
     const expected = events.map((e) => ({ id: e.id, created_at: e.created_at })).sort(itemCompare);
     expect(items).toEqual(expected);
     expect(await store.count([filter])).toBe((await store.query([filter])).length);
+  });
+
+  test("negentropyItems same created_at sorts by id lexicographically", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+    const high: Event = {
+      id: "ff".repeat(32),
+      pubkey: keys.publicKey,
+      kind: Kind.TextNote,
+      created_at: 5,
+      tags: [],
+      content: "",
+      sig: "ab".repeat(32),
+    };
+    const low: Event = { ...high, id: "00".repeat(32) };
+    await store.put(high);
+    await store.put(low);
+    expect(await store.negentropyItems({ kinds: [Kind.TextNote] })).toEqual([
+      { id: low.id, created_at: 5 },
+      { id: high.id, created_at: 5 },
+    ]);
+  });
+});
+
+describe("itemCompare", () => {
+  test("created_at ascending, then id lexicographic; equal items are 0", () => {
+    const a = { id: "aa", created_at: 1 };
+    const b = { id: "bb", created_at: 1 };
+    const c = { id: "aa", created_at: 2 };
+    expect(itemCompare(a, c)).toBeLessThan(0);
+    expect(itemCompare(c, a)).toBeGreaterThan(0);
+    expect(itemCompare(a, b)).toBeLessThan(0);
+    expect(itemCompare(b, a)).toBeGreaterThan(0);
+    expect(itemCompare(a, a)).toBe(0);
+    expect(itemCompare({ id: "", created_at: 0 }, { id: "", created_at: 0 })).toBe(0);
+    expect(itemCompare({ id: "a", created_at: -1 }, { id: "a", created_at: 0 })).toBeLessThan(0);
+    expect(itemCompare({ id: "A", created_at: 1 }, { id: "a", created_at: 1 })).toBeLessThan(0);
+  });
+
+  test("is not the inverse of sortEvents: id tie-break stays ascending", () => {
+    const olderLow: Event = {
+      id: "aa",
+      created_at: 1,
+      pubkey: "00".repeat(32),
+      kind: 1,
+      tags: [],
+      content: "",
+      sig: "00".repeat(64),
+    };
+    const olderHigh: Event = { ...olderLow, id: "zz" };
+    const newer: Event = { ...olderLow, id: "mm", created_at: 2 };
+    expect([newer, olderHigh, olderLow].sort(itemCompare).map((e) => e.id)).toEqual([
+      "aa",
+      "zz",
+      "mm",
+    ]);
+    expect(sortedEvents([newer, olderHigh, olderLow]).map((e) => e.id)).toEqual(["mm", "aa", "zz"]);
+  });
+
+  test("nip77 module export has no itemCompare", async () => {
+    expect("itemCompare" in nip77).toBe(false);
+    const root = await import("../src/index.ts");
+    expect(root.itemCompare).toBe(itemCompare);
   });
 });
 
