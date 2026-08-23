@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
-import { EventBuilder, IndexedDbEventStore, Keys, Kind } from "../src/index.ts";
+import { EventBuilder, IndexedDbEventStore, Keys, Kind, itemCompare } from "../src/index.ts";
 import { installIdbMock, seedIdbV1, type IdbMock } from "./helpers/idb-mock.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
@@ -377,6 +377,75 @@ describe("IndexedDbEventStore", () => {
     const byE = await store.negentropyItems({ "#e": [EID] });
     expect(byE.map((i) => i.id)).toEqual([tagged.id]);
     expect(await store.count([{ "#e": [EID] }])).toBe(1);
+    expect(mock.eventsGetAllCount()).toBe(0);
+    store.close();
+  });
+
+  test("v1 superseded replaceable is omitted after a-tag deletion", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const meta1 = EventBuilder.metadata({ name: "v1" }).createdAt(10).signWithKeys(keys);
+    const meta2 = EventBuilder.metadata({ name: "v2" }).createdAt(20).signWithKeys(keys);
+    await seedIdbV1("coord-leak", [meta1, meta2]);
+    const store = new IndexedDbEventStore({ dbName: "coord-leak" });
+    await store.open();
+    const del = EventBuilder.deletion([], "gone", {
+      kinds: [0],
+      addresses: [`0:${keys.publicKey}:`],
+    })
+      .createdAt(25)
+      .signWithKeys(keys);
+    expect(await store.put(del)).toBe("deleted");
+    mock.resetStats();
+    const filter = { kinds: [Kind.Metadata], authors: [keys.publicKey] };
+    expect(await store.query([filter])).toEqual([]);
+    expect(await store.count([filter])).toBe(0);
+    expect(await store.negentropyItems(filter)).toEqual([]);
+    expect(mock.eventsGetAllCount()).toBe(0);
+    store.close();
+  });
+
+  test("ids+limit on negentropyItems keeps newest not ids-array order", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "ids-limit" });
+    await store.open();
+    const older = EventBuilder.textNote("old").createdAt(1).signWithKeys(keys);
+    const newer = EventBuilder.textNote("new").createdAt(2).signWithKeys(keys);
+    await store.put(older);
+    await store.put(newer);
+    mock.resetStats();
+    const items = await store.negentropyItems({ ids: [older.id, newer.id], limit: 1 });
+    expect(items.map((i) => i.id)).toEqual([newer.id]);
+    expect(mock.eventsGetAllCount()).toBe(0);
+    store.close();
+  });
+
+  test("count equals query length under multi-prefix limit; items are global recency", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.generate();
+    const store = new IndexedDbEventStore({ dbName: "multi-prefix" });
+    await store.open();
+    const aNotes = [1, 2, 3].map((t) =>
+      EventBuilder.textNote(`a${t}`).createdAt(t).signWithKeys(a),
+    );
+    const bNotes = [10, 11, 12].map((t) =>
+      EventBuilder.textNote(`b${t}`).createdAt(t).signWithKeys(b),
+    );
+    for (const n of aNotes) await store.put(n);
+    for (const n of bNotes) await store.put(n);
+
+    const filter = { authors: [a.publicKey, b.publicKey], kinds: [1], limit: 2 };
+    mock.resetStats();
+    const queried = await store.query([filter]);
+    expect(await store.count([filter])).toBe(queried.length);
+    expect(queried.map((e) => e.created_at)).toEqual([3, 2]);
+    expect(queried.map((e) => e.id)).toEqual([aNotes[2]!.id, aNotes[1]!.id]);
+
+    const items = await store.negentropyItems(filter);
+    expect(items.map((i) => i.created_at)).toEqual([11, 12]);
+    expect(items.map((i) => i.id)).toEqual(
+      [bNotes[1]!, bNotes[2]!].sort((x, y) => itemCompare(x, y)).map((e) => e.id),
+    );
+    expect(items.map((i) => i.id).sort()).not.toEqual(queried.map((e) => e.id).sort());
     expect(mock.eventsGetAllCount()).toBe(0);
     store.close();
   });

@@ -283,7 +283,7 @@ export class IndexedDbEventStore implements EventStore {
     const seen = new Set<string>();
     for (const filter of filters) {
       const local = new Set<string>();
-      await this.#scan(tx, filter, "prev", useKeyCursor(filter), (event, id, created_at) => {
+      await this.#scan(tx, filter, "prev", this.#useKeyCursor(filter), (event, id, created_at) => {
         if (local.has(id)) return false;
         if (!this.#acceptHit(filter, event, id, created_at)) return false;
         local.add(id);
@@ -301,15 +301,15 @@ export class IndexedDbEventStore implements EventStore {
     const done = txDone(tx);
     const items: NegentropyItem[] = [];
     const seenIds = new Set<string>();
-    await this.#scan(tx, filter, "next", useKeyCursor(filter), (event, id, created_at) => {
+    await this.#scan(tx, filter, "next", this.#useKeyCursor(filter), (event, id, created_at) => {
       if (seenIds.has(id)) return false;
       if (!this.#acceptHit(filter, event, id, created_at)) return false;
       seenIds.add(id);
       items.push({ id, created_at });
-      return Boolean(filter.ids) && filter.limit !== undefined && items.length >= filter.limit;
+      return false;
     });
     await done;
-    if (filter.limit !== undefined && !filter.ids) {
+    if (filter.limit !== undefined) {
       items.sort(queryItemOrder);
       if (items.length > filter.limit) items.length = filter.limit;
     }
@@ -508,14 +508,15 @@ export class IndexedDbEventStore implements EventStore {
     events.delete(event.id);
     return true;
   }
-}
 
-function useKeyCursor(filter: Filter): boolean {
-  if (filter.ids) return false;
-  for (const key of Object.keys(filter)) {
-    if (key.charAt(0) === "#") return false;
+  #useKeyCursor(filter: Filter): boolean {
+    if (filter.ids) return false;
+    if (this.#deletion.coordinates.size > 0 || this.#deletion.pending.size > 0) return false;
+    for (const key of Object.keys(filter)) {
+      if (key.charAt(0) === "#") return false;
+    }
+    return true;
   }
-  return true;
 }
 
 function createdAtFromKey(key: unknown): number {

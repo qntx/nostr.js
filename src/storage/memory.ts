@@ -19,7 +19,8 @@ export class MemoryEventStore implements EventStore {
   #replaceable = new Map<string, string>(); // address -> event id
   #deletion = new DeletionState();
 
-  async put(event: Event): Promise<PutResult> {
+  async put(raw: Event): Promise<PutResult> {
+    const event = normalizeEvent(raw);
     if (this.#deletion.ids.has(event.id) || this.#byId.has(event.id)) {
       return "duplicate";
     }
@@ -70,8 +71,9 @@ export class MemoryEventStore implements EventStore {
   }
 
   async get(id: string): Promise<Event | undefined> {
-    if (this.#deletion.ids.has(id)) return undefined;
-    return this.#byId.get(id);
+    const key = id.toLowerCase();
+    if (this.#deletion.ids.has(key)) return undefined;
+    return this.#byId.get(key);
   }
 
   async query(filters: Filter[]): Promise<Event[]> {
@@ -114,7 +116,8 @@ export class MemoryEventStore implements EventStore {
 
   async remove(ids: string[]): Promise<number> {
     let n = 0;
-    for (const id of ids) {
+    for (const raw of ids) {
+      const id = raw.toLowerCase();
       if (this.#indexRemove(id)) n += 1;
       this.#deletion.ids.add(id);
       this.#deletion.pending.delete(id);
@@ -143,13 +146,14 @@ export class MemoryEventStore implements EventStore {
   }
 
   #indexRemove(id: string): boolean {
-    const event = this.#byId.get(id);
+    const key = id.toLowerCase();
+    const event = this.#byId.get(key);
     if (!event) return false;
-    this.#byId.delete(id);
-    removeFromSet(this.#byPubkey, event.pubkey.toLowerCase(), id);
-    removeFromSet(this.#byKind, event.kind, id);
+    this.#byId.delete(key);
+    removeFromSet(this.#byPubkey, event.pubkey.toLowerCase(), key);
+    removeFromSet(this.#byKind, event.kind, key);
     const addr = eventAddress(event);
-    if (addr && this.#replaceable.get(addr) === id) this.#replaceable.delete(addr);
+    if (addr && this.#replaceable.get(addr) === key) this.#replaceable.delete(addr);
     return true;
   }
 
@@ -169,7 +173,7 @@ export class MemoryEventStore implements EventStore {
     if (filter.ids) {
       const seen = new Set<string>();
       for (const raw of filter.ids) {
-        const event = this.#byId.get(raw) ?? this.#byId.get(raw.toLowerCase());
+        const event = this.#byId.get(raw.toLowerCase());
         if (!event || seen.has(event.id)) continue;
         seen.add(event.id);
         visit(event);
@@ -228,6 +232,13 @@ export class MemoryEventStore implements EventStore {
 
     for (const event of this.#byId.values()) visit(event);
   }
+}
+
+function normalizeEvent(event: Event): Event {
+  const id = event.id.toLowerCase();
+  const pubkey = event.pubkey.toLowerCase();
+  if (id === event.id && pubkey === event.pubkey) return event;
+  return { ...event, id, pubkey };
 }
 
 function addToSet<K>(map: Map<K, Set<string>>, key: K, id: string): void {

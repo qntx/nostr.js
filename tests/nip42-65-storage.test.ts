@@ -6,12 +6,14 @@ import {
   MemoryEventStore,
   Relay,
   isAuthRequired,
+  itemCompare,
   makeAuthEvent,
   parseRelayList,
   readRelays,
   relayListToTags,
   useWebSocketImplementation,
   writeRelays,
+  type Event,
 } from "../src/index.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 
@@ -294,6 +296,60 @@ describe("MemoryEventStore", () => {
       { id: a.id, created_at: 1 },
       { id: b.id, created_at: 2 },
     ]);
+  });
+
+  test("query({ids}) matches mixed-case stored ids like matchFilter", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("n").createdAt(1).signWithKeys(keys);
+    const mixed = { ...note, id: note.id.toUpperCase(), pubkey: note.pubkey.toUpperCase() };
+    expect(await store.put(mixed)).toBe("accepted");
+    expect((await store.get(note.id.toUpperCase()))?.id).toBe(note.id);
+    expect((await store.query([{ ids: [note.id] }])).map((e) => e.id)).toEqual([note.id]);
+    expect(await store.count([{ ids: [note.id.toUpperCase()] }])).toBe(1);
+    expect(await store.negentropyItems({ ids: [note.id.toLowerCase()] })).toEqual([
+      { id: note.id, created_at: 1 },
+    ]);
+  });
+
+  test("ids+limit keeps newest, not ids-array order", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+    const older = EventBuilder.textNote("old").createdAt(1).signWithKeys(keys);
+    const newer = EventBuilder.textNote("new").createdAt(2).signWithKeys(keys);
+    await store.put(older);
+    await store.put(newer);
+    const filter = { ids: [older.id, newer.id], limit: 1 };
+    expect((await store.query([filter])).map((e) => e.id)).toEqual([newer.id]);
+    expect(await store.count([filter])).toBe(1);
+    expect((await store.negentropyItems(filter)).map((i) => i.id)).toEqual([newer.id]);
+  });
+
+  test("negentropyItems 10k authors+kinds has no content and matches itemCompare", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+    const events: Event[] = [];
+    for (let i = 0; i < 10_000; i++) {
+      events.push({
+        id: i.toString(16).padStart(64, "0"),
+        pubkey: keys.publicKey,
+        kind: Kind.TextNote,
+        created_at: i,
+        tags: [],
+        content: "payload-should-not-appear-on-items",
+        sig: "ab".repeat(32),
+      });
+    }
+    for (const event of events) await store.put(event);
+    const filter = { authors: [keys.publicKey], kinds: [Kind.TextNote] };
+    const items = await store.negentropyItems(filter);
+    expect(items).toHaveLength(10_000);
+    for (const item of items) {
+      expect(Object.keys(item).sort()).toEqual(["created_at", "id"]);
+    }
+    const expected = events.map((e) => ({ id: e.id, created_at: e.created_at })).sort(itemCompare);
+    expect(items).toEqual(expected);
+    expect(await store.count([filter])).toBe((await store.query([filter])).length);
   });
 });
 
