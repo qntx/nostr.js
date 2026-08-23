@@ -74,7 +74,7 @@ describe("nip10", () => {
     const thread = parseThreadTags(event);
     expect(thread.root?.id).toBe(rootId);
     expect(thread.mentions.map((m) => m.id)).toEqual([mentionId]);
-    expect(thread.reply?.id).not.toBe(mentionId);
+    expect(thread.reply?.id).toBe(rootId);
     expect(thread.quotes).toEqual([{ id: quoteId, relays: ["wss://quote.example"] }]);
   });
 
@@ -119,6 +119,22 @@ describe("nip10", () => {
     const thread = parseThreadTags(event);
     expect(thread.root?.id).toBe(rootId);
     expect(thread.reply?.id).toBe(parentId);
+    expect(thread.mentions).toEqual([]);
+  });
+
+  test("parseThreadTags NIP-01 e 4-tuple is positional with author", () => {
+    const parentId = "a1".repeat(32);
+    const author = keysB.publicKey;
+    const event = signedNote(keysA, "nip01 e", [
+      ["e", parentId, "wss://relay.example", author.toUpperCase()],
+    ]);
+
+    const thread = parseThreadTags(event);
+    expect(thread.root?.id).toBe(parentId);
+    expect(thread.reply?.id).toBe(parentId);
+    expect(thread.root?.author).toBe(author);
+    expect(thread.reply?.author).toBe(author);
+    expect(thread.root?.relays).toEqual(["wss://relay.example"]);
     expect(thread.mentions).toEqual([]);
   });
 
