@@ -155,18 +155,41 @@ describe("kinds", () => {
     expect(classifyKind(30023)).toBe("addressable");
   });
 
-  test("catalog includes jumble-used kinds", () => {
-    expect(Kind.Highlights).toBe(9802);
-    expect(Kind.BlossomServerList).toBe(10063);
-    expect(Kind.RelaySets).toBe(30002);
-    expect(Kind.FileMessage).toBe(15);
-    expect(Kind.ReactionToWebsite).toBe(17);
-    expect(Kind.Picture).toBe(20);
-    expect(Kind.Video).toBe(21);
-    expect(Kind.ShortVideo).toBe(22);
-    expect(Kind.ClientKeyAnnouncement).toBe(4454);
-    expect(Kind.KeyTransfer).toBe(4455);
-    expect(Kind.EncryptionKeyAnnouncement).toBe(10044);
+  test("catalog is the 28 production names", () => {
+    expect(Kind).toEqual({
+      Metadata: 0,
+      TextNote: 1,
+      Contacts: 3,
+      EventDeletion: 5,
+      Repost: 6,
+      Reaction: 7,
+      Seal: 13,
+      PrivateDirectMessage: 14,
+      GenericRepost: 16,
+      GiftWrap: 1059,
+      ZapRequest: 9734,
+      Zap: 9735,
+      MuteList: 10000,
+      PinList: 10001,
+      RelayList: 10002,
+      BookmarkList: 10003,
+      FavoriteRelays: 10012,
+      UserEmojiList: 10030,
+      DirectMessageRelaysList: 10050,
+      BlossomServerList: 10063,
+      GiftWrapEphemeral: 21059,
+      ClientAuth: 22242,
+      NostrConnect: 24133,
+      BlobsAuth: 24242,
+      HttpAuth: 27235,
+      RelaySets: 30002,
+      EmojiSet: 30030,
+      StarterPack: 39089,
+    });
+    expect(Object.keys(Kind)).toHaveLength(28);
+    expect("EncryptionKeyAnnouncement" in Kind).toBe(false);
+    expect("ClientKeyAnnouncement" in Kind).toBe(false);
+    expect("KeyTransfer" in Kind).toBe(false);
   });
 
   test("event address coordinates", () => {

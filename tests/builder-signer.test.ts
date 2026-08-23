@@ -67,7 +67,7 @@ describe("EventBuilder", () => {
 
   test("genericRepost kind 20 embeds JSON and omits a", () => {
     const keys = Keys.fromSecretKey(SK);
-    const target = new EventBuilder(Kind.Picture, "img").createdAt(1).signWithKeys(keys);
+    const target = new EventBuilder(20, "img").createdAt(1).signWithKeys(keys);
     const draft = EventBuilder.genericRepost(target);
 
     expect(draft.currentKind).toBe(Kind.GenericRepost);
@@ -80,7 +80,7 @@ describe("EventBuilder", () => {
 
   test("genericRepost relayHint is e tag relay URL", () => {
     const keys = Keys.fromSecretKey(SK);
-    const target = new EventBuilder(Kind.Picture, "img").createdAt(1).signWithKeys(keys);
+    const target = new EventBuilder(20, "img").createdAt(1).signWithKeys(keys);
     const draft = EventBuilder.genericRepost(target, { relayHint: "wss://r" });
     expect(draft.currentTags.find((t) => t[0] === "e")).toEqual(["e", target.id, "wss://r"]);
   });
@@ -96,16 +96,13 @@ describe("EventBuilder", () => {
 
   test("genericRepost addressable without d throws", () => {
     const keys = Keys.fromSecretKey(SK);
-    const target = new EventBuilder(Kind.AddressableVideo, "v").createdAt(1).signWithKeys(keys);
+    const target = new EventBuilder(34235, "v").createdAt(1).signWithKeys(keys);
     expect(() => EventBuilder.genericRepost(target)).toThrow(EventValidationError);
   });
 
   test("genericRepost NIP-70 protected event has empty content", () => {
     const keys = Keys.fromSecretKey(SK);
-    const target = new EventBuilder(Kind.Picture, "secret")
-      .tag(["-"])
-      .createdAt(1)
-      .signWithKeys(keys);
+    const target = new EventBuilder(20, "secret").tag(["-"]).createdAt(1).signWithKeys(keys);
     const draft = EventBuilder.genericRepost(target);
     expect(draft.currentContent).toBe("");
     expect(draft.currentKind).toBe(Kind.GenericRepost);

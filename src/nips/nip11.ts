@@ -23,7 +23,6 @@ const STRING_FIELDS = [
 const LIMITATION_NUMBERS = [
   "max_message_length",
   "max_subscriptions",
-  "max_filters",
   "max_limit",
   "max_subid_length",
   "max_event_tags",
@@ -63,7 +62,6 @@ export type RelayInformation = {
   limitation?: {
     max_message_length?: number;
     max_subscriptions?: number;
-    max_filters?: number;
     max_limit?: number;
     max_subid_length?: number;
     max_event_tags?: number;
@@ -78,7 +76,6 @@ export type RelayInformation = {
   };
   payments_url?: string;
   terms_of_service?: string;
-  tags?: string[];
 };
 
 export class Nip11Error extends NostrError {}
@@ -128,10 +125,6 @@ function parseRelayInformation(json: unknown): RelayInformation {
 
   if (Array.isArray(raw.supported_nips)) {
     info.supported_nips = raw.supported_nips.filter(isNonNegativeInteger);
-  }
-
-  if (Array.isArray(raw.tags)) {
-    info.tags = raw.tags.filter((t): t is string => typeof t === "string");
   }
 
   if (raw.limitation && typeof raw.limitation === "object" && !Array.isArray(raw.limitation)) {
