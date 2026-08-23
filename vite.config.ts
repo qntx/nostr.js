@@ -18,6 +18,7 @@ export default defineConfig({
       "nips/nip05": "src/nips/nip05.ts",
       "nips/nip10": "src/nips/nip10.ts",
       "nips/nip11": "src/nips/nip11.ts",
+      "nips/nip13": "src/nips/nip13.ts",
       "nips/nip17": "src/nips/nip17.ts",
       "nips/nip19": "src/nips/nip19.ts",
       "nips/nip21": "src/nips/nip21.ts",
