@@ -1,5 +1,20 @@
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bech32 } from "@scure/base";
 import { describe, expect, test } from "vite-plus/test";
-import { EventBuilder, EventValidationError, Keys, Kind, makeZapRequest } from "../src/index.ts";
+import {
+  EventBuilder,
+  EventValidationError,
+  Keys,
+  Kind,
+  hexToBytes,
+  makeZapRequest,
+  parseBolt11,
+  parseZapRequestFromReceipt,
+  utf8Encoder,
+  validateZapReceipt,
+  type Event,
+  type Tag,
+} from "../src/index.ts";
 
 const keys = Keys.generate();
 const relays = ["wss://a.example", "wss://b.example"] as const;
@@ -130,5 +145,278 @@ describe("makeZapRequest", () => {
       lnurl,
     });
     expect(zr.tags).toContainEqual(["lnurl", lnurl]);
+  });
+});
+
+// NIP-57 Appendix E (nips/57.md). Full invoice — not a 90-char stub.
+const APPENDIX_E_INVOICE =
+  "lnbc10u1p3unwfusp5t9r3yymhpfqculx78u027lxspgxcr2n2987mx2j55nnfs95nxnzqpp5jmrh92pfld78spqs78v9euf2385t83uvpwk9ldrlvf6ch7tpascqhp5zvkrmemgth3tufcvflmzjzfvjt023nazlhljz2n9hattj4f8jq8qxqyjw5qcqpjrzjqtc4fc44feggv7065fqe5m4ytjarg3repr5j9el35xhmtfexc42yczarjuqqfzqqqqqqqqlgqqqqqqgq9q9qxpqysgq079nkq507a5tw7xgttmj4u990j7wfggtrasah5gd4ywfr2pjcn29383tphp4t48gquelz9z78p4cq7ml3nrrphw5w6eckhjwmhezhnqpy6gyf0";
+
+const APPENDIX_E_DESCRIPTION =
+  '{"pubkey":"97c70a44366a6535c145b333f973ea86dfdc2d7a99da618c40c64705ad98e322","content":"","id":"d9cc14d50fcb8c27539aacf776882942c1a11ea4472f8cdec1dea82fab66279d","created_at":1674164539,"sig":"77127f636577e9029276be060332ea565deaf89ff215a494ccff16ae3f757065e2bc59b2e8c113dd407917a010b3abd36c8d7ad84c0e3ab7dab3a0b0caa9835d","kind":9734,"tags":[["e","3624762a1274dd9636e0c552b53086d70bc88c165bc4dc0f9e836a1eaf86c3b8"],["p","32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245"],["relays","wss://relay.damus.io","wss://nostr-relay.wlvs.space","wss://nostr.fmt.wiz.biz","wss://relay.nostr.bg","wss://nostr.oxtr.dev","wss://nostr.v0l.io","wss://brb.io","wss://nostr.bitcoiner.social","ws://monad.jb55.com:8080","wss://relay.snort.social"]]}';
+
+const APPENDIX_E_PREIMAGE = "5d006d2cf1e73c7148e7519a4c68adc81642ce0e25a432b2434c99f97344c15f";
+const LNURL =
+  "lnurl1dp68gurn8ghj7um5v93kketj9ehx2amn9uh8wetvdskkkmn0wahz7mrww4excup0dajx2mrv92x9xp";
+
+function taggedField(type: number, data: Uint8Array): number[] {
+  const dataWords = bech32.toWords(data);
+  return [type, (dataWords.length >> 5) & 31, dataWords.length & 31, ...dataWords];
+}
+
+function encodeBolt11(
+  hrp: string,
+  fields: { paymentHash?: Uint8Array; descriptionHash?: Uint8Array },
+): string {
+  const words = [0, 0, 0, 0, 0, 0, 0];
+  if (fields.paymentHash) words.push(...taggedField(1, fields.paymentHash));
+  if (fields.descriptionHash) words.push(...taggedField(23, fields.descriptionHash));
+  // BOLT11 data part ends with 104 5-bit words of secp256k1 signature.
+  for (let i = 0; i < 104; i++) words.push(0);
+  return bech32.encode(hrp, words, false);
+}
+
+function signedZapRequest(opts?: { amount?: number; lnurl?: string; extraTags?: Tag[] }): {
+  request: Event;
+  json: string;
+} {
+  const payer = Keys.generate();
+  const builder = new EventBuilder(Kind.ZapRequest, "")
+    .tag(["p", keys.publicKey])
+    .tag(["relays", "wss://r.example"]);
+  if (opts?.amount !== undefined) builder.tag(["amount", String(opts.amount)]);
+  if (opts?.lnurl !== undefined) builder.tag(["lnurl", opts.lnurl]);
+  if (opts?.extraTags) builder.tags(opts.extraTags);
+  const request = builder.signWithKeys(payer);
+  return { request, json: JSON.stringify(request) };
+}
+
+function signedReceipt(provider: Keys, tags: Tag[]): Event {
+  return new EventBuilder(Kind.Zap, "").tags(tags).signWithKeys(provider);
+}
+
+function receiptFor(
+  provider: Keys,
+  request: Event,
+  json: string,
+  extra?: { invoice?: string; preimage?: string },
+): Event {
+  const paymentHash = sha256(hexToBytes(APPENDIX_E_PREIMAGE));
+  const invoice =
+    extra?.invoice ??
+    encodeBolt11("lnbc10u", {
+      paymentHash,
+      descriptionHash: sha256(utf8Encoder.encode(json)),
+    });
+  const tags: Tag[] = [
+    ["p", request.tags.find((t) => t[0] === "p")![1]!],
+    ["bolt11", invoice],
+    ["description", json],
+  ];
+  if (extra?.preimage !== undefined) tags.push(["preimage", extra.preimage]);
+  else tags.push(["preimage", APPENDIX_E_PREIMAGE]);
+  return signedReceipt(provider, tags);
+}
+
+describe("parseBolt11", () => {
+  test("Appendix E invoice: 1_000_000 msat and payment hash (full string, not a 90-char stub)", () => {
+    expect(APPENDIX_E_INVOICE.length).toBeGreaterThan(90);
+    const fields = parseBolt11(APPENDIX_E_INVOICE);
+    expect(fields?.amountMsats).toBe(1_000_000);
+    expect(fields?.descriptionHash?.length).toBe(32);
+    expect(fields?.paymentHash).toEqual(sha256(hexToBytes(APPENDIX_E_PREIMAGE)));
+  });
+
+  test("descriptionHash is sha256 of the description TAG STRING", () => {
+    const tagHash = sha256(utf8Encoder.encode(APPENDIX_E_DESCRIPTION));
+    const paymentHash = sha256(hexToBytes(APPENDIX_E_PREIMAGE));
+    const invoice = encodeBolt11("lnbc10u", { paymentHash, descriptionHash: tagHash });
+    const fields = parseBolt11(invoice);
+    expect(fields?.descriptionHash).toEqual(tagHash);
+    expect(fields?.amountMsats).toBe(1_000_000);
+    expect(fields?.paymentHash).toEqual(paymentHash);
+  });
+
+  test("truncated bech32 returns undefined", () => {
+    expect(parseBolt11(APPENDIX_E_INVOICE.slice(0, 90))).toBeUndefined();
+    expect(parseBolt11("lnbc10u1")).toBeUndefined();
+  });
+
+  test("checksum-valid stub without payment hash returns undefined", () => {
+    const stub = encodeBolt11("lnbc10u", {});
+    expect(stub.length).toBeGreaterThan(8);
+    expect(parseBolt11(stub)).toBeUndefined();
+    expect(parseBolt11(bech32.encode("lnbc", [0, 0, 0, 0, 0, 0, 0], false))).toBeUndefined();
+  });
+
+  test("never throws", () => {
+    expect(() => parseBolt11("")).not.toThrow();
+    expect(() => parseBolt11("not-an-invoice")).not.toThrow();
+    expect(parseBolt11("")).toBeUndefined();
+  });
+});
+
+describe("parseZapRequestFromReceipt", () => {
+  test("signed kind 9734 description round-trips", () => {
+    const provider = Keys.generate();
+    const { request, json } = signedZapRequest({ amount: 1_000_000 });
+    const parsed = parseZapRequestFromReceipt(receiptFor(provider, request, json));
+    expect(parsed?.kind).toBe(Kind.ZapRequest);
+    expect(parsed?.kind).toBe(9734);
+    expect(parsed?.id).toBe(request.id);
+    expect(parsed?.sig).toBe(request.sig);
+  });
+
+  test("official Appendix E description fails verifyEvent", () => {
+    const provider = Keys.generate();
+    const { request, json } = signedZapRequest();
+    const receipt = receiptFor(provider, request, json, { invoice: APPENDIX_E_INVOICE });
+    const forged: Event = {
+      ...receipt,
+      tags: receipt.tags.map((t) =>
+        t[0] === "description" ? ["description", APPENDIX_E_DESCRIPTION] : t,
+      ),
+    };
+    expect(parseZapRequestFromReceipt(forged)).toBeUndefined();
+  });
+});
+
+describe("validateZapReceipt", () => {
+  test("matching nostrPubkey is valid", () => {
+    const provider = Keys.generate();
+    const { request, json } = signedZapRequest({ amount: 1_000_000 });
+    const receipt = receiptFor(provider, request, json);
+    const result = validateZapReceipt(receipt, { nostrPubkey: provider.publicKey });
+    expect(result.valid).toBe(true);
+    expect(result.request?.kind).toBe(9734);
+    expect(result.request?.id).toBe(request.id);
+    expect(result.amountMsats).toBe(1_000_000);
+  });
+
+  test("wrong nostrPubkey is invalid and does not throw", () => {
+    const provider = Keys.generate();
+    const { request, json } = signedZapRequest({ amount: 1_000_000 });
+    const receipt = receiptFor(provider, request, json);
+    expect(() => validateZapReceipt(receipt, { nostrPubkey: keys.publicKey })).not.toThrow();
+    const result = validateZapReceipt(receipt, { nostrPubkey: keys.publicKey });
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe("pubkey mismatch");
+  });
+
+  test("amount mismatch", () => {
+    const provider = Keys.generate();
+    const { request, json } = signedZapRequest({ amount: 21 });
+    const receipt = receiptFor(provider, request, json);
+    const result = validateZapReceipt(receipt, { nostrPubkey: provider.publicKey });
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe("amount mismatch");
+  });
+
+  test("description hash mismatch uses official Appendix E invoice", () => {
+    const provider = Keys.generate();
+    const { request, json } = signedZapRequest({ amount: 1_000_000 });
+    const receipt = receiptFor(provider, request, json, { invoice: APPENDIX_E_INVOICE });
+    const result = validateZapReceipt(receipt, { nostrPubkey: provider.publicKey });
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe("description hash mismatch");
+  });
+
+  test("bad preimage", () => {
+    const provider = Keys.generate();
+    const { request, json } = signedZapRequest({ amount: 1_000_000 });
+    const receipt = receiptFor(provider, request, json, { preimage: "00".repeat(32) });
+    const result = validateZapReceipt(receipt, { nostrPubkey: provider.publicKey });
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe("preimage mismatch");
+  });
+
+  test("truncated bech32", () => {
+    const provider = Keys.generate();
+    const { request, json } = signedZapRequest({ amount: 1_000_000 });
+    const receipt = receiptFor(provider, request, json, {
+      invoice: APPENDIX_E_INVOICE.slice(0, 90),
+    });
+    const result = validateZapReceipt(receipt, { nostrPubkey: provider.publicKey });
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe("invalid bolt11");
+  });
+
+  test("lnurl mismatch", () => {
+    const provider = Keys.generate();
+    const { request, json } = signedZapRequest({ amount: 1_000_000, lnurl: LNURL });
+    const receipt = receiptFor(provider, request, json);
+    const result = validateZapReceipt(receipt, {
+      nostrPubkey: provider.publicKey,
+      lnurl: "other",
+    });
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe("lnurl mismatch");
+  });
+
+  test("checksum-valid stub without p/h is invalid bolt11", () => {
+    const provider = Keys.generate();
+    const { request, json } = signedZapRequest({ amount: 1_000_000 });
+    const stub = encodeBolt11("lnbc10u", {});
+    const receipt = receiptFor(provider, request, json, { invoice: stub });
+    const result = validateZapReceipt(receipt, { nostrPubkey: provider.publicKey });
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe("invalid bolt11");
+  });
+
+  test("9734 with two p tags or missing relays is invalid", () => {
+    const provider = Keys.generate();
+    const twoP = signedZapRequest({
+      amount: 1_000_000,
+      extraTags: [["p", keys.publicKey]],
+    });
+    const twoPResult = validateZapReceipt(receiptFor(provider, twoP.request, twoP.json), {
+      nostrPubkey: provider.publicKey,
+    });
+    expect(twoPResult.valid).toBe(false);
+    expect(twoPResult.reason).toBe("invalid p count");
+
+    const twoE = signedZapRequest({
+      amount: 1_000_000,
+      extraTags: [
+        ["e", "11".repeat(32)],
+        ["e", "22".repeat(32)],
+      ],
+    });
+    const twoEResult = validateZapReceipt(receiptFor(provider, twoE.request, twoE.json), {
+      nostrPubkey: provider.publicKey,
+    });
+    expect(twoEResult.valid).toBe(false);
+    expect(twoEResult.reason).toBe("too many e tags");
+
+    const payer = Keys.generate();
+    const noRelays = new EventBuilder(Kind.ZapRequest, "")
+      .tag(["p", keys.publicKey])
+      .tag(["amount", "1000000"])
+      .signWithKeys(payer);
+    const noRelaysJson = JSON.stringify(noRelays);
+    const noRelaysResult = validateZapReceipt(receiptFor(provider, noRelays, noRelaysJson), {
+      nostrPubkey: provider.publicKey,
+    });
+    expect(noRelaysResult.valid).toBe(false);
+    expect(noRelaysResult.reason).toBe("missing relays");
+  });
+
+  test("never throws on garbage", () => {
+    const garbage = {
+      kind: 1,
+      tags: [],
+      content: "",
+      created_at: 0,
+      pubkey: "aa",
+      id: "bb",
+      sig: "cc",
+    };
+    expect(() =>
+      validateZapReceipt(garbage as Event, { nostrPubkey: keys.publicKey }),
+    ).not.toThrow();
+    expect(validateZapReceipt(garbage as Event, { nostrPubkey: keys.publicKey }).valid).toBe(false);
+    expect(validateZapReceipt(garbage as Event, { nostrPubkey: keys.publicKey }).reason).toBe(
+      "invalid receipt",
+    );
   });
 });
