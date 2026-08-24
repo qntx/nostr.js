@@ -73,15 +73,16 @@ Prefer a layer import when you do not need the facade.
 | `@qntx/nostr/storage` | `MemoryEventStore`, `IndexedDbEventStore`                                    |
 | `@qntx/nostr/loaders` | `OutboxFeed`, `DataLoader`, list/profile/event loaders                       |
 | `@qntx/nostr/gossip`  | `Gossip`                                                                     |
+| `@qntx/nostr/wasm`    | `loadNostrWasm`. Opt-in verify. Packed by `build:wasm`.                      |
 | `@qntx/nostr/nips/*`  | One module per NIP (table below)                                             |
 
-There is no `@qntx/nostr/nips` barrel. Import `@qntx/nostr/nips/nip19`, `@qntx/nostr/nips/blossom`, and so on.
+There is no `@qntx/nostr/nips` barrel. Import `@qntx/nostr/nips/nip19`, `@qntx/nostr/nips/blossom`, and so on. `@qntx/nostr/wasm` is not re-exported from the root.
 
 ## I/O injection
 
 Cross-layer I/O is passed in. Nothing in `core` or `nips` opens a socket.
 
-**`verifyEvent`** is `(event: Event) => boolean`. `Relay` calls it **synchronously** on each EVENT frame. Default is core BIP-340 (`verifyEvent` in `@qntx/nostr/core`). A `Worker` is not a drop-in: `postMessage` cannot return `boolean` without an app-owned blocking bridge, or the app verifies before `observe` / `subscribe`. Do not pass an async function.
+**`verifyEvent`** is `(event: Event) => boolean`. `Relay` calls it **synchronously** on each EVENT frame. Default is core BIP-340 (`verifyEvent` in `@qntx/nostr/core`). A `Worker` is not a drop-in: `alreadyHaveEvent` and reconnect watermarks (`since=lastCreatedAt` plus same-second `ids`) run around that sync call, and `postMessage` cannot return `boolean` without an app-owned blocking bridge. Do not pass an async function.
 
 ```ts
 import { Client, verifyEvent, type Event } from "@qntx/nostr";
@@ -110,6 +111,31 @@ await fetchRelayInformation("wss://relay.example", { fetch: myFetch });
 **`Nip46Transport`** — `{ subscribe, publish, close }`. `Pool` satisfies it. `Nip46Signer` does not import `relay`.
 
 **`Nip59Crypto`** — `{ getPublicKey, signEvent, nip44Encrypt, nip44Decrypt }`. `KeysSigner` satisfies it. `Client.sendPrivateMessage` requires NIP-44 on the signer.
+
+## Wasm verify
+
+Opt-in libsecp256k1 BIP-340 verify. Noble remains the default. There is no auto-detect. Instantiate, then inject:
+
+```ts
+import { Client } from "@qntx/nostr";
+import { loadNostrWasm } from "@qntx/nostr/wasm";
+
+const wasm = await loadNostrWasm();
+const client = Client.builder()
+  .verifyEvent(wasm.verifyEvent)
+  .relays(["wss://relay.example"])
+  .build();
+```
+
+`loadNostrWasm` instantiates once (repeats reuse the module) and throws if instantiate fails. The wasm subpath does not fall back to noble.
+
+After init, `wasm.verifyEvent` is sync — the live EVENT hook. A `Worker` is not a drop-in (`alreadyHaveEvent` / watermarks).
+
+CSP: `'wasm-unsafe-eval'` on `script-src`. That permits WASM compilation, not JS `eval()`. v1 requires WASM SIMD (`simd128`); engines without it fail instantiate.
+
+`build` stays `vp pack`. `build:wasm` packs this subpath and needs a wasm-capable clang (macOS: Homebrew llvm, not Apple clang: `CC_wasm32_unknown_unknown=$(brew --prefix llvm)/bin/clang`). CI runs a sibling `wasm` job; the bun job does not.
+
+Named-machine record (Apple M5, Darwin arm64). Kind-1, content `"hello"`, tags `[]`. N=10000 ingest-equivalent after warmup: noble 1648 ops/s (607 µs), wasm 9654 ops/s (104 µs), 5.86×. Wasm 1,275,255 bytes uncompressed. Init 0.57 ms. That record is this machine, not a generic 4× production SLA.
 
 ## NIP modules
 
