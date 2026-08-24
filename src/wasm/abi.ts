@@ -19,8 +19,21 @@ export type CryptoWasmExports = {
     sigPtr: number,
     sigLen: number,
   ) => number;
+  sign: (
+    retptr: number,
+    idPtr: number,
+    idLen: number,
+    skPtr: number,
+    skLen: number,
+    auxPtr: number,
+    auxLen: number,
+  ) => void;
+  public_key: (retptr: number, skPtr: number, skLen: number) => void;
   /** 0.2.122 name for `__wbindgen_malloc(size, align)`. */
   __wbindgen_export: (size: number, align: number) => number;
+  /** 0.2.122 name for `__wbindgen_free(ptr, size, align)` after malloc claimed `__wbindgen_export`. */
+  __wbindgen_export2: (ptr: number, size: number, align: number) => void;
+  __wbindgen_add_to_stack_pointer: (delta: number) => number;
   __wbindgen_start?: () => void;
 };
 
@@ -86,7 +99,14 @@ function asExports(raw: WebAssembly.Exports): CryptoWasmExports {
     memory: requireMemory(raw.memory),
     verify: requireFn(raw.verify, "verify"),
     verify_serialized: requireFn(raw.verify_serialized, "verify_serialized"),
+    sign: requireFn(raw.sign, "sign"),
+    public_key: requireFn(raw.public_key, "public_key"),
     __wbindgen_export: requireFn(raw.__wbindgen_export, "__wbindgen_export"),
+    __wbindgen_export2: requireFn(raw.__wbindgen_export2, "__wbindgen_export2"),
+    __wbindgen_add_to_stack_pointer: requireFn(
+      raw.__wbindgen_add_to_stack_pointer,
+      "__wbindgen_add_to_stack_pointer",
+    ),
     __wbindgen_start:
       typeof raw.__wbindgen_start === "function" ? (raw.__wbindgen_start as () => void) : undefined,
   };
@@ -139,6 +159,51 @@ export function wasmVerifySerialized(
       args[7]!,
     ),
   );
+}
+
+function takeBytes(exports: CryptoWasmExports, ptr: number, len: number): Uint8Array {
+  const out = new Uint8Array(len);
+  if (len > 0) {
+    out.set(new Uint8Array(exports.memory.buffer, ptr, len));
+    exports.__wbindgen_export2(ptr, len, 1);
+  }
+  return out;
+}
+
+function callReturningBytes(
+  exports: CryptoWasmExports,
+  arrays: readonly Uint8Array[],
+  invoke: (retptr: number, args: number[]) => void,
+): Uint8Array {
+  const passed = arrays.map((bytes) => passBytes(exports, bytes));
+  const args = passed.flatMap(({ ptr, len }) => [ptr, len]);
+  const retptr = exports.__wbindgen_add_to_stack_pointer(-16);
+  try {
+    invoke(retptr, args);
+    const view = new DataView(exports.memory.buffer);
+    const ptr = view.getInt32(retptr, true) >>> 0;
+    const len = view.getInt32(retptr + 4, true) >>> 0;
+    return takeBytes(exports, ptr, len);
+  } finally {
+    exports.__wbindgen_add_to_stack_pointer(16);
+  }
+}
+
+export function wasmSign(
+  exports: CryptoWasmExports,
+  id: Uint8Array,
+  seckey: Uint8Array,
+  aux: Uint8Array,
+): Uint8Array {
+  return callReturningBytes(exports, [id, seckey, aux], (retptr, args) => {
+    exports.sign(retptr, args[0]!, args[1]!, args[2]!, args[3]!, args[4]!, args[5]!);
+  });
+}
+
+export function wasmPublicKey(exports: CryptoWasmExports, seckey: Uint8Array): Uint8Array {
+  return callReturningBytes(exports, [seckey], (retptr, args) => {
+    exports.public_key(retptr, args[0]!, args[1]!);
+  });
 }
 
 export async function instantiateCryptoWasm(

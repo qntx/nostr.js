@@ -1,6 +1,9 @@
+import { CryptoError } from "../core/error.ts";
 import type { Event } from "../core/event.ts";
 import {
   instantiateCryptoWasm,
+  wasmPublicKey,
+  wasmSign,
   wasmVerify,
   wasmVerifySerialized,
   type CryptoWasmExports,
@@ -21,6 +24,8 @@ export type NostrWasm = {
     sig: Uint8Array,
   ) => boolean;
   verifyEvent: (event: Event) => boolean;
+  sign: (id: Uint8Array, seckey: Uint8Array, aux: Uint8Array) => Uint8Array;
+  publicKey: (seckey: Uint8Array) => Uint8Array;
 };
 
 export { WasmVerifyPoisonedError };
@@ -65,6 +70,12 @@ async function wasmBytes(opts?: LoadNostrWasmOptions): Promise<ArrayBuffer | Arr
   return readWasmUrl(href);
 }
 
+function requireByteLength(bytes: Uint8Array, expected: number, label: string): void {
+  if (bytes.length !== expected) {
+    throw new CryptoError(`invalid ${label} length: expected ${expected}, got ${bytes.length}`);
+  }
+}
+
 function wrapPoison<T>(poison: { error?: Error }, fn: () => T): T {
   if (poison.error) throw poison.error;
   try {
@@ -93,6 +104,22 @@ function bindExports(exports: CryptoWasmExports): NostrWasm {
     verifySerialized: (serializedUtf8, id, pubkey, sig) =>
       wrapPoison(poison, () => rawSerialized(serializedUtf8, id, pubkey, sig)),
     verifyEvent: makeVerifyEvent({ verifySerialized: rawSerialized }, poison),
+    sign: (id, seckey, aux) =>
+      wrapPoison(poison, () => {
+        requireByteLength(id, 32, "id");
+        requireByteLength(seckey, 32, "secret key");
+        requireByteLength(aux, 32, "aux");
+        const sig = wasmSign(exports, id, seckey, aux);
+        if (sig.length !== 64) throw new CryptoError("wasm sign failed");
+        return sig;
+      }),
+    publicKey: (seckey) =>
+      wrapPoison(poison, () => {
+        requireByteLength(seckey, 32, "secret key");
+        const pk = wasmPublicKey(exports, seckey);
+        if (pk.length !== 32) throw new CryptoError("wasm publicKey failed");
+        return pk;
+      }),
   };
 }
 
