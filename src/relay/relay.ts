@@ -584,6 +584,7 @@ export class Relay {
         if (this.#finishDummyPing(subId)) return;
         const sub = this.#subs.get(subId);
         if (!sub || sub.closed) return;
+        if (sub.eosed) return;
         sub.eosed = true;
         sub.handlers.oneose?.();
         break;
@@ -702,7 +703,9 @@ export class Relay {
 
     if (opts.eoseTimeoutMs !== undefined) {
       const timer = setTimeout(() => {
-        if (!sub.eosed && !sub.closed) sub.close("eose timeout");
+        if (sub.eosed || sub.closed) return;
+        sub.eosed = true;
+        sub.handlers.oneose?.();
       }, opts.eoseTimeoutMs);
       const prevClose = sub.handlers.onclose;
       sub.handlers.onclose = (reason) => {
@@ -934,6 +937,7 @@ export class Relay {
         this.#dropSubscription(sub, reason);
         return;
       }
+      sub.eosed = false;
       this.#send(["REQ", sub.id, ...sub.replayFilters()]);
     } catch {
       this.#dropSubscription(sub, reason);

@@ -17,7 +17,10 @@ export type SubscriptionHandlers = {
 
 export type SubscribeOptions = SubscriptionHandlers & {
   id?: string;
-  /** Close after first EOSE (one-shot query). */
+  /**
+   * If set, fire `oneose` once after this many ms if EOSE has not arrived.
+   * Does not close the REQ. `Relay.fetch` is the one-shot closer.
+   */
   eoseTimeoutMs?: number;
   signal?: AbortSignal;
 };

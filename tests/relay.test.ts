@@ -823,3 +823,317 @@ describe("Relay generation / close", () => {
     expect(relay.status).toBe(RelayStatus.Closed);
   });
 });
+
+function socketFor(substr: string): MockWebSocket {
+  const ws = MockWebSocket.instances.find((s) => s.url.includes(substr));
+  if (!ws) throw new Error(`no socket matching ${substr}`);
+  return ws;
+}
+
+function reqId(ws: MockWebSocket): string {
+  const req = sentMessages(ws).find((m) => m[0] === "REQ") as [string, string] | undefined;
+  if (!req) throw new Error(`no REQ on ${ws.url}`);
+  return req[1];
+}
+
+describe("Relay synthetic EOSE", () => {
+  test("eoseTimeoutMs fires oneose without CLOSE; later EOSE is ignored; EVENT still delivered; reconnect allows a new oneose", async () => {
+    const relay = await Relay.connect("wss://synth-eose.example", {
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: true,
+      reconnectBackoffMs: [10],
+    });
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("live").createdAt(1).signWithKeys(keys);
+    const events: string[] = [];
+    let eose = 0;
+    const sub = relay.subscribe([{ kinds: [1] }], {
+      eoseTimeoutMs: 40,
+      onevent: (e) => events.push(e.id),
+      oneose: () => {
+        eose += 1;
+      },
+    });
+    const first = MockWebSocket.last();
+    await waitUntil(() => sentMessages(first).some((m) => m[0] === "REQ"));
+    await waitUntil(() => eose === 1);
+    expect(sentMessages(first).some((m) => m[0] === "CLOSE")).toBe(false);
+
+    first.receive(JSON.stringify(["EVENT", sub.id, note]));
+    expect(events).toEqual([note.id]);
+    first.receive(JSON.stringify(["EOSE", sub.id]));
+    expect(eose).toBe(1);
+
+    first.close();
+    await waitUntil(() => {
+      const live = MockWebSocket.instances.find(
+        (ws) =>
+          ws !== first &&
+          ws.url.includes("synth-eose.example") &&
+          ws.readyState === MockWebSocket.OPEN,
+      );
+      return Boolean(live && sentMessages(live).some((m) => m[0] === "REQ"));
+    });
+    const second = MockWebSocket.instances.find(
+      (ws) =>
+        ws !== first &&
+        ws.url.includes("synth-eose.example") &&
+        ws.readyState === MockWebSocket.OPEN,
+    )!;
+    second.receive(JSON.stringify(["EOSE", sub.id]));
+    expect(eose).toBe(2);
+    relay.close();
+  });
+
+  test("AUTH retry after synthetic EOSE allows a new oneose", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://auth-synth-eose.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const events: string[] = [];
+    let eose = 0;
+    const sub = relay.subscribe([{ kinds: [1] }], {
+      eoseTimeoutMs: 30,
+      onevent: (e) => events.push(e.id),
+      oneose: () => {
+        eose += 1;
+      },
+    });
+    const ws = MockWebSocket.last();
+    await waitUntil(() => eose === 1);
+
+    ws.receive(JSON.stringify(["AUTH", "retry-challenge"]));
+    ws.receive(JSON.stringify(["CLOSED", sub.id, "auth-required: login"]));
+    await waitUntil(() => sentMessages(ws).some((m) => m[0] === "AUTH"));
+    const authFrame = sentMessages(ws).find((m) => m[0] === "AUTH") as [string, { id: string }];
+    ws.receive(JSON.stringify(["OK", authFrame[1].id, true, ""]));
+    await waitUntil(() => sentMessages(ws).filter((m) => m[0] === "REQ").length >= 2);
+
+    const note = EventBuilder.textNote("after auth").createdAt(1).signWithKeys(keys);
+    ws.receive(JSON.stringify(["EVENT", sub.id, note]));
+    expect(events).toEqual([note.id]);
+    ws.receive(JSON.stringify(["EOSE", sub.id]));
+    expect(eose).toBe(2);
+    relay.close();
+  });
+});
+
+describe("Pool aggregated EOSE", () => {
+  test("two relays both EOSE fire oneose once", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    let eose = 0;
+    const closer = pool.subscribe(["wss://a.example", "wss://b.example"], [{ kinds: [1] }], {
+      oneose: () => {
+        eose += 1;
+      },
+    });
+    await waitUntil(
+      () =>
+        MockWebSocket.instances.length === 2 &&
+        MockWebSocket.instances.every((ws) => sentMessages(ws).some((m) => m[0] === "REQ")),
+    );
+    for (const ws of MockWebSocket.instances) {
+      ws.receive(JSON.stringify(["EOSE", reqId(ws)]));
+    }
+    expect(eose).toBe(1);
+    closer.close();
+    pool.close();
+  });
+
+  test("one silent relay plus eoseTimeoutMs fires oneose once and does not CLOSE the silent REQ", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    let eose = 0;
+    const closer = pool.subscribe(
+      ["wss://loud.example", "wss://silent.example"],
+      [{ kinds: [1] }],
+      {
+        eoseTimeoutMs: 50,
+        oneose: () => {
+          eose += 1;
+        },
+      },
+    );
+    await waitUntil(
+      () =>
+        MockWebSocket.instances.length === 2 &&
+        MockWebSocket.instances.every((ws) => sentMessages(ws).some((m) => m[0] === "REQ")),
+    );
+    const loud = socketFor("loud.example");
+    const silent = socketFor("silent.example");
+    loud.receive(JSON.stringify(["EOSE", reqId(loud)]));
+    expect(eose).toBe(0);
+    await waitUntil(() => eose === 1);
+    expect(eose).toBe(1);
+    expect(sentMessages(silent).some((m) => m[0] === "CLOSE")).toBe(false);
+    closer.close();
+    pool.close();
+  });
+
+  test("connect failure plus EOSE fires oneose once", async () => {
+    MockWebSocket.autoConnect = false;
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    let eose = 0;
+    const closer = pool.subscribe(["wss://ok.example", "wss://fail.example"], [{ kinds: [1] }], {
+      connectionTimeoutMs: 40,
+      oneose: () => {
+        eose += 1;
+      },
+    });
+    await waitUntil(() => MockWebSocket.instances.length === 2);
+    socketFor("ok.example").open();
+    await waitUntil(() => sentMessages(socketFor("ok.example")).some((m) => m[0] === "REQ"));
+    const ok = socketFor("ok.example");
+    ok.receive(JSON.stringify(["EOSE", reqId(ok)]));
+    await waitUntil(() => eose === 1);
+    expect(eose).toBe(1);
+    closer.close();
+    pool.close();
+  });
+
+  test("caller close before EOSE fires onclose and not oneose", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    let eose = 0;
+    let closed: string | undefined;
+    const closer = pool.subscribe(["wss://a.example", "wss://b.example"], [{ kinds: [1] }], {
+      oneose: () => {
+        eose += 1;
+      },
+      onclose: (reason) => {
+        closed = reason;
+      },
+    });
+    await waitUntil(
+      () =>
+        MockWebSocket.instances.length === 2 &&
+        MockWebSocket.instances.every((ws) => sentMessages(ws).some((m) => m[0] === "REQ")),
+    );
+    closer.close("stop");
+    expect(closed).toBe("stop");
+    expect(eose).toBe(0);
+    pool.close();
+  });
+
+  test("abort before EOSE fires onclose and not oneose", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    const ac = new AbortController();
+    let eose = 0;
+    let closed: string | undefined;
+    pool.subscribe(["wss://a.example", "wss://b.example"], [{ kinds: [1] }], {
+      signal: ac.signal,
+      oneose: () => {
+        eose += 1;
+      },
+      onclose: (reason) => {
+        closed = reason;
+      },
+    });
+    await waitUntil(
+      () =>
+        MockWebSocket.instances.length === 2 &&
+        MockWebSocket.instances.every((ws) => sentMessages(ws).some((m) => m[0] === "REQ")),
+    );
+    ac.abort();
+    expect(closed).toBe("aborted");
+    expect(eose).toBe(0);
+    pool.close();
+  });
+
+  test("empty relay list fires onclose(no relays) and not oneose", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    let eose = 0;
+    let closed: string | undefined;
+    pool.subscribe([], [{ kinds: [1] }], {
+      oneose: () => {
+        eose += 1;
+      },
+      onclose: (reason) => {
+        closed = reason;
+      },
+    });
+    await waitUntil(() => closed !== undefined);
+    expect(closed).toBe("no relays");
+    expect(eose).toBe(0);
+    pool.close();
+  });
+
+  test("reconnect EOSE on one URL does not complete the set while the other is silent", async () => {
+    const pool = new Pool({
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: true,
+      reconnectBackoffMs: [10],
+    });
+    let eose = 0;
+    const closer = pool.subscribe(["wss://a.example", "wss://b.example"], [{ kinds: [1] }], {
+      oneose: () => {
+        eose += 1;
+      },
+    });
+    await waitUntil(
+      () =>
+        MockWebSocket.instances.length === 2 &&
+        MockWebSocket.instances.every((ws) => sentMessages(ws).some((m) => m[0] === "REQ")),
+    );
+    const firstA = socketFor("a.example");
+    const b = socketFor("b.example");
+    firstA.receive(JSON.stringify(["EOSE", reqId(firstA)]));
+    expect(eose).toBe(0);
+
+    firstA.close();
+    await waitUntil(() => {
+      const live = MockWebSocket.instances.find(
+        (ws) =>
+          ws !== firstA && ws.url.includes("a.example") && ws.readyState === MockWebSocket.OPEN,
+      );
+      return Boolean(live && sentMessages(live).some((m) => m[0] === "REQ"));
+    });
+    const secondA = MockWebSocket.instances.find(
+      (ws) => ws !== firstA && ws.url.includes("a.example") && ws.readyState === MockWebSocket.OPEN,
+    )!;
+    secondA.receive(JSON.stringify(["EOSE", reqId(secondA)]));
+    await sleep(20);
+    expect(eose).toBe(0);
+
+    b.receive(JSON.stringify(["EOSE", reqId(b)]));
+    expect(eose).toBe(1);
+    closer.close();
+    pool.close();
+  });
+
+  test("all connect failures fire onclose once even if the handler calls close", async () => {
+    MockWebSocket.failConnect = true;
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    let n = 0;
+    let closer!: { close: (reason?: string) => void };
+    closer = pool.subscribe(["wss://a.example", "wss://b.example"], [{ kinds: [1] }], {
+      onclose: () => {
+        n += 1;
+        closer.close();
+      },
+    });
+    await waitUntil(() => n >= 1);
+    await sleep(20);
+    expect(n).toBe(1);
+    pool.close();
+  });
+
+  test("invalid URL after a valid one does not throw and caller close CLOSEs the valid REQ", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    const closer = pool.subscribe(["wss://ok.example", "not a url"], [{ kinds: [1] }]);
+    await waitUntil(() =>
+      MockWebSocket.instances.some(
+        (ws) => ws.url.includes("ok.example") && sentMessages(ws).some((m) => m[0] === "REQ"),
+      ),
+    );
+    const ok = socketFor("ok.example");
+    closer.close();
+    expect(sentMessages(ok).some((m) => m[0] === "CLOSE")).toBe(true);
+    pool.close();
+  });
+});

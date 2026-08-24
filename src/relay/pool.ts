@@ -215,14 +215,45 @@ export class Pool {
     const seen = new Set<string>();
     const closers: Array<{ close: (reason?: string) => void }> = [];
     let closed = false;
+    let eoseFired = false;
+    let eoseTimer: ReturnType<typeof setTimeout> | undefined;
+    const eoseDone = new Set<string>();
+    let pendingEose = 0;
+
+    const fireEose = () => {
+      if (closed || eoseFired) return;
+      eoseFired = true;
+      if (eoseTimer !== undefined) {
+        clearTimeout(eoseTimer);
+        eoseTimer = undefined;
+      }
+      opts.oneose?.();
+    };
+
+    const markEose = (url: string) => {
+      if (eoseDone.has(url)) return;
+      eoseDone.add(url);
+      pendingEose -= 1;
+      if (pendingEose === 0) fireEose();
+    };
+
+    const settleClose = () => {
+      closed = true;
+      if (eoseTimer !== undefined) {
+        clearTimeout(eoseTimer);
+        eoseTimer = undefined;
+      }
+    };
 
     const closeAll = (reason?: string) => {
       if (closed) return;
-      closed = true;
+      settleClose();
       for (const c of closers) c.close(reason);
+      opts.onclose?.(reason ?? "closed by client");
     };
 
     if (opts.signal?.aborted) {
+      closed = true;
       opts.onclose?.("aborted");
       return { close: closeAll };
     }
@@ -231,10 +262,21 @@ export class Pool {
 
     const closeReasons: Array<{ url: string; reason: string }> = [];
     let pending = 0;
+    const attempted = new Set<string>();
 
     for (const url of relays) {
       if (!this.#allowed(url, "read")) continue;
+      let key: string;
+      try {
+        key = normalizeURL(url);
+      } catch {
+        key = url;
+      }
       pending += 1;
+      if (!attempted.has(key)) {
+        attempted.add(key);
+        pendingEose += 1;
+      }
       void this.ensureRelay(url, {
         signal: opts.signal,
         timeoutMs: opts.connectionTimeoutMs ?? this.#opts.maxWaitForConnectionMs,
@@ -244,8 +286,6 @@ export class Pool {
           this.#touch(relay.url);
           const sub = relay.subscribe(filters, {
             id: opts.id,
-            signal: opts.signal,
-            eoseTimeoutMs: opts.eoseTimeoutMs,
             alreadyHaveEvent: (id) => Boolean(opts.alreadyHaveEvent?.(id) || seen.has(id)),
             receivedEvent: (id) => {
               opts.receivedEvent?.(id);
@@ -262,11 +302,13 @@ export class Pool {
               seen.add(event.id);
               opts.onevent?.(event);
             },
-            oneose: opts.oneose,
+            oneose: () => markEose(relay.url),
             onclose: (reason) => {
               closeReasons.push({ url: relay.url, reason });
+              markEose(relay.url);
               pending -= 1;
-              if (pending <= 0) {
+              if (pending <= 0 && !closed) {
+                settleClose();
                 // Aggregate close: tools passes per-relay reasons; we pass last reason for simplicity.
                 opts.onclose?.(reason);
               }
@@ -275,15 +317,28 @@ export class Pool {
           closers.push(sub);
         })
         .catch(() => {
+          markEose(key);
           pending -= 1;
-          if (pending <= 0 && closers.length === 0) {
+          if (pending <= 0 && closers.length === 0 && !closed) {
+            settleClose();
             opts.onclose?.("all relays failed");
           }
         });
     }
 
+    if (opts.eoseTimeoutMs !== undefined && pending > 0) {
+      eoseTimer = setTimeout(() => {
+        eoseTimer = undefined;
+        fireEose();
+      }, opts.eoseTimeoutMs);
+    }
+
     if (pending === 0) {
-      queueMicrotask(() => opts.onclose?.("no relays"));
+      queueMicrotask(() => {
+        if (closed) return;
+        settleClose();
+        opts.onclose?.("no relays");
+      });
     }
 
     return { close: closeAll };

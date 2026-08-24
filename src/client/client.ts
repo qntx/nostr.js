@@ -134,6 +134,11 @@ export type SubscribeOptions = {
   onclose?: (reason: string) => void;
   signal?: AbortSignal;
   id?: string;
+  /**
+   * If set, fire `oneose` once after this many ms if not all relays have EOSEd.
+   * Does not close the subscription.
+   */
+  eoseTimeoutMs?: number;
   /** Fan out REQs via NIP-65 gossip routes when available. */
   gossip?: boolean;
   /** When false, skip writing received events to storage/observe. Default true. */
@@ -184,6 +189,7 @@ export type SubscribePrivateMessagesOptions = {
   readonly oneose?: () => void;
   readonly onclose?: (reason: string) => void;
   readonly signal?: AbortSignal;
+  readonly eoseTimeoutMs?: number;
   readonly observe?: boolean;
 };
 
@@ -520,6 +526,7 @@ export class Client {
         onclose: opts?.onclose,
         signal: opts?.signal,
         id: opts?.id,
+        eoseTimeoutMs: opts?.eoseTimeoutMs,
       });
     }
 
@@ -527,14 +534,36 @@ export class Client {
     const closers: Array<{ close: (reason?: string) => void }> = [];
     let pendingEose = 0;
     let eoseFired = false;
+    let closed = false;
+    let eoseTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const fireEose = () => {
+      if (closed || eoseFired) return;
+      eoseFired = true;
+      if (eoseTimer !== undefined) {
+        clearTimeout(eoseTimer);
+        eoseTimer = undefined;
+      }
+      opts?.oneose?.();
+    };
 
     const maybeEose = () => {
       pendingEose -= 1;
-      if (pendingEose <= 0 && !eoseFired) {
-        eoseFired = true;
-        opts?.oneose?.();
-      }
+      if (pendingEose <= 0) fireEose();
     };
+
+    const close = (reason?: string) => {
+      if (closed) return;
+      closed = true;
+      if (eoseTimer !== undefined) {
+        clearTimeout(eoseTimer);
+        eoseTimer = undefined;
+      }
+      for (const c of closers) c.close(reason);
+    };
+
+    if (opts.signal?.aborted) closed = true;
+    else opts.signal?.addEventListener("abort", () => close("aborted"), { once: true });
 
     for (const f of filters) {
       const broken = this.gossip.breakDownFilter(f);
@@ -543,14 +572,14 @@ export class Client {
           pendingEose += 1;
           closers.push(
             this.pool.subscribe([url], [subFilter], {
-              signal: opts?.signal,
+              signal: opts.signal,
               onevent: (event) => {
                 if (seen.has(event.id)) return;
                 seen.add(event.id);
                 wrapEvent(event);
               },
               oneose: maybeEose,
-              onclose: opts?.onclose,
+              onclose: opts.onclose,
             }),
           );
         }
@@ -558,29 +587,32 @@ export class Client {
         pendingEose += 1;
         closers.push(
           this.pool.subscribe(this.#defaultRelays(), [f], {
-            signal: opts?.signal,
-            id: opts?.id,
+            signal: opts.signal,
+            id: opts.id,
             onevent: (event) => {
               if (seen.has(event.id)) return;
               seen.add(event.id);
               wrapEvent(event);
             },
             oneose: maybeEose,
-            onclose: opts?.onclose,
+            onclose: opts.onclose,
           }),
         );
       }
     }
 
     if (pendingEose === 0) {
-      queueMicrotask(() => opts?.oneose?.());
+      queueMicrotask(() => fireEose());
     }
 
-    return {
-      close: (reason?: string) => {
-        for (const c of closers) c.close(reason);
-      },
-    };
+    if (opts.eoseTimeoutMs !== undefined && !closed) {
+      eoseTimer = setTimeout(() => {
+        eoseTimer = undefined;
+        fireEose();
+      }, opts.eoseTimeoutMs);
+    }
+
+    return { close };
   }
 
   #requireNip59Crypto(): Nip59Crypto {
@@ -724,6 +756,7 @@ export class Client {
         signal: opts?.signal,
         oneose: opts?.oneose,
         onclose: opts?.onclose,
+        eoseTimeoutMs: opts?.eoseTimeoutMs,
         onevent: (wrap) => {
           tail = tail
             .then(async () => {
