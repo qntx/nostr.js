@@ -289,6 +289,8 @@ describe("Relay.negReconcile + Client.sync", () => {
       negentropyItems: (filter) => inner.negentropyItems(filter),
       remove: (ids) => inner.remove(ids),
       clear: () => inner.clear(),
+      getOutboxBound: (pubkey, kind) => inner.getOutboxBound(pubkey, kind),
+      setOutboxBound: (pubkey, kind, bound) => inner.setOutboxBound(pubkey, kind, bound),
     };
     const client = Client.builder()
       .storage(store)
@@ -339,6 +341,8 @@ describe("Relay.negReconcile + Client.sync", () => {
         return 0;
       },
       async clear() {},
+      getOutboxBound: async () => undefined,
+      setOutboxBound: async () => {},
     };
     const client = Client.builder()
       .storage(store)
@@ -388,6 +392,8 @@ describe("Relay.negReconcile + Client.sync", () => {
       negentropyItems: (filter) => inner.negentropyItems(filter),
       remove: (ids) => inner.remove(ids),
       clear: () => inner.clear(),
+      getOutboxBound: (pubkey, kind) => inner.getOutboxBound(pubkey, kind),
+      setOutboxBound: (pubkey, kind, bound) => inner.setOutboxBound(pubkey, kind, bound),
     };
     const client = Client.builder()
       .storage(store)
@@ -438,6 +444,8 @@ describe("Relay.negReconcile + Client.sync", () => {
       negentropyItems: (filter) => inner.negentropyItems(filter),
       remove: (ids) => inner.remove(ids),
       clear: () => inner.clear(),
+      getOutboxBound: (pubkey, kind) => inner.getOutboxBound(pubkey, kind),
+      setOutboxBound: (pubkey, kind, bound) => inner.setOutboxBound(pubkey, kind, bound),
     };
     const client = Client.builder()
       .storage(store)
@@ -491,6 +499,8 @@ describe("Relay.negReconcile + Client.sync", () => {
         return 0;
       },
       async clear() {},
+      getOutboxBound: async () => undefined,
+      setOutboxBound: async () => {},
     };
     const client = Client.builder()
       .storage(store)

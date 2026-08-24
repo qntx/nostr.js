@@ -387,10 +387,42 @@ export function seedIdbV1(dbName: string, events: Array<Record<string, unknown>>
   });
 }
 
+export function seedIdbV3(dbName: string): Promise<void> {
+  const factory = (
+    globalThis as unknown as { indexedDB: { open(name: string, version?: number): MockOpenReq } }
+  ).indexedDB;
+  return new Promise((resolve, reject) => {
+    const req = factory.open(dbName, 3);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      const events = db.createObjectStore("events", { keyPath: "id" });
+      events.createIndex("created_at", "created_at");
+      events.createIndex("kind_created_at", ["kind", "created_at"]);
+      events.createIndex("pubkey_created_at", ["pubkey", "created_at"]);
+      events.createIndex("kind_pubkey_created_at", ["kind", "pubkey", "created_at"]);
+      db.createObjectStore("tag_refs", { keyPath: "key" }).createIndex("name_value_created", [
+        "name",
+        "value",
+        "created_at",
+      ]);
+      db.createObjectStore("addresses", { keyPath: "address" });
+      db.createObjectStore("tombstones", { keyPath: "key" });
+    };
+    req.onerror = () => reject(req.error ?? new Error("seed v3 open failed"));
+    req.onsuccess = () => {
+      req.result.close();
+      resolve();
+    };
+  });
+}
+
 type MockOpenReq = {
   result: {
     objectStoreNames: { contains(name: string): boolean };
-    createObjectStore(name: string, options?: { keyPath?: string }): unknown;
+    createObjectStore(
+      name: string,
+      options?: { keyPath?: string },
+    ): { createIndex(name: string, keyPath: string | string[]): unknown };
     transaction(
       storeNames: string | string[],
       mode?: "readonly" | "readwrite",

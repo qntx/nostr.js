@@ -396,7 +396,7 @@ export class Client {
 
   /**
    * Create an outbox-model feed for the given authors (NIP-65 write relays).
-   * Events are ingested via {@link observe}. Call `feed.hydrate()` / `sync()` / `startLive()`.
+   * Live events go through {@link observe}; sync persists via putMany then ingestMeta.
    */
   outbox(opts: {
     authors: readonly string[];
@@ -415,6 +415,7 @@ export class Client {
       onEvent: opts.onEvent,
       maxRelaysPerAuthor: opts.maxRelaysPerAuthor,
       observe: (event) => this.observe(event),
+      ingestMeta: (event) => this.#ingestMeta(event),
       hydrate: (pubkeys) => this.hydrateGossip(pubkeys),
     });
   }

@@ -5,7 +5,7 @@ import { matchFilter } from "../core/filter.ts";
 import { isEphemeralKind, Kind } from "../core/kind.ts";
 import { eventAddress } from "../core/tag.ts";
 import { coordinateRemovals, DeletionState, planDeletion } from "./deletion.ts";
-import type { EventStore, NegentropyItem, PutResult } from "./types.ts";
+import type { EventStore, NegentropyItem, OutboxBound, PutResult } from "./types.ts";
 
 /**
  * In-memory event store with NIP-01 replaceable / addressable / ephemeral
@@ -19,6 +19,7 @@ export class MemoryEventStore implements EventStore {
   #byEpTag = new Map<string, Set<string>>(); // `${"e"|"p"}:${value.toLowerCase()}` → ids
   #replaceable = new Map<string, string>(); // address -> event id
   #deletion = new DeletionState();
+  #outboxBounds = new Map<string, OutboxBound>();
 
   async put(raw: Event): Promise<PutResult> {
     const event = normalizeEvent(raw);
@@ -132,6 +133,19 @@ export class MemoryEventStore implements EventStore {
     return n;
   }
 
+  async getOutboxBound(pubkey: string, kind: number): Promise<OutboxBound | undefined> {
+    const persisted = this.#outboxBounds.get(outboxBoundKey(pubkey, kind));
+    if (persisted) return { oldest: persisted.oldest, newest: persisted.newest };
+    return this.#deriveOutboxBound(pubkey, kind);
+  }
+
+  async setOutboxBound(pubkey: string, kind: number, bound: OutboxBound): Promise<void> {
+    this.#outboxBounds.set(outboxBoundKey(pubkey, kind), {
+      oldest: bound.oldest,
+      newest: bound.newest,
+    });
+  }
+
   async clear(): Promise<void> {
     this.#byId.clear();
     this.#byPubkey.clear();
@@ -140,6 +154,7 @@ export class MemoryEventStore implements EventStore {
     this.#byEpTag.clear();
     this.#replaceable.clear();
     this.#deletion.clear();
+    this.#outboxBounds.clear();
   }
 
   get size(): number {
@@ -188,6 +203,23 @@ export class MemoryEventStore implements EventStore {
     });
     sortEvents(matched);
     return filter.limit !== undefined ? matched.slice(0, filter.limit) : matched;
+  }
+
+  #deriveOutboxBound(pubkey: string, kind: number): OutboxBound | undefined {
+    const byPk = this.#byPubkey.get(pubkey.toLowerCase());
+    const byKind = this.#byKind.get(kind);
+    if (!byPk || !byKind) return undefined;
+    let oldest: number | undefined;
+    let newest: number | undefined;
+    for (const id of byPk) {
+      if (!byKind.has(id) || this.#deletion.ids.has(id)) continue;
+      const event = this.#byId.get(id);
+      if (!event || this.#deletion.covers(event)) continue;
+      if (oldest === undefined || event.created_at < oldest) oldest = event.created_at;
+      if (newest === undefined || event.created_at > newest) newest = event.created_at;
+    }
+    if (oldest === undefined || newest === undefined) return undefined;
+    return { oldest, newest };
   }
 
   #eachCandidate(filter: Filter, visit: (event: Event) => void): void {
@@ -263,6 +295,10 @@ export class MemoryEventStore implements EventStore {
     // store is extra put/remove amp; hashtag-only queries scan #byId.
     for (const event of this.#byId.values()) visit(event);
   }
+}
+
+function outboxBoundKey(pubkey: string, kind: number): string {
+  return `${pubkey.toLowerCase()}:${kind}`;
 }
 
 function normalizeEvent(event: Event): Event {

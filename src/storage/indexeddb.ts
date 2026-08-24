@@ -7,13 +7,14 @@ import { eventAddress } from "../core/tag.ts";
 import { CryptoError } from "../core/error.ts";
 import { coordinateRemovals, DeletionState, planDeletion, type DeletionPlan } from "./deletion.ts";
 import { toStorageError } from "./error.ts";
-import type { EventStore, NegentropyItem, PutResult } from "./types.ts";
+import type { EventStore, NegentropyItem, OutboxBound, PutResult } from "./types.ts";
 
-const IDB_VERSION = 3;
+const IDB_VERSION = 4;
 const EVENTS = "events";
 const TAG_REFS = "tag_refs";
 const ADDRESSES = "addresses";
 const TOMBSTONES = "tombstones";
+const OUTBOX_BOUNDS = "outbox_bounds";
 const WRITE_STORES = [EVENTS, TAG_REFS, ADDRESSES, TOMBSTONES];
 
 type IDBCursorDirectionLike = "next" | "prev";
@@ -104,6 +105,8 @@ type Tombstone =
   | { key: `id:${string}`; type: "id" }
   | { key: `pending:${string}`; type: "pending"; pubkey: string }
   | { key: `coord:${string}`; type: "coord"; until: number };
+
+type OutboxBoundRow = { key: string; oldest: number; newest: number };
 
 export type IndexedDbEventStoreOptions = {
   /** IndexedDB database name. */
@@ -459,6 +462,40 @@ export class IndexedDbEventStore implements EventStore {
     await kWayMerge(openers, accept, take);
   }
 
+  async getOutboxBound(pubkey: string, kind: number): Promise<OutboxBound | undefined> {
+    try {
+      const db = await this.#ensure();
+      const tx = db.transaction(OUTBOX_BOUNDS, "readonly");
+      const done = txDone(tx);
+      const row = await reqOf<OutboxBoundRow | undefined>(
+        tx.objectStore(OUTBOX_BOUNDS).get(outboxBoundKey(pubkey, kind)),
+      );
+      await done;
+      if (row && typeof row.oldest === "number" && typeof row.newest === "number") {
+        return { oldest: row.oldest, newest: row.newest };
+      }
+      return await this.#deriveOutboxBound(pubkey, kind);
+    } catch (err) {
+      throw toStorageError(err);
+    }
+  }
+
+  async setOutboxBound(pubkey: string, kind: number, bound: OutboxBound): Promise<void> {
+    try {
+      const db = await this.#ensure();
+      const tx = db.transaction(OUTBOX_BOUNDS, "readwrite");
+      const done = txDone(tx);
+      tx.objectStore(OUTBOX_BOUNDS).put({
+        key: outboxBoundKey(pubkey, kind),
+        oldest: bound.oldest,
+        newest: bound.newest,
+      } satisfies OutboxBoundRow);
+      await done;
+    } catch (err) {
+      throw toStorageError(err);
+    }
+  }
+
   async remove(ids: string[]): Promise<number> {
     const db = await this.#ensure();
     const tx = db.transaction(WRITE_STORES, "readwrite");
@@ -479,9 +516,10 @@ export class IndexedDbEventStore implements EventStore {
 
   async clear(): Promise<void> {
     const db = await this.#ensure();
-    const tx = db.transaction(WRITE_STORES, "readwrite");
+    const stores = [...WRITE_STORES, OUTBOX_BOUNDS];
+    const tx = db.transaction(stores, "readwrite");
     const done = txDone(tx);
-    for (const name of WRITE_STORES) tx.objectStore(name).clear();
+    for (const name of stores) tx.objectStore(name).clear();
     this.#deletion.clear();
     this.#replaceable.clear();
     await done;
@@ -504,6 +542,36 @@ export class IndexedDbEventStore implements EventStore {
     }
     deleteStoredEvent(tx, event, row);
     return true;
+  }
+
+  async #deriveOutboxBound(pubkey: string, kind: number): Promise<OutboxBound | undefined> {
+    const db = await this.#ensure();
+    const pk = pubkey.toLowerCase();
+    const tx = db.transaction(EVENTS, "readonly");
+    const done = txDone(tx);
+    const index = tx.objectStore(EVENTS).index("kind_pubkey_created_at");
+    const range = prefixRange([kind, pk]);
+    const filter: Filter = { authors: [pk], kinds: [kind] };
+    let oldest: number | undefined;
+    let newest: number | undefined;
+    const firstLive = (direction: IDBCursorDirectionLike, assign: (createdAt: number) => void) =>
+      walkCursor(index, range, direction, (cursor) => {
+        const event = cursor.value as Event;
+        if (!this.#acceptHit(filter, event)) return false;
+        assign(event.created_at);
+        return true;
+      });
+    await Promise.all([
+      firstLive("next", (createdAt) => {
+        oldest = createdAt;
+      }),
+      firstLive("prev", (createdAt) => {
+        newest = createdAt;
+      }),
+    ]);
+    await done;
+    if (oldest === undefined || newest === undefined) return undefined;
+    return { oldest, newest };
   }
 }
 
@@ -761,6 +829,10 @@ function tagRefKey(name: string, value: string, id: string): string {
   return `${name}:${value.toLowerCase()}:${id.toLowerCase()}`;
 }
 
+function outboxBoundKey(pubkey: string, kind: number): string {
+  return `${pubkey.toLowerCase()}:${kind}`;
+}
+
 function normalizeEvent(event: Event): Event {
   const id = event.id.toLowerCase();
   const pubkey = event.pubkey.toLowerCase();
@@ -892,6 +964,9 @@ function openDb(dbName: string): Promise<IDBDatabaseLike> {
         }
       } else if (oldVersion < 3) {
         compactSupersededReplaceables(tx);
+      }
+      if (oldVersion < 4) {
+        db.createObjectStore(OUTBOX_BOUNDS, { keyPath: "key" });
       }
     };
     req.onsuccess = () => resolve(req.result);
