@@ -24,7 +24,7 @@ export type PubkeyRoutes = {
 };
 
 export type BrokenDownFilters =
-  | { type: "per-relay"; filters: Map<string, Filter> }
+  | { type: "per-relay"; filters: Map<string, Filter>; fallback?: Filter }
   | { type: "orphan"; filter: Filter }
   | { type: "generic"; filter: Filter };
 
@@ -205,6 +205,7 @@ export class Gossip {
    * - #p only → inbox relays of those pubkeys
    * - neither → generic (caller uses default pool)
    * - authors known but no routes → orphan
+   * - some routed → per-relay; unrouted authors/#p go on `fallback`
    */
   breakDownFilter(filter: Filter): BrokenDownFilters {
     const authors = filter.authors?.map((a) => a.toLowerCase());
@@ -230,16 +231,22 @@ export class Gossip {
     // both authors and #p: send full filter to union of routes
     const unionKeys = new Set([...(authors ?? []), ...(pTags ?? [])]);
     const relays = new Set<string>();
+    let anyUnrouted = false;
     for (const pk of unionKeys) {
       const r = this.#routes.get(pk);
-      if (!r) continue;
-      for (const u of r.write) relays.add(u);
-      for (const u of r.read) relays.add(u);
+      const urls = r ? [...r.write, ...r.read] : [];
+      if (urls.length === 0) {
+        anyUnrouted = true;
+        continue;
+      }
+      for (const u of urls) relays.add(u);
     }
     if (relays.size === 0) return { type: "orphan", filter };
     const map = new Map<string, Filter>();
     for (const url of relays) map.set(url, { ...filter });
-    return { type: "per-relay", filters: map };
+    return anyUnrouted
+      ? { type: "per-relay", filters: map, fallback: filter }
+      : { type: "per-relay", filters: map };
   }
 
   #breakAuthors(
@@ -252,12 +259,16 @@ export class Gossip {
     }),
   ): BrokenDownFilters {
     const perRelay = new Map<string, string[]>();
+    const unrouted: string[] = [];
     let anyRoute = false;
 
     for (const pk of pubkeys) {
       const routes = this.#routes.get(pk);
       const urls = direction === "write" ? routes?.write : routes?.read;
-      if (!urls || urls.length === 0) continue;
+      if (!urls || urls.length === 0) {
+        unrouted.push(pk);
+        continue;
+      }
       anyRoute = true;
       for (const url of urls) {
         const list = perRelay.get(url) ?? [];
@@ -272,6 +283,8 @@ export class Gossip {
     for (const [url, pks] of perRelay) {
       map.set(url, narrow(filter, pks));
     }
-    return { type: "per-relay", filters: map };
+    return unrouted.length > 0
+      ? { type: "per-relay", filters: map, fallback: narrow(filter, unrouted) }
+      : { type: "per-relay", filters: map };
   }
 }
