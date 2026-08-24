@@ -23,6 +23,11 @@ export type SubscribeOptions = SubscriptionHandlers & {
    * Does not close the REQ. `Relay.fetch` is the one-shot closer.
    */
   eoseTimeoutMs?: number;
+  /**
+   * One-shot REQ: do not join a live coalescing group, and close on EOSE.
+   * Default false (live). `Relay.fetch` passes true.
+   */
+  closeOnEose?: boolean;
   signal?: AbortSignal;
 };
 
@@ -30,6 +35,7 @@ export class Subscription {
   readonly id: string;
   readonly filters: Filter[];
   readonly handlers: SubscriptionHandlers;
+  readonly closeOnEose: boolean;
   eosed = false;
   closed = false;
   /** True after one CLOSED `auth-required:` retry. */
@@ -47,6 +53,7 @@ export class Subscription {
   ) {
     this.id = opts.id ?? createSubscriptionId();
     this.filters = filters;
+    this.closeOnEose = opts.closeOnEose === true;
     this.handlers = {
       onevent: opts.onevent,
       oneose: opts.oneose,

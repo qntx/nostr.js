@@ -1324,3 +1324,390 @@ describe("Pool aggregated EOSE", () => {
     pool.close();
   });
 });
+
+function framesOf(ws: MockWebSocket, type: string): unknown[][] {
+  return sentMessages(ws).filter((m) => m[0] === type);
+}
+
+describe("live REQ coalescing", () => {
+  test("two identical live subscribe send one REQ and fan out EVENT", async () => {
+    const relay = await Relay.connect("wss://coal.example");
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("hi").createdAt(1).signWithKeys(keys);
+    const aEvents: string[] = [];
+    const bEvents: string[] = [];
+    const a = relay.subscribe([{ kinds: [1] }], { onevent: (e) => aEvents.push(e.id) });
+    const b = relay.subscribe([{ kinds: [1] }], { onevent: (e) => bEvents.push(e.id) });
+    expect(b.id).toBe(a.id);
+    const ws = MockWebSocket.last();
+    expect(framesOf(ws, "REQ")).toHaveLength(1);
+    expect((framesOf(ws, "REQ")[0] as [string, string])[1]).toBe(a.id);
+    ws.receive(JSON.stringify(["EVENT", a.id, note]));
+    expect(aEvents).toEqual([note.id]);
+    expect(bEvents).toEqual([note.id]);
+    relay.close();
+  });
+
+  test("close first of two live attachments does not CLOSE; remaining gets later EVENT", async () => {
+    const relay = await Relay.connect("wss://coal-close1.example");
+    const keys = Keys.fromSecretKey(SK);
+    const first = EventBuilder.textNote("a").createdAt(1).signWithKeys(keys);
+    const second = EventBuilder.textNote("b").createdAt(2).signWithKeys(keys);
+    const aEvents: string[] = [];
+    const bEvents: string[] = [];
+    const a = relay.subscribe([{ kinds: [1] }], { onevent: (e) => aEvents.push(e.id) });
+    const b = relay.subscribe([{ kinds: [1] }], { onevent: (e) => bEvents.push(e.id) });
+    const ws = MockWebSocket.last();
+    a.close();
+    expect(framesOf(ws, "CLOSE")).toHaveLength(0);
+    expect(a.closed).toBe(true);
+    expect(b.closed).toBe(false);
+    ws.receive(JSON.stringify(["EVENT", b.id, first]));
+    expect(aEvents).toEqual([]);
+    expect(bEvents).toEqual([first.id]);
+    ws.receive(JSON.stringify(["EVENT", b.id, second]));
+    expect(bEvents).toEqual([first.id, second.id]);
+    relay.close();
+  });
+
+  test("close last live attachment sends one CLOSE", async () => {
+    const relay = await Relay.connect("wss://coal-close2.example");
+    const a = relay.subscribe([{ kinds: [1] }]);
+    const b = relay.subscribe([{ kinds: [1] }]);
+    const ws = MockWebSocket.last();
+    a.close();
+    expect(framesOf(ws, "CLOSE")).toHaveLength(0);
+    b.close();
+    expect(framesOf(ws, "CLOSE")).toHaveLength(1);
+    expect((framesOf(ws, "CLOSE")[0] as [string, string])[1]).toBe(a.id);
+    expect(relay.subscriptionCount).toBe(0);
+    const c = relay.subscribe([{ kinds: [1] }]);
+    expect(c.closed).toBe(false);
+    expect(framesOf(ws, "REQ")).toHaveLength(2);
+    expect(relay.subscriptionCount).toBe(1);
+    relay.close();
+  });
+
+  test("limit 10 vs 50 does not coalesce", async () => {
+    const relay = await Relay.connect("wss://coal-limit.example");
+    const a = relay.subscribe([{ kinds: [1], limit: 10 }]);
+    const b = relay.subscribe([{ kinds: [1], limit: 50 }]);
+    expect(a.id).not.toBe(b.id);
+    const ws = MockWebSocket.last();
+    expect(framesOf(ws, "REQ")).toHaveLength(2);
+    relay.close();
+  });
+
+  test("fetch while live same filters uses a separate REQ then CLOSE; live stays", async () => {
+    const relay = await Relay.connect("wss://coal-fetch.example");
+    const keys = Keys.fromSecretKey(SK);
+    const liveNote = EventBuilder.textNote("live").createdAt(2).signWithKeys(keys);
+    const fetchNote = EventBuilder.textNote("fetch").createdAt(1).signWithKeys(keys);
+    const liveEvents: string[] = [];
+    const live = relay.subscribe([{ kinds: [1] }], { onevent: (e) => liveEvents.push(e.id) });
+    const fetchP = relay.fetch([{ kinds: [1] }], { timeoutMs: 2000 });
+    await Promise.resolve();
+    const ws = MockWebSocket.last();
+    const reqs = framesOf(ws, "REQ") as Array<[string, string]>;
+    expect(reqs).toHaveLength(2);
+    expect(reqs[0]![1]).toBe(live.id);
+    const fetchId = reqs[1]![1];
+    expect(fetchId).not.toBe(live.id);
+    ws.receive(JSON.stringify(["EVENT", fetchId, fetchNote]));
+    ws.receive(JSON.stringify(["EOSE", fetchId]));
+    const fetched = await fetchP;
+    expect(fetched.map((e) => e.id)).toEqual([fetchNote.id]);
+    expect(framesOf(ws, "CLOSE").some((m) => m[1] === fetchId)).toBe(true);
+    expect(framesOf(ws, "CLOSE").some((m) => m[1] === live.id)).toBe(false);
+    expect(live.closed).toBe(false);
+    ws.receive(JSON.stringify(["EVENT", live.id, liveNote]));
+    expect(liveEvents).toEqual([liveNote.id]);
+    live.close();
+    expect(framesOf(ws, "CLOSE").some((m) => m[1] === live.id)).toBe(true);
+    relay.close();
+  });
+
+  test("late attach after EOSE fires that oneose without a second REQ", async () => {
+    const relay = await Relay.connect("wss://coal-late.example");
+    let eoseA = 0;
+    let eoseB = 0;
+    const a = relay.subscribe([{ kinds: [1] }], {
+      oneose: () => {
+        eoseA += 1;
+      },
+    });
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["EOSE", a.id]));
+    expect(eoseA).toBe(1);
+    const b = relay.subscribe([{ kinds: [1] }], {
+      oneose: () => {
+        eoseB += 1;
+      },
+    });
+    expect(b.id).toBe(a.id);
+    expect(framesOf(ws, "REQ")).toHaveLength(1);
+    expect(eoseB).toBe(0);
+    await Promise.resolve();
+    expect(eoseB).toBe(1);
+    expect(eoseA).toBe(1);
+    relay.close();
+  });
+
+  test("authors hex case and order canonicalize to one REQ", async () => {
+    const relay = await Relay.connect("wss://coal-authors.example");
+    const pkA = "aa".repeat(32);
+    const pkB = "bb".repeat(32);
+    const a = relay.subscribe([{ authors: [pkA.toUpperCase(), pkB] }]);
+    const b = relay.subscribe([{ authors: [pkB.toUpperCase(), pkA.toLowerCase()] }]);
+    expect(b.id).toBe(a.id);
+    expect(framesOf(MockWebSocket.last(), "REQ")).toHaveLength(1);
+    relay.close();
+  });
+
+  test("closeOnEose false and omitted both coalesce; true does not", async () => {
+    const relay = await Relay.connect("wss://coal-flag.example");
+    const omitted = relay.subscribe([{ kinds: [1] }]);
+    const explicitFalse = relay.subscribe([{ kinds: [1] }], { closeOnEose: false });
+    const oneShot = relay.subscribe([{ kinds: [1] }], { closeOnEose: true });
+    expect(explicitFalse.id).toBe(omitted.id);
+    expect(oneShot.id).not.toBe(omitted.id);
+    const ws = MockWebSocket.last();
+    expect(framesOf(ws, "REQ")).toHaveLength(2);
+    ws.receive(JSON.stringify(["EOSE", oneShot.id]));
+    expect(oneShot.closed).toBe(true);
+    expect(omitted.closed).toBe(false);
+    expect(framesOf(ws, "CLOSE").some((m) => m[1] === oneShot.id)).toBe(true);
+    expect(framesOf(ws, "CLOSE").some((m) => m[1] === omitted.id)).toBe(false);
+    relay.close();
+  });
+
+  test("alreadyHaveEvent skips that listener only; verify once", async () => {
+    let verifies = 0;
+    const relay = await Relay.connect("wss://coal-have.example", {
+      verifyEvent: (event) => {
+        verifies += 1;
+        return verifyEvent(event);
+      },
+    });
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("dup").createdAt(1).signWithKeys(keys);
+    const aEvents: string[] = [];
+    const bEvents: string[] = [];
+    const received: string[] = [];
+    const a = relay.subscribe([{ kinds: [1] }], {
+      alreadyHaveEvent: () => true,
+      receivedEvent: (id) => received.push(`a:${id}`),
+      onevent: (e) => aEvents.push(e.id),
+    });
+    const b = relay.subscribe([{ kinds: [1] }], {
+      alreadyHaveEvent: () => false,
+      receivedEvent: (id) => received.push(`b:${id}`),
+      onevent: (e) => bEvents.push(e.id),
+    });
+    expect(b.id).toBe(a.id);
+    MockWebSocket.last().receive(JSON.stringify(["EVENT", a.id, note]));
+    expect(verifies).toBe(1);
+    expect(aEvents).toEqual([]);
+    expect(bEvents).toEqual([note.id]);
+    expect(received).toEqual([`a:${note.id}`, `b:${note.id}`]);
+    expect(a.lastCreatedAt).toBeUndefined();
+    expect(b.lastCreatedAt).toBe(note.created_at);
+    relay.close();
+  });
+
+  test("CLOSED on the wire id closes every attachment", async () => {
+    const relay = await Relay.connect("wss://coal-closed.example");
+    const reasons: string[] = [];
+    const a = relay.subscribe([{ kinds: [1] }], {
+      onclose: (r) => reasons.push(`a:${r}`),
+    });
+    const b = relay.subscribe([{ kinds: [1] }], {
+      onclose: (r) => reasons.push(`b:${r}`),
+    });
+    MockWebSocket.last().receive(JSON.stringify(["CLOSED", a.id, "bye"]));
+    expect(a.closed).toBe(true);
+    expect(b.closed).toBe(true);
+    expect(reasons).toEqual(["a:bye", "b:bye"]);
+    expect(relay.subscriptionCount).toBe(0);
+    relay.close();
+  });
+
+  test("subset authors and missing authors [] do not coalesce", async () => {
+    const relay = await Relay.connect("wss://coal-subset.example");
+    const pkA = "aa".repeat(32);
+    const pkB = "bb".repeat(32);
+    const full = relay.subscribe([{ authors: [pkA, pkB] }]);
+    const subset = relay.subscribe([{ authors: [pkA] }]);
+    const missing = relay.subscribe([{ kinds: [1] }]);
+    const empty = relay.subscribe([{ kinds: [1], authors: [] }]);
+    expect(new Set([full.id, subset.id, missing.id, empty.id]).size).toBe(4);
+    expect(framesOf(MockWebSocket.last(), "REQ")).toHaveLength(4);
+    relay.close();
+  });
+
+  test("reconnect resubscribes one REQ for a coalesced group; both get EVENT", async () => {
+    const relay = new Relay("wss://coal-re.example", {
+      enableReconnect: true,
+      reconnectBackoffMs: [10, 20],
+      websocketImplementation: MockWebSocketCtor,
+    });
+    await relay.connect();
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("after").createdAt(1).signWithKeys(keys);
+    const aEvents: string[] = [];
+    const bEvents: string[] = [];
+    const a = relay.subscribe([{ kinds: [1] }], { onevent: (e) => aEvents.push(e.id) });
+    const b = relay.subscribe([{ kinds: [1] }], { onevent: (e) => bEvents.push(e.id) });
+    const first = MockWebSocket.last();
+    expect(framesOf(first, "REQ")).toHaveLength(1);
+    first.close();
+    await waitUntil(
+      () =>
+        relay.connected &&
+        MockWebSocket.instances.length >= 2 &&
+        framesOf(MockWebSocket.last(), "REQ").length >= 1,
+    );
+    const second = MockWebSocket.last();
+    expect(second).not.toBe(first);
+    expect(framesOf(second, "REQ")).toHaveLength(1);
+    expect((framesOf(second, "REQ")[0] as [string, string])[1]).toBe(a.id);
+    second.receive(JSON.stringify(["EVENT", a.id, note]));
+    expect(aEvents).toEqual([note.id]);
+    expect(bEvents).toEqual([note.id]);
+    expect(b.id).toBe(a.id);
+    relay.close();
+  });
+
+  test("aborted signal at subscribe does not send REQ", async () => {
+    const relay = await Relay.connect("wss://coal-abort-new.example");
+    const ac = new AbortController();
+    ac.abort();
+    const sub = relay.subscribe([{ kinds: [1] }], { signal: ac.signal });
+    expect(sub.closed).toBe(true);
+    const ws = MockWebSocket.last();
+    expect(framesOf(ws, "REQ")).toHaveLength(0);
+    expect(relay.subscriptionCount).toBe(0);
+    const live = relay.subscribe([{ kinds: [1] }]);
+    expect(live.closed).toBe(false);
+    expect(framesOf(ws, "REQ")).toHaveLength(1);
+    expect(relay.subscriptionCount).toBe(1);
+    relay.close();
+  });
+
+  test("abort one attachment does not CLOSE; remaining still live", async () => {
+    const relay = await Relay.connect("wss://coal-abort-one.example");
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("stay").createdAt(1).signWithKeys(keys);
+    const ac = new AbortController();
+    const aEvents: string[] = [];
+    const bEvents: string[] = [];
+    const a = relay.subscribe([{ kinds: [1] }], {
+      signal: ac.signal,
+      onevent: (e) => aEvents.push(e.id),
+    });
+    const b = relay.subscribe([{ kinds: [1] }], { onevent: (e) => bEvents.push(e.id) });
+    const ws = MockWebSocket.last();
+    expect(framesOf(ws, "REQ")).toHaveLength(1);
+    ac.abort();
+    expect(a.closed).toBe(true);
+    expect(b.closed).toBe(false);
+    expect(framesOf(ws, "CLOSE")).toHaveLength(0);
+    ws.receive(JSON.stringify(["EVENT", b.id, note]));
+    expect(aEvents).toEqual([]);
+    expect(bEvents).toEqual([note.id]);
+    relay.close();
+  });
+
+  test("onevent/oneose/onclose throw on A still delivers to B", async () => {
+    const relay = await Relay.connect("wss://coal-isolate.example");
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("iso").createdAt(1).signWithKeys(keys);
+    const bEvents: string[] = [];
+    let eoseB = 0;
+    const a = relay.subscribe([{ kinds: [1] }], {
+      onevent: () => {
+        throw new Error("a-onevent");
+      },
+      oneose: () => {
+        throw new Error("a-oneose");
+      },
+      onclose: () => {
+        throw new Error("a-onclose");
+      },
+    });
+    const b = relay.subscribe([{ kinds: [1] }], {
+      onevent: (e) => bEvents.push(e.id),
+      oneose: () => {
+        eoseB += 1;
+      },
+    });
+    const ws = MockWebSocket.last();
+    expect(() => ws.receive(JSON.stringify(["EVENT", a.id, note]))).toThrow("a-onevent");
+    expect(bEvents).toEqual([note.id]);
+    expect(() => ws.receive(JSON.stringify(["EOSE", a.id]))).toThrow("a-oneose");
+    expect(eoseB).toBe(1);
+    expect(() => ws.receive(JSON.stringify(["CLOSED", a.id, "bye"]))).toThrow("a-onclose");
+    expect(b.closed).toBe(true);
+    expect(a.closed).toBe(true);
+    relay.close();
+  });
+
+  test("Pool.subscribe twice same URL+filters sends one REQ", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    const url = "wss://coal-pool.example";
+    const relay = await pool.ensureRelay(url);
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("p").createdAt(1).signWithKeys(keys);
+    const aEvents: string[] = [];
+    const bEvents: string[] = [];
+    const a = pool.subscribe([url], [{ kinds: [1] }], {
+      onevent: (e) => aEvents.push(e.id),
+    });
+    const b = pool.subscribe([url], [{ kinds: [1] }], {
+      onevent: (e) => bEvents.push(e.id),
+    });
+    const ws = socketFor("coal-pool.example");
+    await waitUntil(() => relay.subscriptionCount === 1 && framesOf(ws, "REQ").length >= 1);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(framesOf(ws, "REQ")).toHaveLength(1);
+    const id = (framesOf(ws, "REQ")[0] as [string, string])[1];
+    ws.receive(JSON.stringify(["EVENT", id, note]));
+    expect(aEvents).toEqual([note.id]);
+    expect(bEvents).toEqual([note.id]);
+    a.close();
+    expect(framesOf(ws, "CLOSE")).toHaveLength(0);
+    b.close();
+    expect(framesOf(ws, "CLOSE")).toHaveLength(1);
+    pool.close();
+  });
+
+  test("Pool late attach after EOSE fires second oneose without a second REQ", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    const url = "wss://coal-pool-late.example";
+    const relay = await pool.ensureRelay(url);
+    let eoseA = 0;
+    let eoseB = 0;
+    const a = pool.subscribe([url], [{ kinds: [1] }], {
+      oneose: () => {
+        eoseA += 1;
+      },
+    });
+    const ws = socketFor("coal-pool-late.example");
+    await waitUntil(() => relay.subscriptionCount === 1 && framesOf(ws, "REQ").length >= 1);
+    const id = (framesOf(ws, "REQ")[0] as [string, string])[1];
+    ws.receive(JSON.stringify(["EOSE", id]));
+    expect(eoseA).toBe(1);
+    const b = pool.subscribe([url], [{ kinds: [1] }], {
+      oneose: () => {
+        eoseB += 1;
+      },
+    });
+    await waitUntil(() => eoseB === 1);
+    expect(framesOf(ws, "REQ")).toHaveLength(1);
+    expect(eoseA).toBe(1);
+    a.close();
+    b.close();
+    pool.close();
+  });
+});

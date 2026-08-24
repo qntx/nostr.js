@@ -1,6 +1,6 @@
 import type { Event, EventTemplate } from "../core/event.ts";
 import { verifyEvent } from "../core/key.ts";
-import type { Filter } from "../core/filter.ts";
+import { filterFingerprint, type Filter } from "../core/filter.ts";
 import {
   encodeClientMessage,
   parseRelayMessage,
@@ -96,6 +96,27 @@ type PingWaiter = {
   resolve: (alive: boolean) => void;
 };
 
+type LiveGroup = {
+  fp: string;
+  sub: Subscription;
+  attachments: Set<Subscription>;
+};
+
+// Independent live attachments must not abort sibling delivery or skip watermark.
+function captureListenerError(errors: unknown[], fn: () => void): void {
+  try {
+    fn();
+  } catch (err) {
+    errors.push(err);
+  }
+}
+
+function flushListenerErrors(errors: unknown[]): void {
+  if (errors.length === 0) return;
+  if (errors.length === 1) throw errors[0];
+  throw new AggregateError(errors);
+}
+
 type SocketHandlers = {
   onOpen: () => void;
   onError: () => void;
@@ -132,6 +153,8 @@ export class Relay {
   #connectTimer: ReturnType<typeof setTimeout> | undefined;
   #socketHandlers: SocketHandlers | undefined;
   #subs = new Map<SubscriptionId, Subscription>();
+  #liveByFp = new Map<string, LiveGroup>();
+  #liveBySubId = new Map<SubscriptionId, LiveGroup>();
   #publishes = new Map<string, PublishWaiter>();
   #counts = new Map<string, CountWaiter>();
   #neg = new Map<SubscriptionId, NegSession>();
@@ -420,14 +443,17 @@ export class Relay {
     }
     this.#stopPingLoop();
     this.#connectFinish?.(new RelayClosedError("relay closed", this.url));
-    this.#closeAllSubscriptions("relay closed");
-    this.#rejectPublishes(new RelayClosedError("relay closed", this.url));
-    this.#rejectCounts(new RelayClosedError("relay closed", this.url));
-    this.#rejectNeg(new RelayClosedError("relay closed", this.url));
-    this.#detachSocketHandlers();
-    this.#teardownSocket();
-    this.#connected = false;
-    this.onclose?.();
+    try {
+      this.#closeAllSubscriptions("relay closed");
+    } finally {
+      this.#rejectPublishes(new RelayClosedError("relay closed", this.url));
+      this.#rejectCounts(new RelayClosedError("relay closed", this.url));
+      this.#rejectNeg(new RelayClosedError("relay closed", this.url));
+      this.#detachSocketHandlers();
+      this.#teardownSocket();
+      this.#connected = false;
+      this.onclose?.();
+    }
   }
 
   #teardownSocket(): void {
@@ -447,13 +473,25 @@ export class Relay {
   }
 
   #closeAllSubscriptions(reason: string): void {
+    const errors: unknown[] = [];
+    const fps = Array.from(this.#liveByFp.keys());
+    for (const fp of fps) {
+      captureListenerError(errors, () => {
+        this.#endLiveGroup(fp, { sendClose: false, reason });
+      });
+    }
     for (const sub of this.#subs.values()) {
       if (!sub.closed) {
         sub.closed = true;
-        sub.handlers.onclose?.(reason);
+        captureListenerError(errors, () => {
+          sub.handlers.onclose?.(reason);
+        });
       }
     }
     this.#subs.clear();
+    this.#liveByFp.clear();
+    this.#liveBySubId.clear();
+    flushListenerErrors(errors);
   }
 
   #rejectPublishes(err: Error): void {
@@ -545,6 +583,10 @@ export class Relay {
       if (sub.closed) continue;
       sub.eosed = false;
       sub.authRetried = false;
+      const group = this.#liveBySubId.get(sub.id);
+      if (group) {
+        for (const att of group.attachments) att.eosed = false;
+      }
       try {
         this.#send(["REQ", sub.id, ...sub.replayFilters()]);
       } catch {
@@ -575,21 +617,15 @@ export class Relay {
         if (this.#pingWaiters.has(subId)) return;
         const sub = this.#subs.get(subId);
         if (!sub || sub.closed) return;
+        const group = this.#liveBySubId.get(subId);
+        if (group) {
+          this.#deliverLiveEvent(group, event);
+          break;
+        }
         sub.handlers.receivedEvent?.(event.id);
         if (sub.idsAtWatermark.has(event.id)) return;
         if (sub.handlers.alreadyHaveEvent?.(event.id)) return;
-        if (this.#verifyDead) return;
-        try {
-          if (!this.#verify(event)) return;
-        } catch (e) {
-          const name = e instanceof Error ? e.name : "";
-          if (name === "WasmVerifyPoisonedError" || e instanceof WebAssembly.RuntimeError) {
-            this.#verifyDead = true;
-            this.onnotice?.("verify-poisoned: wasm instance aborted");
-            return;
-          }
-          throw e;
-        }
+        if (!this.#acceptEvent(event)) return;
         sub.noteVerified(event);
         sub.handlers.onevent?.(event);
         break;
@@ -601,7 +637,13 @@ export class Relay {
         if (!sub || sub.closed) return;
         if (sub.eosed) return;
         sub.eosed = true;
-        sub.handlers.oneose?.();
+        const group = this.#liveBySubId.get(subId);
+        if (group) {
+          this.#deliverLiveEose(group);
+        } else {
+          sub.handlers.oneose?.();
+          if (sub.closeOnEose) sub.close("eose");
+        }
         break;
       }
       case "CLOSED": {
@@ -701,7 +743,11 @@ export class Relay {
     if (!this.#connected && !this.#enableReconnect) {
       throw new RelayClosedError("not connected", this.url);
     }
+    if (opts.closeOnEose === true) return this.#openExclusive(filters, opts);
+    return this.#subscribeLive(filters, opts);
+  }
 
+  #openExclusive(filters: Filter[], opts: SubscribeOptions): Subscription {
     const sub = new Subscription(filters, opts, (id) => {
       this.#subs.delete(id);
       try {
@@ -719,25 +765,188 @@ export class Relay {
       this.#scheduleReconnect();
     }
 
-    if (opts.eoseTimeoutMs !== undefined) {
-      const timer = setTimeout(() => {
-        if (sub.eosed || sub.closed) return;
-        sub.eosed = true;
-        sub.handlers.oneose?.();
-      }, opts.eoseTimeoutMs);
-      const prevClose = sub.handlers.onclose;
-      sub.handlers.onclose = (reason) => {
-        clearTimeout(timer);
-        prevClose?.(reason);
-      };
-      const prevEose = sub.handlers.oneose;
-      sub.handlers.oneose = () => {
-        clearTimeout(timer);
-        prevEose?.();
-      };
+    if (opts.eoseTimeoutMs !== undefined) this.#armEoseTimeout(sub, opts.eoseTimeoutMs);
+    return sub;
+  }
+
+  #subscribeLive(filters: Filter[], opts: SubscribeOptions): Subscription {
+    const fp = filterFingerprint(filters);
+    let group = this.#liveByFp.get(fp);
+    let created = false;
+    if (!group) {
+      created = true;
+      const wire = new Subscription(filters, { id: opts.id }, () => {
+        this.#endLiveGroup(fp, { sendClose: true, reason: "closed by client" });
+      });
+      group = { fp, sub: wire, attachments: new Set() };
+      this.#liveByFp.set(fp, group);
+      this.#liveBySubId.set(wire.id, group);
+      this.#subs.set(wire.id, wire);
     }
 
-    return sub;
+    const slot: { handle: Subscription | undefined } = { handle: undefined };
+    const handle = new Subscription(filters, { ...opts, id: group.sub.id }, () => {
+      // constructor may close on an already-aborted signal before `handle` is assigned
+      const current = slot.handle;
+      if (!current) return;
+      this.#detachLive(fp, current);
+    });
+    slot.handle = handle;
+
+    if (handle.closed) {
+      if (created && group.attachments.size === 0) {
+        this.#forgetLiveGroup(group);
+      }
+      return handle;
+    }
+
+    group.attachments.add(handle);
+
+    if (created) {
+      if (this.#connected) {
+        this.#send(["REQ", group.sub.id, ...filters]);
+      } else if (this.#enableReconnect) {
+        this.#scheduleReconnect();
+      }
+    }
+
+    if (opts.eoseTimeoutMs !== undefined) this.#armEoseTimeout(handle, opts.eoseTimeoutMs);
+
+    if (group.sub.eosed) {
+      queueMicrotask(() => {
+        if (handle.closed || handle.eosed) return;
+        handle.eosed = true;
+        handle.handlers.oneose?.();
+      });
+    }
+
+    return handle;
+  }
+
+  #armEoseTimeout(sub: Subscription, eoseTimeoutMs: number): void {
+    const timer = setTimeout(() => {
+      if (sub.eosed || sub.closed) return;
+      sub.eosed = true;
+      sub.handlers.oneose?.();
+    }, eoseTimeoutMs);
+    const prevClose = sub.handlers.onclose;
+    sub.handlers.onclose = (reason) => {
+      clearTimeout(timer);
+      prevClose?.(reason);
+    };
+    const prevEose = sub.handlers.oneose;
+    sub.handlers.oneose = () => {
+      clearTimeout(timer);
+      prevEose?.();
+    };
+  }
+
+  #forgetLiveGroup(group: LiveGroup): void {
+    this.#liveByFp.delete(group.fp);
+    this.#liveBySubId.delete(group.sub.id);
+    this.#subs.delete(group.sub.id);
+    group.sub.closed = true;
+  }
+
+  #detachLive(fp: string, handle: Subscription): void {
+    const group = this.#liveByFp.get(fp);
+    if (!group) return;
+    if (!group.attachments.delete(handle)) return;
+    if (group.attachments.size > 0) return;
+    this.#endLiveGroup(fp, { sendClose: true, reason: "closed by client" });
+  }
+
+  #endLiveGroup(fp: string, opts: { sendClose: boolean; reason: string }): void {
+    const group = this.#liveByFp.get(fp);
+    if (!group) return;
+    const id = group.sub.id;
+    const remaining = [...group.attachments];
+    group.attachments.clear();
+    this.#forgetLiveGroup(group);
+    if (opts.sendClose) {
+      try {
+        if (this.#connected) this.#send(["CLOSE", id]);
+      } catch {
+        // ignore
+      }
+    }
+    const errors: unknown[] = [];
+    for (const att of remaining) {
+      captureListenerError(errors, () => {
+        att.close(opts.reason);
+      });
+    }
+    flushListenerErrors(errors);
+  }
+
+  #acceptEvent(event: Event): boolean {
+    if (this.#verifyDead) return false;
+    try {
+      return this.#verify(event);
+    } catch (e) {
+      const name = e instanceof Error ? e.name : "";
+      if (name === "WasmVerifyPoisonedError" || e instanceof WebAssembly.RuntimeError) {
+        this.#verifyDead = true;
+        this.onnotice?.("verify-poisoned: wasm instance aborted");
+        return false;
+      }
+      throw e;
+    }
+  }
+
+  #deliverLiveEvent(group: LiveGroup, event: Event): void {
+    const sub = group.sub;
+    const attachments = [...group.attachments];
+    const errors: unknown[] = [];
+    for (const att of attachments) {
+      captureListenerError(errors, () => {
+        att.handlers.receivedEvent?.(event.id);
+      });
+    }
+    if (sub.idsAtWatermark.has(event.id)) {
+      flushListenerErrors(errors);
+      return;
+    }
+
+    const recipients: Subscription[] = [];
+    for (const att of attachments) {
+      if (att.closed) continue;
+      let skip = false;
+      captureListenerError(errors, () => {
+        skip = Boolean(att.handlers.alreadyHaveEvent?.(event.id));
+      });
+      if (!skip) recipients.push(att);
+    }
+    if (recipients.length === 0) {
+      flushListenerErrors(errors);
+      return;
+    }
+    if (!this.#acceptEvent(event)) {
+      flushListenerErrors(errors);
+      return;
+    }
+
+    sub.noteVerified(event);
+    for (const att of recipients) att.noteVerified(event);
+    for (const att of recipients) {
+      captureListenerError(errors, () => {
+        att.handlers.onevent?.(event);
+      });
+    }
+    flushListenerErrors(errors);
+  }
+
+  #deliverLiveEose(group: LiveGroup): void {
+    const attachments = Array.from(group.attachments);
+    const errors: unknown[] = [];
+    for (const att of attachments) {
+      if (att.closed || att.eosed) continue;
+      att.eosed = true;
+      captureListenerError(errors, () => {
+        att.handlers.oneose?.();
+      });
+    }
+    flushListenerErrors(errors);
   }
 
   /** AsyncIterable of events for filters until the subscription is closed. */
@@ -783,6 +992,7 @@ export class Relay {
       const sub = this.subscribe(filters, {
         id: opts?.id,
         signal: opts?.signal,
+        closeOnEose: true,
         onevent(event) {
           if (seen.has(event.id)) return;
           seen.add(event.id);
@@ -930,6 +1140,11 @@ export class Relay {
   }
 
   #dropSubscription(sub: Subscription, reason: string): void {
+    const group = this.#liveBySubId.get(sub.id);
+    if (group) {
+      this.#endLiveGroup(group.fp, { sendClose: false, reason });
+      return;
+    }
     this.#subs.delete(sub.id);
     sub.closed = true;
     sub.handlers.onclose?.(reason);
@@ -954,6 +1169,10 @@ export class Relay {
         return;
       }
       sub.eosed = false;
+      const group = this.#liveBySubId.get(sub.id);
+      if (group) {
+        for (const att of group.attachments) att.eosed = false;
+      }
       this.#send(["REQ", sub.id, ...sub.replayFilters()]);
     } catch {
       this.#dropSubscription(sub, reason);
