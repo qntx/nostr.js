@@ -22,9 +22,13 @@ Version is `0.0.0`. The package is unpublished until a human publishes it.
 - `mergeCountHll`: register-wise max of NIP-45 HyperLogLog sketches. Empty input is 512 zero hex. Output is always lowercase 512 hex. No cardinality estimator. `Pool.count` does not auto-merge.
 - `Client.sync` / `Client.syncToRelay` (NIP-77) against `EventStore.negentropyItems`.
 - `EventStore.count` and `EventStore.negentropyItems`.
-- `IndexedDbEventStore` schema v2: compound indexes, prefix-range cursors, persisted NIP-09 tombstones.
+- `IndexedDbEventStore` schema v4: compound indexes, prefix-range cursors, persisted NIP-09 tombstones, `outbox_bounds` store.
 - Relay reconnect watermark: REQ uses inclusive `since=lastCreatedAt` plus `ids` at that timestamp. A generation token drops frames from a previous socket.
 - Remaining NIP-57 receipt checks in `validateZapReceipt` (tag copy, request `P`/`a`, bolt11/description/preimage). Never throws. No LNURL HTTP.
+- NIP-42 `auth-required:` retries COUNT after AUTH (timeout paused during AUTH; a second CLOSED does not retry). EVENT OK `auth-required:` AUTH then republishes.
+- `MemoryEventStore` `#byKindPubkey` (kinds+authors) and `#e`/`#p` indexes.
+- First-connect reconnect: with `enableReconnect`, a failed or timed-out initial connect keeps live subscriptions and REQs them on the next socket.
+- Wasm verify poison: `WebAssembly.RuntimeError` poisons as `WasmVerifyPoisonedError`. `Relay` drops subsequent EVENTs and notices once. No noble fallback.
 
 ### Changed
 
@@ -39,7 +43,7 @@ Version is `0.0.0`. The package is unpublished until a human publishes it.
 - NIP-77 upload: one `storage.query([{ ids: have }])` (skipped when `have` is empty), then publish in chunks of 8. Ids missing from the store go to `sendFailures`. `sent` order is not stable.
 - Gossip `publish` includes up to five normalized `e`/`a` tag relay hints (index 2).
 - `groupAuthorsByOutboxRelay` / `OutboxFeed` prefer already-connected URLs that are already candidates. A connected URL that is not in the author's outbox or discovery list is not added.
-- `OutboxFeed` rehydrates newest bounds from `storage.query({ limit: 1 })`. Mixed bounded/unbounded author groups split filters. Bounds stay process-local.
+- `OutboxFeed` rehydrates via `EventStore.getOutboxBound` / persists via `setOutboxBound`. Mixed bounded/unbounded author groups split filters.
 - `Kind` catalog is 28 production names.
 - NIP-10: unknown `e` markers (including `mention`) go to `mentions` only, not positional root/reply.
 - `EventBuilder.repost` / `genericRepost` require a `relayHint` URL (NIP-18).
@@ -49,11 +53,25 @@ Version is `0.0.0`. The package is unpublished until a human publishes it.
 - `itemCompare` lives in `core`. NIP-77 does not re-export it.
 - `Filter.search` (NIP-50) is relay-side. Local `matchFilter` / `EventStore.query` ignore it.
 - `CountResult.hll` is a 512-char hex sketch, not opaque base64.
+- Gossip mixed authors: unrouted keys REQ Client default relays. Gossip `onclose` fires once after every inner sub closes.
+- `EventBuilder.repost` is kind 1 only; `genericRepost` rejects kind 1. Empty `d` is a valid addressable identifier. NIP-10 `parseThreadTags` / `buildReplyTags` parse and emit `q` tags. `replyTo` is kind 1 only.
+- Custom REQ and COUNT ids are validated to 1..64 characters.
+- `SyncOptions.observe: false` skips `putMany` and ingestMeta; received ids are still listed.
+- Pool `connectTimeoutMs` default is 5000.
+- `createEventLoader` batch fetches run in parallel.
+- `ClientError` for Client lifecycle (shutdown, no signer, no relays, abort).
 
 ### Removed
 
 - Dual-key DM kinds 10044 / 4454 / 4455.
 - NIP-59 `encryptTo`.
 - NIP-46 NIP-05 identifier login.
+- Pool `seenOn` / `trackRelays` / `allowConnectingToRelay`.
+
+### Fixed
+
+- EVENT `auth-required:` rearms the publish timeout after AUTH.
+- Extra live REQ while disconnected does not reset reconnect backoff.
+- `subscribePrivateMessages` close/abort skips later persist and `onevent`; junk wraps are not stored.
 
 [Unreleased]: https://github.com/qntx/nostr.js/commits/HEAD
