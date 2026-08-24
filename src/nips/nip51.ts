@@ -1,6 +1,7 @@
 /**
  * NIP-51: Lists
- * Public tags only. Encrypted `.content` is the caller's job (needs a signer).
+ * Public tags plus NIP-44 private `.content` (author encrypts to self).
+ * Crypto is injected; this module does not import signer. No NIP-04 sniff.
  * Kind 10063 Blossom servers live in blossom.ts.
  *
  * @see https://github.com/nostr-protocol/nips/blob/master/51.md
@@ -9,8 +10,19 @@ import { EventBuilder } from "../core/builder.ts";
 import { EventValidationError } from "../core/error.ts";
 import type { Event } from "../core/event.ts";
 import { Kind } from "../core/kind.ts";
-import { getDTag, Tag } from "../core/tag.ts";
+import { getDTag, isTag, Tag } from "../core/tag.ts";
 import { assertHex32, isHex32, normalizeURL } from "../core/util.ts";
+
+/**
+ * Structural crypto used by NIP-51 private tags.
+ * Satisfied by NostrSigner when nip44Encrypt/nip44Decrypt are present.
+ * This module must not import src/signer/.
+ */
+export type Nip51Crypto = {
+  getPublicKey(): Promise<string>;
+  nip44Encrypt(peer: string, plaintext: string): Promise<string>;
+  nip44Decrypt(peer: string, payload: string): Promise<string>;
+};
 
 export type MuteItem =
   | { type: "pubkey"; value: string }
@@ -123,6 +135,52 @@ export function muteListEventBuilder(items: readonly MuteItem[]): EventBuilder {
     }
   }
   return b;
+}
+
+/** NIP-44 ciphertext of tags, conversation peer = author's own pubkey. */
+export async function encryptPrivateTags(
+  crypto: Nip51Crypto,
+  tags: Event["tags"],
+): Promise<string> {
+  const self = await crypto.getPublicKey();
+  return crypto.nip44Encrypt(self, JSON.stringify(tags));
+}
+
+/** Decrypt NIP-51 `.content`. Empty content is no private tags, not ciphertext. */
+export async function decryptPrivateTags(
+  crypto: Nip51Crypto,
+  event: Pick<Event, "pubkey" | "content">,
+): Promise<Event["tags"]> {
+  // NIP-44 rejects empty plaintext; empty `.content` means no private items.
+  if (event.content === "") return [];
+  const self = await crypto.getPublicKey();
+  if (self.toLowerCase() !== event.pubkey.toLowerCase()) {
+    throw new EventValidationError("NIP-51 private content is only for the author");
+  }
+  const plaintext = await crypto.nip44Decrypt(self, event.content);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(plaintext);
+  } catch (cause) {
+    throw new EventValidationError("invalid NIP-51 private tags", { cause });
+  }
+  if (!Array.isArray(parsed) || !parsed.every(isTag)) {
+    throw new EventValidationError("invalid NIP-51 private tags");
+  }
+  return parsed;
+}
+
+/** Public mute items from tags; private mute items from NIP-44 `.content`. */
+export async function parseMuteListPrivate(
+  crypto: Nip51Crypto,
+  event: Pick<Event, "kind" | "tags" | "pubkey" | "content">,
+): Promise<{ public: MuteItem[]; private: MuteItem[] }> {
+  const pub = parseMuteList(event);
+  const decrypted = await decryptPrivateTags(crypto, event);
+  return {
+    public: pub,
+    private: parseMuteList({ kind: event.kind, tags: decrypted }),
+  };
 }
 
 /** Parse kind:10001 pin list public `e` tags. */
