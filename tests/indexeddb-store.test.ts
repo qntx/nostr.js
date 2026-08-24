@@ -1016,4 +1016,77 @@ describe("IndexedDbEventStore", () => {
     expect((err as StorageError).cause).toBeUndefined();
     store.close();
   });
+
+  test("tag query get with null req.error throws IndexedDB get failed", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "tag-get-null-err" });
+    await store.open();
+    const note = EventBuilder.textNote("n").tag(["e", EID]).createdAt(1).signWithKeys(keys);
+    expect(await store.put(note)).toBe("accepted");
+    mock.failGetOnCall(1, null);
+    const err = await store.query([{ "#e": [EID] }]).then(
+      () => {
+        throw new Error("expected reject");
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(StorageError);
+    expect((err as StorageError).message).toBe("IndexedDB get failed");
+    expect((err as StorageError).cause).toBeUndefined();
+    store.close();
+  });
+
+  test("query cursor open with null req.error throws IndexedDB cursor failed", async () => {
+    const store = new IndexedDbEventStore({ dbName: "cursor-null-err" });
+    await store.open();
+    mock.failCursor(null);
+    const err = await store.query([{ kinds: [Kind.TextNote] }]).then(
+      () => {
+        throw new Error("expected reject");
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(StorageError);
+    expect((err as StorageError).message).toBe("IndexedDB cursor failed");
+    expect((err as StorageError).cause).toBeUndefined();
+    store.close();
+  });
+
+  test("putMany tx abort with null tx.error is StorageError without cause", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "putmany-abort-null" });
+    await store.open();
+    const note = EventBuilder.textNote("a").createdAt(1).signWithKeys(keys);
+    mock.failNextTxComplete("abort", null);
+    const err = await store.putMany([note]).then(
+      () => {
+        throw new Error("expected reject");
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(StorageError);
+    expect((err as StorageError).message).toBe("IndexedDB transaction aborted");
+    expect((err as StorageError).cause).toBeUndefined();
+    expect(await store.get(note.id)).toBeUndefined();
+    store.close();
+  });
+
+  test("putMany tx onerror with null tx.error is StorageError without cause", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "putmany-error-null" });
+    await store.open();
+    const note = EventBuilder.textNote("a").createdAt(1).signWithKeys(keys);
+    mock.failNextTxComplete("error", null);
+    const err = await store.putMany([note]).then(
+      () => {
+        throw new Error("expected reject");
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(StorageError);
+    expect((err as StorageError).message).toBe("IndexedDB transaction failed");
+    expect((err as StorageError).cause).toBeUndefined();
+    expect(await store.get(note.id)).toBeUndefined();
+    store.close();
+  });
 });

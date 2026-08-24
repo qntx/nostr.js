@@ -20,7 +20,7 @@ import {
   useWebSocketImplementation,
 } from "../src/index.ts";
 import { subscriptionToAsyncIterable } from "../src/relay/subscription.ts";
-import { WasmVerifyPoisonedError } from "../src/wasm/adapter.ts";
+import { makeVerifyEvent, WasmVerifyPoisonedError } from "../src/wasm/adapter.ts";
 import { loadNostrWasm, resetNostrWasmForTests } from "../src/wasm/load.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 
@@ -225,13 +225,31 @@ describe("Pool.publishAny rejected OK", () => {
 });
 
 describe("WasmVerifyPoisonedError", () => {
-  test("extends NostrError and keeps duck-type name", () => {
-    const cause = new WebAssembly.RuntimeError("trap");
-    const err = new WasmVerifyPoisonedError("wasm verify aborted the instance", { cause });
-    expect(err).toBeInstanceOf(NostrError);
+  test("makeVerifyEvent RuntimeError poisons as WasmVerifyPoisonedError", () => {
+    const poison: { error?: Error } = {};
+    let calls = 0;
+    const fn = makeVerifyEvent(
+      {
+        verifySerialized: () => {
+          calls += 1;
+          throw new WebAssembly.RuntimeError("trap");
+        },
+      },
+      poison,
+    );
+    const signed = EventBuilder.textNote("hello")
+      .createdAt(1617932115)
+      .signWithKeys(Keys.fromSecretKey(SK));
+    const event = { ...signed };
+    const err = syncThrow(() => fn(event));
     expect(err).toBeInstanceOf(WasmVerifyPoisonedError);
-    expect(err.name).toBe("WasmVerifyPoisonedError");
-    expect(err.cause).toBe(cause);
-    expect({ name: err.name }).toEqual({ name: "WasmVerifyPoisonedError" });
+    expect(err).toBeInstanceOf(NostrError);
+    expect(poison.error).toBe(err);
+    expect(poison.error?.name).toBe("WasmVerifyPoisonedError");
+    expect((err as WasmVerifyPoisonedError).cause).toBeInstanceOf(WebAssembly.RuntimeError);
+    expect(calls).toBe(1);
+    const sticky = syncThrow(() => fn({ ...event }));
+    expect(sticky).toBe(poison.error);
+    expect(calls).toBe(1);
   });
 });
