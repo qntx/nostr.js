@@ -149,6 +149,30 @@ describe("Client", () => {
     await expect(client.publish(EventBuilder.textNote("x"))).rejects.toThrow(/signer/);
   });
 
+  test("Client pool ensureRelay defaults to 5000ms when connectTimeoutMs is unset", async () => {
+    MockWebSocket.autoConnect = false;
+    const client = new Client({
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: false,
+    });
+    try {
+      const pending = client.pool.ensureRelay("wss://hang.example");
+      await waitUntil(() => MockWebSocket.instances.length === 1);
+      expect(MockWebSocket.last().readyState).toBe(MockWebSocket.CONNECTING);
+      const status = await Promise.race([
+        pending.then(
+          () => "resolved" as const,
+          () => "rejected" as const,
+        ),
+        sleep(3500).then(() => "pending" as const),
+      ]);
+      expect(status).toBe("pending");
+      await expect(pending).rejects.toThrow(/timed out/);
+    } finally {
+      await client.shutdown();
+    }
+  }, 8_000);
+
   test("gossip publish fans out to author write and tagged read relays", async () => {
     const author = new KeysSigner(SK);
     const tagged = Keys.fromSecretKey(

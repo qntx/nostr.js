@@ -2,7 +2,7 @@ import type { Event, EventTemplate } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { createSubscriptionId, type CountResult } from "../core/message.ts";
 import { normalizeURL } from "../core/util.ts";
-import { RelayClosedError, RelayConnectionError, RelayPublishError } from "./error.ts";
+import { RelayConnectionError, RelayPublishError } from "./error.ts";
 import { Relay, type PublishResult, type RelayOptions, type SubscribeOptions } from "./relay.ts";
 import { isInsecureRelayUrl } from "./url.ts";
 import type { WebSocketConstructor } from "./websocket.ts";
@@ -12,14 +12,11 @@ export type PoolOptions = {
   verifyEvent?: RelayOptions["verifyEvent"];
   publishTimeoutMs?: number;
   connectTimeoutMs?: number;
-  maxWaitForConnectionMs?: number;
   enableReconnect?: boolean;
   reconnectBackoffMs?: number[];
   enablePing?: boolean;
   pingIntervalMs?: number;
   pingTimeoutMs?: number;
-  /** Return false to skip connecting to a relay for a given operation. */
-  allowConnectingToRelay?: (url: string, operation: "read" | "write") => boolean;
   /**
    * When set, automatically answer NIP-42 AUTH challenges for relays that
    * send them. Return null to skip a given relay URL.
@@ -64,8 +61,6 @@ export class Pool {
   #idleTimer: ReturnType<typeof setInterval> | undefined;
   #allowInsecure: boolean;
   #trustedInsecure: Set<string>;
-  seenOn = new Map<string, Set<string>>();
-  trackRelays = false;
 
   constructor(opts: PoolOptions = {}) {
     this.#opts = opts;
@@ -168,8 +163,7 @@ export class Pool {
       try {
         await relay.connect({
           signal: opts?.signal,
-          timeoutMs:
-            opts?.timeoutMs ?? this.#opts.maxWaitForConnectionMs ?? this.#opts.connectTimeoutMs,
+          timeoutMs: opts?.timeoutMs ?? this.#opts.connectTimeoutMs,
         });
       } catch (err) {
         // Keep the entry when reconnect is enabled so open subscriptions can recover.
@@ -197,10 +191,6 @@ export class Pool {
       this.#relays.delete(norm);
       this.#lastActivity.delete(norm);
     }
-  }
-
-  #allowed(url: string, operation: "read" | "write"): boolean {
-    return this.#opts.allowConnectingToRelay?.(url, operation) ?? true;
   }
 
   /**
@@ -274,14 +264,6 @@ export class Pool {
         alreadyHaveEvent: (id) => Boolean(opts.alreadyHaveEvent?.(id) || seen.has(id)),
         receivedEvent: (id) => {
           opts.receivedEvent?.(id);
-          if (this.trackRelays) {
-            let set = this.seenOn.get(id);
-            if (!set) {
-              set = new Set();
-              this.seenOn.set(id, set);
-            }
-            set.add(relay.url);
-          }
         },
         onevent: (event) => {
           seen.add(event.id);
@@ -303,7 +285,6 @@ export class Pool {
     };
 
     for (const url of relays) {
-      if (!this.#allowed(url, "read")) continue;
       let key: string;
       try {
         key = normalizeURL(url);
@@ -317,7 +298,7 @@ export class Pool {
       }
       void this.ensureRelay(url, {
         signal: opts.signal,
-        timeoutMs: opts.connectionTimeoutMs ?? this.#opts.maxWaitForConnectionMs,
+        timeoutMs: opts.connectionTimeoutMs ?? this.#opts.connectTimeoutMs,
       })
         .then(attach)
         .catch(() => {
@@ -364,24 +345,15 @@ export class Pool {
 
     await Promise.all(
       relays.map(async (url) => {
-        if (!this.#allowed(url, "read")) return;
         try {
           const relay = await this.ensureRelay(url, {
             signal: opts?.signal,
-            timeoutMs: this.#opts.maxWaitForConnectionMs,
+            timeoutMs: this.#opts.connectTimeoutMs,
           });
           this.#touch(relay.url);
           const batch = await relay.fetch(filters, { timeoutMs, signal: opts?.signal });
           for (const event of batch) {
             if (!events.has(event.id)) events.set(event.id, event);
-            if (this.trackRelays) {
-              let set = this.seenOn.get(event.id);
-              if (!set) {
-                set = new Set();
-                this.seenOn.set(event.id, set);
-              }
-              set.add(relay.url);
-            }
           }
         } catch {
           // skip failed relays
@@ -400,12 +372,9 @@ export class Pool {
   ): Promise<PoolPublishResult[]> {
     const results = await Promise.all(
       relays.map(async (url): Promise<PoolPublishResult> => {
-        if (!this.#allowed(url, "write")) {
-          return { url, error: "not allowed" };
-        }
         try {
           const relay = await this.ensureRelay(url, {
-            timeoutMs: this.#opts.maxWaitForConnectionMs,
+            timeoutMs: this.#opts.connectTimeoutMs,
           });
           this.#touch(relay.url);
           const result = await relay.publish(event, { timeoutMs: opts?.timeoutMs });
@@ -424,13 +393,10 @@ export class Pool {
     event: Event,
     opts?: { timeoutMs?: number },
   ): Promise<PoolPublishResult> {
-    const allowed = relays.filter((url) => this.#allowed(url, "write"));
-    if (allowed.length === 0) throw new RelayClosedError("no relays allowed for write");
-
     return Promise.any(
-      allowed.map(async (url) => {
+      relays.map(async (url) => {
         const relay = await this.ensureRelay(url, {
-          timeoutMs: this.#opts.maxWaitForConnectionMs,
+          timeoutMs: this.#opts.connectTimeoutMs,
         });
         this.#touch(relay.url);
         const result = await relay.publish(event, { timeoutMs: opts?.timeoutMs });
@@ -451,13 +417,10 @@ export class Pool {
   ): Promise<PoolCountResult[]> {
     const results = await Promise.all(
       relays.map(async (url): Promise<PoolCountResult> => {
-        if (!this.#allowed(url, "read")) {
-          return { url, error: "not allowed" };
-        }
         try {
           const relay = await this.ensureRelay(url, {
             signal: opts?.signal,
-            timeoutMs: this.#opts.maxWaitForConnectionMs,
+            timeoutMs: this.#opts.connectTimeoutMs,
           });
           this.#touch(relay.url);
           const payload: CountResult = await relay.count(filters, {
