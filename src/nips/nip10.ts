@@ -3,10 +3,12 @@
  * @see https://github.com/nostr-protocol/nips/blob/master/10.md
  */
 import { EventBuilder } from "../core/builder.ts";
+import { EventValidationError } from "../core/error.ts";
 import type { Event } from "../core/event.ts";
-import type { Tag } from "../core/tag.ts";
+import { Kind } from "../core/kind.ts";
+import { formatEventAddress, parseEventAddress, type Tag } from "../core/tag.ts";
 import { isHex32 } from "../core/util.ts";
-import type { EventPointer, ProfilePointer } from "./nip19.ts";
+import type { AddressPointer, EventPointer, ProfilePointer } from "./nip19.ts";
 
 export type ThreadReferences = {
   /** Pointer to the root of the thread. */
@@ -15,11 +17,14 @@ export type ThreadReferences = {
   reply: EventPointer | undefined;
   /** Other e-tagged events (not root/reply). */
   mentions: EventPointer[];
-  /** Quoted events (`q` tags). */
-  quotes: EventPointer[];
+  /** Quoted events (`q` tags): event ids or addresses. Discriminate with `"id" in q`. */
+  quotes: Array<EventPointer | AddressPointer>;
   /** p-tagged profiles involved in the thread. */
   profiles: ProfilePointer[];
 };
+
+type ReplyParent = Pick<Event, "id" | "pubkey" | "tags"> & { kind?: number };
+type QuoteInput = string | EventPointer | AddressPointer;
 
 function eventPointerFromETag(tag: readonly string[]): EventPointer | undefined {
   if (tag[0] !== "e" || !tag[1] || !isHex32(tag[1])) return undefined;
@@ -35,6 +40,55 @@ function eventPointerFromETag(tag: readonly string[]): EventPointer | undefined 
     relays: tag[2] ? [tag[2]] : [],
     author,
   };
+}
+
+function quoteFromQTag(tag: readonly string[]): EventPointer | AddressPointer | undefined {
+  if (tag[0] !== "q" || !tag[1]) return undefined;
+  if (isHex32(tag[1])) {
+    const pointer: EventPointer = {
+      id: tag[1].toLowerCase(),
+      relays: tag[2] ? [tag[2]] : [],
+    };
+    if (tag[3] && isHex32(tag[3])) pointer.author = tag[3].toLowerCase();
+    return pointer;
+  }
+  const addr = parseEventAddress(tag[1]);
+  if (!addr) return undefined;
+  // Address q tags do not use the event-id pubkey slot (index 3).
+  return {
+    identifier: addr.identifier,
+    pubkey: addr.pubkey,
+    kind: addr.kind,
+    relays: tag[2] ? [tag[2]] : [],
+  };
+}
+
+function quoteToTag(quote: QuoteInput): { tag: Tag; author?: string; relay?: string } | undefined {
+  if (typeof quote === "string") {
+    if (isHex32(quote)) return { tag: ["q", quote.toLowerCase()] };
+    const addr = parseEventAddress(quote);
+    if (!addr) return undefined;
+    return { tag: ["q", formatEventAddress(addr.kind, addr.pubkey, addr.identifier)] };
+  }
+  if ("id" in quote) {
+    const id = quote.id.toLowerCase();
+    const relay = quote.relays?.[0];
+    const author = quote.author && isHex32(quote.author) ? quote.author.toLowerCase() : undefined;
+    const tag: Tag =
+      author !== undefined ? ["q", id, relay ?? "", author] : relay ? ["q", id, relay] : ["q", id];
+    return { tag, author, relay: relay || undefined };
+  }
+  const coord = formatEventAddress(quote.kind, quote.pubkey, quote.identifier);
+  const relay = quote.relays?.[0];
+  const tag: Tag = relay ? ["q", coord, relay] : ["q", coord];
+  return { tag, author: quote.pubkey, relay: relay || undefined };
+}
+
+function assertKind1Parent(parent: ReplyParent): void {
+  // NIP-10 is kind 1 only; comments are NIP-22.
+  if (parent.kind !== undefined && parent.kind !== Kind.TextNote) {
+    throw new EventValidationError("NIP-10 replyTo is for kind 1");
+  }
 }
 
 /**
@@ -80,11 +134,9 @@ export function parseThreadTags(event: Pick<Event, "tags">): ThreadReferences {
       continue;
     }
 
-    if (tag[0] === "q" && tag[1] && isHex32(tag[1])) {
-      result.quotes.push({
-        id: tag[1].toLowerCase(),
-        relays: tag[2] ? [tag[2]] : [],
-      });
+    if (tag[0] === "q") {
+      const quote = quoteFromQTag(tag);
+      if (quote) result.quotes.push(quote);
       continue;
     }
 
@@ -126,11 +178,11 @@ export function parseThreadTags(event: Pick<Event, "tags">): ThreadReferences {
 
 export type ReplyTagsOptions = {
   /** Parent event being replied to. */
-  parent: Pick<Event, "id" | "pubkey" | "tags">;
+  parent: ReplyParent;
   /** Optional relay hint for the parent e-tag. */
   relayHint?: string;
-  /** Quoted event ids (`q` tags). */
-  quoteIds?: string[];
+  /** Quoted events (`q` tags): hex ids, `kind:pubkey:d` coords, or pointers. */
+  quotes?: QuoteInput[];
 };
 
 /**
@@ -138,6 +190,7 @@ export type ReplyTagsOptions = {
  * Uses marked tags (`root` / `reply`) per preferred modern style.
  */
 export function buildReplyTags(opts: ReplyTagsOptions): Tag[] {
+  assertKind1Parent(opts.parent);
   const thread = parseThreadTags(opts.parent);
   const root = thread.root ?? { id: opts.parent.id, relays: [], author: opts.parent.pubkey };
   const parentIsRoot = root.id === opts.parent.id;
@@ -170,9 +223,14 @@ export function buildReplyTags(opts: ReplyTagsOptions): Tag[] {
   addP(opts.parent.pubkey, opts.relayHint);
   for (const p of thread.profiles) addP(p.pubkey, p.relays?.[0]);
 
-  for (const id of opts.quoteIds ?? []) {
-    if (isHex32(id)) tags.push(["q", id.toLowerCase()] as Tag);
+  const qTags: Tag[] = [];
+  for (const quote of opts.quotes ?? []) {
+    const built = quoteToTag(quote);
+    if (!built) continue;
+    if (built.author) addP(built.author, built.relay);
+    qTags.push(built.tag);
   }
+  tags.push(...qTags);
 
   return tags;
 }
@@ -198,15 +256,15 @@ export function eTag(
  * Lives here (not on EventBuilder) so core does not depend on nips.
  */
 export function replyTo(
-  parent: Pick<Event, "id" | "pubkey" | "tags">,
+  parent: ReplyParent,
   content: string,
-  opts?: { relayHint?: string; quoteIds?: string[] },
+  opts?: Pick<ReplyTagsOptions, "relayHint" | "quotes">,
 ): EventBuilder {
   return EventBuilder.textNote(content).tags(
     buildReplyTags({
       parent,
       relayHint: opts?.relayHint,
-      quoteIds: opts?.quoteIds,
+      quotes: opts?.quotes,
     }),
   );
 }
