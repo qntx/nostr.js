@@ -102,6 +102,10 @@ export class ClientBuilder {
     return this;
   }
 
+  /**
+   * Local event store. Defaults to {@link MemoryEventStore}.
+   * Browser apps that want persistence must pass {@link IndexedDbEventStore} and `await open()`.
+   */
   storage(store: EventStore): this {
     this.#storage = store;
     return this;

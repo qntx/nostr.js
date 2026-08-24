@@ -127,7 +127,9 @@ const client = Client.builder()
   .build();
 ```
 
-`loadNostrWasm` instantiates once (repeats reuse the module) and throws if instantiate fails. The wasm subpath does not fall back to noble.
+`loadNostrWasm` instantiates once and interns the module for process lifetime (repeats reuse the same instance). Instantiate failure throws; there is no noble fallback.
+
+`WebAssembly.RuntimeError` poisons the instance as `WasmVerifyPoisonedError`. `Relay` drops subsequent EVENTs and notices once. There is no noble fallback and no reconnect because of poison.
 
 After init, `wasm.verifyEvent` is sync — the live EVENT hook. A `Worker` is not a drop-in (`alreadyHaveEvent` / watermarks).
 
@@ -188,7 +190,7 @@ const reused = Nip46Signer.fromBunker(pointer, {
 
 ## Storage
 
-`Client` defaults to `MemoryEventStore`. For a browser, pass IndexedDB:
+`Client` defaults to `MemoryEventStore`. Browser apps that want persistence must pass `IndexedDbEventStore` and `await open()`. Omitting storage in a browser yields an in-memory store that dies on refresh.
 
 ```ts
 import { Client, IndexedDbEventStore } from "@qntx/nostr";
@@ -200,6 +202,8 @@ const client = Client.builder().storage(storage).relays(["wss://relay.example"])
 ```
 
 Both stores apply replaceable / addressable / NIP-09 deletion on `put`. `query` / `count` / `negentropyItems` use the same `Filter` type as the wire.
+
+`#t` (and other non-`e` / `p` tag) queries still scan in both `MemoryEventStore` and `IndexedDbEventStore`. `IndexedDbEventStore.open` loads every tombstone and address row into RAM; tens of MB at 10^5 addressables.
 
 NIP-50 `search` is relay-side. Local `matchFilter` and `EventStore.query` ignore it.
 

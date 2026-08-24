@@ -125,6 +125,8 @@ export class IndexedDbEventStore implements EventStore {
   #db: IDBDatabaseLike | undefined;
   #deletion = new DeletionState();
   #replaceable = new Map<string, string>();
+  /** Serializes writes so abort restore cannot roll back a committed sibling tx. */
+  #writeTail: Promise<void> = Promise.resolve();
 
   constructor(opts: IndexedDbEventStoreOptions = {}) {
     this.#dbName = opts.dbName ?? "@qntx/nostr";
@@ -148,6 +150,7 @@ export class IndexedDbEventStore implements EventStore {
     return this.#db!;
   }
 
+  /** Loads every tombstone and address row into RAM. Tens of MB at 10^5 addressables. */
   async #loadCaches(): Promise<void> {
     const db = this.#db!;
     const tx = db.transaction([TOMBSTONES, ADDRESSES], "readonly");
@@ -164,6 +167,15 @@ export class IndexedDbEventStore implements EventStore {
     await done;
   }
 
+  #enqueueWrite<T>(op: () => Promise<T>): Promise<T> {
+    const run = this.#writeTail.then(op, op);
+    this.#writeTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   async put(event: Event): Promise<PutResult> {
     const [result] = await this.putMany([event]);
     return result!;
@@ -172,6 +184,10 @@ export class IndexedDbEventStore implements EventStore {
   /** One readwrite transaction; abort rejects the whole batch with no partial persist. */
   async putMany(events: readonly Event[]): Promise<PutResult[]> {
     if (events.length === 0) return [];
+    return this.#enqueueWrite(() => this.#putManyLocked(events));
+  }
+
+  async #putManyLocked(events: readonly Event[]): Promise<PutResult[]> {
     let db: IDBDatabaseLike;
     try {
       db = await this.#ensure();
@@ -497,6 +513,10 @@ export class IndexedDbEventStore implements EventStore {
   }
 
   async remove(ids: string[]): Promise<number> {
+    return this.#enqueueWrite(() => this.#removeLocked(ids));
+  }
+
+  async #removeLocked(ids: string[]): Promise<number> {
     const db = await this.#ensure();
     const tx = db.transaction(WRITE_STORES, "readwrite");
     const tombstones = tx.objectStore(TOMBSTONES);
@@ -515,6 +535,10 @@ export class IndexedDbEventStore implements EventStore {
   }
 
   async clear(): Promise<void> {
+    return this.#enqueueWrite(() => this.#clearLocked());
+  }
+
+  async #clearLocked(): Promise<void> {
     const db = await this.#ensure();
     const stores = [...WRITE_STORES, OUTBOX_BOUNDS];
     const tx = db.transaction(stores, "readwrite");
