@@ -85,6 +85,7 @@ export { EventBuilder, type ProfileMetadata } from "./builder.ts";
 
 export {
   cloneFilter,
+  filterFingerprint,
   getFilterLimit,
   matchFilter,
   matchFilters,

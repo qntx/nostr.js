@@ -69,6 +69,7 @@ export {
   EventBuilder,
   type ProfileMetadata,
   cloneFilter,
+  filterFingerprint,
   getFilterLimit,
   matchFilter,
   matchFilters,

@@ -16,6 +16,7 @@ import {
   isEphemeralKind,
   isRegularKind,
   isReplaceableKind,
+  filterFingerprint,
   matchFilter,
   matchFilters,
   mergeFilters,
@@ -247,6 +248,60 @@ describe("filter", () => {
     const merged = mergeFilters({ kinds: [1], authors: ["a"] }, { kinds: [2], authors: ["b"] });
     expect([...(merged.kinds ?? [])].sort((a, b) => a - b)).toEqual([1, 2]);
     expect([...(merged.authors ?? [])].sort((a, b) => a.localeCompare(b))).toEqual(["a", "b"]);
+  });
+
+  test("filterFingerprint sorts keys, list items, and filter order", () => {
+    const pk = "aa".repeat(32);
+    expect(filterFingerprint([{ kinds: [1], authors: [pk] }])).toBe(
+      filterFingerprint([{ authors: [pk], kinds: [1] }]),
+    );
+    expect(filterFingerprint([{ kinds: [2, 1] }])).toBe(filterFingerprint([{ kinds: [1, 2] }]));
+    expect(filterFingerprint([{ kinds: [1] }, { kinds: [2] }])).toBe(
+      filterFingerprint([{ kinds: [2] }, { kinds: [1] }]),
+    );
+  });
+
+  test("filterFingerprint lowercases hex ids/authors/#e/#p and preserves #t case", () => {
+    const id = "ab".repeat(32);
+    const pk = "cd".repeat(32);
+    expect(filterFingerprint([{ ids: [id.toUpperCase()] }])).toBe(
+      filterFingerprint([{ ids: [id] }]),
+    );
+    expect(filterFingerprint([{ authors: [pk.toUpperCase()] }])).toBe(
+      filterFingerprint([{ authors: [pk] }]),
+    );
+    expect(filterFingerprint([{ "#e": [id.toUpperCase()] }])).toBe(
+      filterFingerprint([{ "#e": [id] }]),
+    );
+    expect(filterFingerprint([{ "#p": [pk.toUpperCase()] }])).toBe(
+      filterFingerprint([{ "#p": [pk] }]),
+    );
+    expect(filterFingerprint([{ "#t": ["b", "a"] }])).toBe(
+      filterFingerprint([{ "#t": ["a", "b"] }]),
+    );
+    expect(filterFingerprint([{ "#t": ["Nostr"] }])).not.toBe(
+      filterFingerprint([{ "#t": ["nostr"] }]),
+    );
+  });
+
+  test("filterFingerprint includes since/until/limit/search; missing key is not []", () => {
+    expect(filterFingerprint([{ kinds: [1], limit: 10 }])).not.toBe(
+      filterFingerprint([{ kinds: [1], limit: 50 }]),
+    );
+    expect(filterFingerprint([{ kinds: [1], since: 1 }])).not.toBe(
+      filterFingerprint([{ kinds: [1] }]),
+    );
+    expect(filterFingerprint([{ kinds: [1], until: 1 }])).not.toBe(
+      filterFingerprint([{ kinds: [1] }]),
+    );
+    expect(filterFingerprint([{ search: "x" }])).not.toBe(filterFingerprint([{ search: "X" }]));
+    expect(filterFingerprint([{ kinds: [1] }])).not.toBe(
+      filterFingerprint([{ kinds: [1], authors: [] }]),
+    );
+    expect(filterFingerprint([{ kinds: [1] }])).not.toBe(
+      filterFingerprint([{ kinds: [1], "#t": [] }]),
+    );
+    expect(filterFingerprint([{ kinds: [1] }])).not.toBe(filterFingerprint([{ kinds: [1, 2] }]));
   });
 });
 

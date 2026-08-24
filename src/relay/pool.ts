@@ -269,6 +269,7 @@ export class Pool {
       this.#touch(relay.url);
       const sub = relay.subscribe(filters, {
         id: opts.id,
+        closeOnEose: opts.closeOnEose,
         alreadyHaveEvent: (id) => Boolean(opts.alreadyHaveEvent?.(id) || seen.has(id)),
         receivedEvent: (id) => {
           opts.receivedEvent?.(id);
