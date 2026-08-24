@@ -544,31 +544,22 @@ export class Client {
       const f = filters[i]!;
       const broken = brokenList[i]!;
       if (broken.type === "per-relay") {
-        const jobs: Promise<void>[] = [...broken.filters.entries()].map(
-          async ([url, subFilter]) => {
-            try {
-              const batch = await this.pool.fetch([url], [subFilter], {
+        const fetchInto = async (urls: string[], subFilters: Filter[]) => {
+          try {
+            ingest(
+              await this.pool.fetch(urls, subFilters, {
                 timeoutMs: opts?.timeoutMs,
                 signal: opts?.signal,
-              });
-              ingest(batch);
-            } catch {
-              // skip failed relay
-            }
-          },
-        );
-        if (broken.fallback) {
-          jobs.push(
-            this.pool
-              .fetch(this.#defaultRelays(), [broken.fallback], {
-                timeoutMs: opts?.timeoutMs,
-                signal: opts?.signal,
-              })
-              .then((batch) => {
-                ingest(batch);
               }),
-          );
-        }
+            );
+          } catch {
+            // skip failed relay
+          }
+        };
+        const jobs: Promise<void>[] = [...broken.filters.entries()].map(([url, subFilter]) =>
+          fetchInto([url], [subFilter]),
+        );
+        if (broken.fallback) jobs.push(fetchInto(this.#defaultRelays(), [broken.fallback]));
         await Promise.all(jobs);
       } else {
         const batch = await this.pool.fetch(this.#defaultRelays(), [f], {
@@ -662,8 +653,14 @@ export class Client {
         clearTimeout(eoseTimer);
         eoseTimer = undefined;
       }
-      fireClose(reason ?? "closed by client");
-      for (const c of closers) c.close(reason);
+      const closeReason = reason ?? "closed by client";
+      const shouldNotify = !closeFired;
+      closeFired = true;
+      try {
+        for (const c of closers) c.close(reason);
+      } finally {
+        if (shouldNotify) opts?.onclose?.(closeReason);
+      }
     };
 
     if (opts.signal?.aborted) closed = true;
