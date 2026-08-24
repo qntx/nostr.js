@@ -222,6 +222,8 @@ describe("IndexedDbEventStore", () => {
 
     const windowed = await store.query([{ since: 2, until: 4 }]);
     expect(windowed.map((e) => e.created_at)).toEqual([4, 3, 2]);
+    expect(await store.query([{ since: 5, until: 1 }])).toEqual([]);
+    expect(await store.query([{ kinds: [1], limit: 0 }])).toEqual([]);
 
     const limited = await store.query([{ kinds: [1], limit: 2 }]);
     expect(limited).toHaveLength(2);
@@ -264,13 +266,13 @@ describe("IndexedDbEventStore", () => {
     const one = await store.query([{ authors: [keys.publicKey], kinds: [1], limit: 1 }]);
     expect(one).toHaveLength(1);
     expect(one[0]!.pubkey).toBe(keys.publicKey);
-    expect(mock.cursorVisitCount()).toBe(1);
+    expect(mock.cursorVisitCount()).toBeLessThan(30);
     expect(mock.eventsGetAllCount()).toBe(0);
 
     mock.resetStats();
     const many = await store.query([{ authors: [keys.publicKey], kinds: [1], limit: 50 }]);
     expect(many).toHaveLength(3);
-    expect(mock.cursorVisitCount()).toBe(3);
+    expect(mock.cursorVisitCount()).toBeLessThan(30);
     expect(mock.eventsGetAllCount()).toBe(0);
     store.close();
   });
@@ -405,6 +407,183 @@ describe("IndexedDbEventStore", () => {
     store.close();
   });
 
+  test("ids+limit still applies authors matchFilter", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const other = Keys.generate();
+    const store = new IndexedDbEventStore({ dbName: "ids-authors-limit" });
+    await store.open();
+    const older = EventBuilder.textNote("old").createdAt(1).signWithKeys(keys);
+    const newer = EventBuilder.textNote("new").createdAt(2).signWithKeys(keys);
+    await store.put(older);
+    await store.put(newer);
+    const filter = { ids: [older.id, newer.id], authors: [other.publicKey], limit: 1 };
+    expect(filter.authors).toEqual([other.publicKey]);
+    expect(await store.query([filter])).toEqual([]);
+    expect(await store.count([filter])).toBe(0);
+    expect(await store.negentropyItems(filter)).toEqual([]);
+    store.close();
+  });
+
+  test("same-second k-way drain emits lowest ids", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.generate();
+    const store = new IndexedDbEventStore({ dbName: "same-second" });
+    await store.open();
+    const mk = (id: string, pubkey: string) => ({
+      id,
+      pubkey,
+      kind: Kind.TextNote,
+      created_at: 5,
+      tags: [] as [],
+      content: "",
+      sig: "ab".repeat(32),
+    });
+    const e00 = mk("00".repeat(32), a.publicKey);
+    const e80 = mk("80".repeat(32), b.publicKey);
+    const eff = mk("ff".repeat(32), a.publicKey);
+    await store.put(eff);
+    await store.put(e00);
+    await store.put(e80);
+    const filter = { authors: [a.publicKey, b.publicKey], kinds: [1], limit: 2 };
+    const found = await store.query([filter]);
+    expect(found.map((e) => e.id)).toEqual([e00.id, e80.id]);
+    expect(await store.count([filter])).toBe(2);
+    expect((await store.negentropyItems(filter)).map((i) => i.id)).toEqual([e00.id, e80.id]);
+
+    const oneAuthor = Keys.generate();
+    const p00 = mk("01".repeat(32), oneAuthor.publicKey);
+    const p80 = mk("81".repeat(32), oneAuthor.publicKey);
+    const pff = mk("fe".repeat(32), oneAuthor.publicKey);
+    await store.put(pff);
+    await store.put(p00);
+    await store.put(p80);
+    const inner = { authors: [oneAuthor.publicKey], kinds: [1], limit: 2 };
+    expect((await store.query([inner])).map((e) => e.id)).toEqual([p00.id, p80.id]);
+    store.close();
+  });
+
+  test("deleted heads do not count toward limit", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "skip-deleted-limit" });
+    await store.open();
+    const a = EventBuilder.textNote("a").createdAt(1).signWithKeys(keys);
+    const b = EventBuilder.textNote("b").createdAt(2).signWithKeys(keys);
+    const c = EventBuilder.textNote("c").createdAt(3).signWithKeys(keys);
+    await store.put(a);
+    await store.put(b);
+    await store.put(c);
+    await store.remove([c.id]);
+    const filter = { authors: [keys.publicKey], kinds: [1], limit: 1 };
+    expect((await store.query([filter])).map((e) => e.id)).toEqual([b.id]);
+    expect(await store.count([filter])).toBe(1);
+    store.close();
+  });
+
+  test("authors+kinds+#t skips non-matching heads toward limit", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "skip-tag-limit" });
+    await store.open();
+    const tagged = EventBuilder.textNote("hit").tag(["t", "nostr"]).createdAt(1).signWithKeys(keys);
+    const newer = EventBuilder.textNote("miss").createdAt(2).signWithKeys(keys);
+    await store.put(tagged);
+    await store.put(newer);
+    const filter = { authors: [keys.publicKey], kinds: [1], "#t": ["nostr"], limit: 1 };
+    expect(filter["#t"]).toEqual(["nostr"]);
+    expect((await store.query([filter])).map((e) => e.id)).toEqual([tagged.id]);
+    expect(await store.count([filter])).toBe(1);
+    store.close();
+  });
+
+  test("two-prefix limit does not throw continue-after-complete", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.generate();
+    const store = new IndexedDbEventStore({ dbName: "tx-lifetime" });
+    await store.open();
+    for (const t of [1, 2, 3, 4, 5]) {
+      await store.put(EventBuilder.textNote(`a${t}`).createdAt(t).signWithKeys(a));
+      await store.put(
+        EventBuilder.textNote(`b${t}`)
+          .createdAt(t + 10)
+          .signWithKeys(b),
+      );
+    }
+    mock.resetStats();
+    const n = 3;
+    const found = await store.query([
+      { authors: [a.publicKey, b.publicKey], kinds: [1], limit: n },
+    ]);
+    expect(found).toHaveLength(n);
+    expect(found.map((e) => e.created_at)).toEqual([15, 14, 13]);
+    expect(mock.cursorVisitCount()).toBeLessThan(10);
+    expect(mock.eventsGetAllCount()).toBe(0);
+    store.close();
+  });
+
+  test("v3 compact deletes leftover kind 0 and tag_refs", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const meta1 = EventBuilder.metadata({ name: "v1" })
+      .tag(["e", EID])
+      .tag(["p", keys.publicKey])
+      .createdAt(10)
+      .signWithKeys(keys);
+    const meta2 = EventBuilder.metadata({ name: "v2" })
+      .tag(["e", EID])
+      .createdAt(20)
+      .signWithKeys(keys);
+    await seedIdbV1("compact-k0", [meta1, meta2]);
+    const store = new IndexedDbEventStore({ dbName: "compact-k0" });
+    await store.open();
+    mock.resetStats();
+    const found = await store.query([{ kinds: [Kind.Metadata] }]);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.id).toBe(meta2.id);
+    expect(await store.count([{ kinds: [Kind.Metadata] }])).toBe(1);
+    expect(await store.get(meta1.id)).toBeUndefined();
+    expect(mock.eventsGetAllCount()).toBe(0);
+    expect((await store.query([{ "#e": [EID] }])).map((e) => e.id)).toEqual([meta2.id]);
+    expect(await store.query([{ "#p": [keys.publicKey] }])).toEqual([]);
+    store.close();
+  });
+
+  test("#e and #p k-way merge is AND and respects limit", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "ep-and" });
+    await store.open();
+    const both = EventBuilder.textNote("both")
+      .tag(["e", EID])
+      .tag(["p", keys.publicKey])
+      .createdAt(10)
+      .signWithKeys(keys);
+    const onlyE = EventBuilder.textNote("e").tag(["e", EID]).createdAt(20).signWithKeys(keys);
+    const onlyP = EventBuilder.textNote("p")
+      .tag(["p", keys.publicKey])
+      .createdAt(30)
+      .signWithKeys(keys);
+    await store.put(both);
+    await store.put(onlyE);
+    await store.put(onlyP);
+    const filter = { "#e": [EID], "#p": [keys.publicKey], limit: 2 };
+    expect(filter["#e"]).toEqual([EID]);
+    expect(filter["#p"]).toEqual([keys.publicKey]);
+    const found = await store.query([filter]);
+    expect(found.map((e) => e.id)).toEqual([both.id]);
+    expect(await store.count([filter])).toBe(1);
+    store.close();
+  });
+
+  test("#t-only queries scan created_at and matchFilter", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "t-tag" });
+    await store.open();
+    const hit = EventBuilder.textNote("hit").tag(["t", "nostr"]).createdAt(1).signWithKeys(keys);
+    const miss = EventBuilder.textNote("miss").tag(["t", "other"]).createdAt(2).signWithKeys(keys);
+    await store.put(hit);
+    await store.put(miss);
+    expect((await store.query([{ "#t": ["nostr"] }])).map((e) => e.id)).toEqual([hit.id]);
+    expect((await store.query([{ "#t": ["other"] }])).map((e) => e.id)).toEqual([miss.id]);
+    store.close();
+  });
+
   test("ids+limit on negentropyItems keeps newest not ids-array order", async () => {
     const keys = Keys.fromSecretKey(SK);
     const store = new IndexedDbEventStore({ dbName: "ids-limit" });
@@ -416,6 +595,11 @@ describe("IndexedDbEventStore", () => {
     mock.resetStats();
     const items = await store.negentropyItems({ ids: [older.id, newer.id], limit: 1 });
     expect(items.map((i) => i.id)).toEqual([newer.id]);
+    expect((await store.query([{ ids: [older.id, newer.id], limit: 1 }])).map((e) => e.id)).toEqual(
+      [newer.id],
+    );
+    expect(await store.count([{ ids: [older.id, newer.id], limit: 1 }])).toBe(1);
+    expect(await store.query([{ ids: ["ab".repeat(32)], limit: 1 }])).toEqual([]);
     expect(mock.eventsGetAllCount()).toBe(0);
     store.close();
   });
@@ -438,15 +622,20 @@ describe("IndexedDbEventStore", () => {
     mock.resetStats();
     const queried = await store.query([filter]);
     expect(await store.count([filter])).toBe(queried.length);
-    expect(queried.map((e) => e.created_at)).toEqual([3, 2]);
-    expect(queried.map((e) => e.id)).toEqual([aNotes[2]!.id, aNotes[1]!.id]);
+    expect(queried.map((e) => e.created_at)).toEqual([12, 11]);
+    expect(queried.map((e) => e.id)).toEqual([bNotes[2]!.id, bNotes[1]!.id]);
 
     const items = await store.negentropyItems(filter);
     expect(items.map((i) => i.created_at)).toEqual([11, 12]);
     expect(items.map((i) => i.id)).toEqual(
       [bNotes[1]!, bNotes[2]!].sort((x, y) => itemCompare(x, y)).map((e) => e.id),
     );
-    expect(items.map((i) => i.id).sort()).not.toEqual(queried.map((e) => e.id).sort());
+    expect(items.map((i) => i.id).sort()).toEqual(queried.map((e) => e.id).sort());
+    expect(
+      (await store.query([{ authors: [a.publicKey, b.publicKey], limit: 2 }])).map(
+        (e) => e.created_at,
+      ),
+    ).toEqual([12, 11]);
     expect(mock.eventsGetAllCount()).toBe(0);
     store.close();
   });

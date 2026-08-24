@@ -372,7 +372,7 @@ function openCursor(
   keyOf: (row: Row) => unknown,
   range: { lower: unknown; upper: unknown; lowerOpen: boolean; upperOpen: boolean } | undefined,
   direction: "next" | "prev",
-  tx: { begin(): void; end(): void },
+  tx: { begin(): void; end(): void; readonly completed: boolean },
   stats: { cursorVisits: number },
 ) {
   const req = {
@@ -412,6 +412,9 @@ function openCursor(
       primaryKey: entry.primaryKey,
       value: structuredClone(entry.value),
       continue() {
+        if (tx.completed) {
+          throw new Error("InvalidStateError: The transaction has finished.");
+        }
         pos += 1;
         tx.begin();
         queueMicrotask(emit);
