@@ -410,6 +410,238 @@ describe("MemoryEventStore", () => {
       { id: high.id, created_at: 5 },
     ]);
   });
+
+  test("authors×kinds uses kind+pubkey sets then sortEvents+slice", async () => {
+    const store = new MemoryEventStore();
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.generate();
+    const outsider = Keys.generate();
+
+    const aMeta = EventBuilder.metadata({ name: "a" }).createdAt(50).signWithKeys(a);
+    const aOld = EventBuilder.textNote("a-old").createdAt(10).signWithKeys(a);
+    const aNew = EventBuilder.textNote("a-new").createdAt(30).signWithKeys(a);
+    const bNote = EventBuilder.textNote("b").createdAt(40).signWithKeys(b);
+    const bMeta = EventBuilder.metadata({ name: "b" }).createdAt(60).signWithKeys(b);
+    const outNote = EventBuilder.textNote("out").createdAt(90).signWithKeys(outsider);
+    for (const e of [aMeta, aOld, aNew, bNote, bMeta, outNote]) {
+      expect(await store.put(e)).toBe("accepted");
+    }
+
+    const filter = { authors: [a.publicKey, b.publicKey], kinds: [Kind.TextNote], limit: 2 };
+    expect((await store.query([filter])).map((e) => e.id)).toEqual([bNote.id, aNew.id]);
+    expect(await store.count([filter])).toBe(2);
+    expect((await store.negentropyItems(filter)).map((i) => i.id)).toEqual([aNew.id, bNote.id]);
+
+    const metaFilter = {
+      authors: [a.publicKey.toUpperCase(), b.publicKey],
+      kinds: [Kind.Metadata],
+    };
+    expect((await store.query([metaFilter])).map((e) => e.id)).toEqual([bMeta.id, aMeta.id]);
+    expect(await store.count([metaFilter])).toBe(2);
+
+    expect(await store.query([{ authors: [], kinds: [Kind.TextNote] }])).toEqual([]);
+    expect(await store.count([{ authors: [a.publicKey], kinds: [] }])).toBe(0);
+    expect(
+      await store.query([{ authors: [outsider.publicKey], kinds: [Kind.TextNote, Kind.Metadata] }]),
+    ).toEqual([outNote]);
+  });
+
+  test("authors×kinds same created_at keeps lowest id first under limit", async () => {
+    const store = new MemoryEventStore();
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.generate();
+    const low: Event = {
+      id: "00".repeat(32),
+      pubkey: a.publicKey,
+      kind: Kind.TextNote,
+      created_at: 5,
+      tags: [],
+      content: "low",
+      sig: "ab".repeat(32),
+    };
+    const mid: Event = { ...low, id: "80".repeat(32), pubkey: b.publicKey, content: "mid" };
+    const high: Event = { ...low, id: "ff".repeat(32), content: "high" };
+    for (const e of [high, mid, low]) expect(await store.put(e)).toBe("accepted");
+    const filter = { authors: [a.publicKey, b.publicKey], kinds: [Kind.TextNote], limit: 2 };
+    expect((await store.query([filter])).map((e) => e.id)).toEqual([low.id, mid.id]);
+    expect(await store.count([filter])).toBe(2);
+  });
+
+  test("tag-only #e/#p indexes union then matchFilter AND; empty #e is no match", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+    const other = Keys.generate();
+    const eid = "aa".repeat(32);
+    const eidOther = "bb".repeat(32);
+    const both = EventBuilder.textNote("both")
+      .tag(["e", eid])
+      .tag(["p", keys.publicKey])
+      .createdAt(30)
+      .signWithKeys(keys);
+    const onlyE = EventBuilder.textNote("only-e").tag(["e", eid]).createdAt(20).signWithKeys(keys);
+    const onlyP = EventBuilder.textNote("only-p")
+      .tag(["p", keys.publicKey])
+      .createdAt(10)
+      .signWithKeys(keys);
+    const otherE = EventBuilder.textNote("other-e")
+      .tag(["e", eidOther])
+      .createdAt(40)
+      .signWithKeys(other);
+    const untagged = EventBuilder.textNote("none").createdAt(50).signWithKeys(keys);
+    for (const e of [both, onlyE, onlyP, otherE, untagged]) {
+      expect(await store.put(e)).toBe("accepted");
+    }
+
+    const byE = { "#e": [eid] as const };
+    expect((await store.query([byE])).map((e) => e.id)).toEqual([both.id, onlyE.id]);
+    expect(await store.count([byE])).toBe(2);
+    expect((await store.negentropyItems(byE)).map((i) => i.id)).toEqual([onlyE.id, both.id]);
+
+    const byP = { "#p": [keys.publicKey] as const };
+    expect((await store.query([byP])).map((e) => e.id)).toEqual([both.id, onlyP.id]);
+
+    const andBoth = { "#e": [eid] as const, "#p": [keys.publicKey] as const };
+    expect((await store.query([andBoth])).map((e) => e.id)).toEqual([both.id]);
+    expect(await store.count([andBoth])).toBe(1);
+
+    expect(await store.query([{ "#e": [eid], "#p": [other.publicKey] }])).toEqual([]);
+    expect(await store.query([{ "#e": [eidOther], "#p": [keys.publicKey] }])).toEqual([]);
+    expect(await store.query([{ "#e": [eidOther] }])).toEqual([otherE]);
+    expect(await store.query([{ "#e": [] }])).toEqual([]);
+    expect(await store.count([{ "#e": [] }])).toBe(0);
+    expect(await store.query([{ "#p": [] }])).toEqual([]);
+    expect(await store.query([{ "#e": [eid], limit: 0 }])).toEqual([]);
+    expect(await store.query([{ "#e": [eid], since: 25, until: 35 }])).toEqual([both]);
+    expect(await store.query([{ "#e": [eid], since: 40, until: 10 }])).toEqual([]);
+    expect(await store.query([{ "#e": [eid], limit: 1 }])).toEqual([both]);
+  });
+
+  test("tag-only mixed-case #e/#p and dual #e tags do not double-count", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+    const eid = "aa".repeat(32);
+    const root = "11".repeat(32);
+    const parent = "22".repeat(32);
+    const mixed = EventBuilder.textNote("mixed").createdAt(1).signWithKeys(keys);
+    const stored = {
+      ...mixed,
+      id: mixed.id.toUpperCase(),
+      pubkey: mixed.pubkey.toUpperCase(),
+      tags: [
+        ["e", eid.toUpperCase()],
+        ["p", keys.publicKey.toUpperCase()],
+      ] as typeof mixed.tags,
+    };
+    expect(await store.put(stored)).toBe("accepted");
+    expect((await store.query([{ "#e": [eid.toUpperCase()] }])).map((e) => e.id)).toEqual([
+      mixed.id,
+    ]);
+    expect(
+      (await store.query([{ "#p": [keys.publicKey.toUpperCase()] }])).map((e) => e.id),
+    ).toEqual([mixed.id]);
+
+    const reply = EventBuilder.textNote("reply")
+      .tag(["e", root])
+      .tag(["e", parent])
+      .createdAt(10)
+      .signWithKeys(keys);
+    const other = EventBuilder.textNote("other").tag(["e", parent]).createdAt(5).signWithKeys(keys);
+    expect(await store.put(reply)).toBe("accepted");
+    expect(await store.put(other)).toBe("accepted");
+    const dual = { "#e": [root, parent] as const, limit: 2 };
+    expect((await store.query([dual])).map((e) => e.id)).toEqual([reply.id, other.id]);
+    expect(await store.count([dual])).toBe(2);
+  });
+
+  test("#t tag-only still matches via full scan; defined miss is empty", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+    const eid = "aa".repeat(32);
+    const nostr = EventBuilder.textNote("n")
+      .tag(["t", "nostr"])
+      .tag(["e", eid])
+      .createdAt(3)
+      .signWithKeys(keys);
+    const bitcoin = EventBuilder.textNote("b")
+      .tag(["t", "bitcoin"])
+      .createdAt(2)
+      .signWithKeys(keys);
+    const noT = EventBuilder.textNote("plain").tag(["e", eid]).createdAt(1).signWithKeys(keys);
+    for (const e of [nostr, bitcoin, noT]) expect(await store.put(e)).toBe("accepted");
+
+    expect((await store.query([{ "#t": ["nostr"] }])).map((e) => e.id)).toEqual([nostr.id]);
+    expect(await store.count([{ "#t": ["nostr"] }])).toBe(1);
+    expect(await store.query([{ "#t": ["absent-hashtag"] }])).toEqual([]);
+    expect(await store.query([{ "#t": ["bitcoin"] }])).toEqual([bitcoin]);
+    expect((await store.query([{ "#e": [eid], "#t": ["nostr"] }])).map((e) => e.id)).toEqual([
+      nostr.id,
+    ]);
+    expect(await store.query([{ "#e": [eid], "#t": ["bitcoin"] }])).toEqual([]);
+    expect((await store.negentropyItems({ "#t": ["nostr"] })).map((i) => i.id)).toEqual([nostr.id]);
+  });
+
+  test("replace/remove/clear drop compound and e/p index entries", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+    const eid = "aa".repeat(32);
+    const meta1 = EventBuilder.metadata({ name: "v1" })
+      .tag(["e", eid])
+      .createdAt(10)
+      .signWithKeys(keys);
+    const meta2 = EventBuilder.metadata({ name: "v2" })
+      .tag(["e", eid])
+      .createdAt(20)
+      .signWithKeys(keys);
+    expect(await store.put(meta1)).toBe("accepted");
+    expect(await store.put(meta2)).toBe("replaced");
+    expect((await store.query([{ "#e": [eid] }])).map((e) => e.id)).toEqual([meta2.id]);
+    expect(
+      (await store.query([{ authors: [keys.publicKey], kinds: [Kind.Metadata] }])).map((e) => e.id),
+    ).toEqual([meta2.id]);
+
+    const note = EventBuilder.textNote("n")
+      .tag(["p", keys.publicKey])
+      .createdAt(1)
+      .signWithKeys(keys);
+    expect(await store.put(note)).toBe("accepted");
+    expect(await store.remove([note.id])).toBe(1);
+    expect(await store.query([{ "#p": [keys.publicKey] }])).toEqual([]);
+
+    await store.clear();
+    expect(store.size).toBe(0);
+    expect(await store.query([{ authors: [keys.publicKey], kinds: [Kind.Metadata] }])).toEqual([]);
+    expect(await store.query([{ "#e": [eid] }])).toEqual([]);
+    expect(await store.query([{ "#t": ["nostr"] }])).toEqual([]);
+  });
+
+  test("valueless e tag is not indexed; empty-string e tag is", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+    const bare = EventBuilder.textNote("bare").tag(["e"]).createdAt(1).signWithKeys(keys);
+    const empty = EventBuilder.textNote("empty").tag(["e", ""]).createdAt(2).signWithKeys(keys);
+    expect(await store.put(bare)).toBe("accepted");
+    expect(await store.put(empty)).toBe("accepted");
+    expect(await store.query([{ "#e": ["undefined"] }])).toEqual([]);
+    expect((await store.query([{ "#e": [""] }])).map((e) => e.id)).toEqual([empty.id]);
+    expect((await store.query([{ kinds: [Kind.TextNote] }])).map((e) => e.id)).toEqual([
+      empty.id,
+      bare.id,
+    ]);
+  });
+
+  test("ids candidate path still AND-matches defined #e", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+    const eid = "aa".repeat(32);
+    const other = "bb".repeat(32);
+    const note = EventBuilder.textNote("n").tag(["e", eid]).createdAt(1).signWithKeys(keys);
+    expect(await store.put(note)).toBe("accepted");
+    expect((await store.query([{ ids: [note.id], "#e": [eid] }])).map((e) => e.id)).toEqual([
+      note.id,
+    ]);
+    expect(await store.query([{ ids: [note.id], "#e": [other] }])).toEqual([]);
+    expect(await store.query([{ ids: [] }])).toEqual([]);
+  });
 });
 
 describe("itemCompare", () => {
