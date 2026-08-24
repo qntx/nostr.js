@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { itemCompare } from "../src/core/index.ts";
 import { EventBuilder, IndexedDbEventStore, Keys, Kind, StorageError } from "../src/index.ts";
-import { installIdbMock, seedIdbV1, type IdbMock } from "./helpers/idb-mock.ts";
+import { installIdbMock, seedIdbV1, seedIdbV3, type IdbMock } from "./helpers/idb-mock.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
 const EID = "aa".repeat(32);
@@ -772,6 +772,66 @@ describe("IndexedDbEventStore", () => {
     expect(await store.get(a.id)).toBeUndefined();
     expect(await store.get(b.id)).toBeUndefined();
     expect(await store.query([{ kinds: [1] }])).toEqual([]);
+    store.close();
+  });
+
+  test("outbox bound persist survives close and reopen", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "bounds-persist" });
+    await store.open();
+    await store.setOutboxBound(keys.publicKey, Kind.TextNote, { oldest: 10, newest: 20 });
+    expect(await store.getOutboxBound(keys.publicKey, Kind.TextNote)).toEqual({
+      oldest: 10,
+      newest: 20,
+    });
+    mock.resetStats();
+    await store.setOutboxBound(keys.publicKey, Kind.TextNote, { oldest: 10, newest: 30 });
+    expect(mock.readwriteTransactions()).toEqual([["outbox_bounds"]]);
+    store.close();
+
+    const reopened = new IndexedDbEventStore({ dbName: "bounds-persist" });
+    await reopened.open();
+    expect(await reopened.getOutboxBound(keys.publicKey, Kind.TextNote)).toEqual({
+      oldest: 10,
+      newest: 30,
+    });
+    await reopened.clear();
+    expect(await reopened.getOutboxBound(keys.publicKey, Kind.TextNote)).toBeUndefined();
+    reopened.close();
+  });
+
+  test("v3 db gains outbox_bounds on open", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    await seedIdbV3("v3-bounds");
+    const store = new IndexedDbEventStore({ dbName: "v3-bounds" });
+    await store.open();
+    await store.setOutboxBound(keys.publicKey, 1, { oldest: 4, newest: 8 });
+    expect(await store.getOutboxBound(keys.publicKey, 1)).toEqual({ oldest: 4, newest: 8 });
+    store.close();
+  });
+
+  test("outbox bound derive uses prefix heads not getAll", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const other = Keys.generate();
+    const store = new IndexedDbEventStore({ dbName: "bounds-derive" });
+    await store.open();
+    for (let t = 0; t < 20; t++) {
+      await store.put(EventBuilder.textNote(`n${t}`).createdAt(t).signWithKeys(keys));
+    }
+    for (let t = 100; t < 110; t++) {
+      await store.put(EventBuilder.textNote(`o${t}`).createdAt(t).signWithKeys(other));
+    }
+    mock.resetStats();
+    expect(await store.getOutboxBound(keys.publicKey, Kind.TextNote)).toEqual({
+      oldest: 0,
+      newest: 19,
+    });
+    expect(mock.eventsGetAllCount()).toBe(0);
+    expect(mock.cursorVisitCount()).toBe(2);
+    expect(await store.getOutboxBound(other.publicKey, Kind.TextNote)).toEqual({
+      oldest: 100,
+      newest: 109,
+    });
     store.close();
   });
 });

@@ -210,6 +210,8 @@ describe("Client storage + observe", () => {
       negentropyItems: (filter) => inner.negentropyItems(filter),
       remove: (ids) => inner.remove(ids),
       clear: () => inner.clear(),
+      getOutboxBound: (pubkey, kind) => inner.getOutboxBound(pubkey, kind),
+      setOutboxBound: (pubkey, kind, bound) => inner.setOutboxBound(pubkey, kind, bound),
     };
     const client = Client.builder().storage(store).enableReconnect(false).build();
     client.observe(a);
@@ -241,6 +243,8 @@ describe("Client storage + observe", () => {
       negentropyItems: (filter) => inner.negentropyItems(filter),
       remove: (ids) => inner.remove(ids),
       clear: () => inner.clear(),
+      getOutboxBound: (pubkey, kind) => inner.getOutboxBound(pubkey, kind),
+      setOutboxBound: (pubkey, kind, bound) => inner.setOutboxBound(pubkey, kind, bound),
     };
     const client = Client.builder().storage(store).enableReconnect(false).build();
     client.observeAll([a, b, a]);
@@ -288,6 +292,8 @@ describe("Client storage + observe", () => {
         return 0;
       },
       async clear() {},
+      getOutboxBound: async () => undefined,
+      setOutboxBound: async () => {},
     };
     const client = Client.builder().storage(store).enableReconnect(false).build();
     client.observe(a);
@@ -334,6 +340,8 @@ describe("Client storage + observe", () => {
         return 0;
       },
       async clear() {},
+      getOutboxBound: async () => undefined,
+      setOutboxBound: async () => {},
     };
     const client = Client.builder().storage(store).enableReconnect(false).build();
     client.observe(note);
@@ -384,6 +392,8 @@ describe("Client storage + observe", () => {
         return 0;
       },
       async clear() {},
+      getOutboxBound: async () => undefined,
+      setOutboxBound: async () => {},
     };
     const client = Client.builder().storage(store).gossip(gossip).enableReconnect(false).build();
     client.observe(list);
@@ -422,6 +432,8 @@ describe("Client storage + observe", () => {
         return 0;
       },
       async clear() {},
+      getOutboxBound: async () => undefined,
+      setOutboxBound: async () => {},
     };
     const client = Client.builder()
       .storage(store)
@@ -465,6 +477,8 @@ describe("Client storage + observe", () => {
         return 0;
       },
       async clear() {},
+      getOutboxBound: async () => undefined,
+      setOutboxBound: async () => {},
     };
     const client = Client.builder()
       .storage(store)
@@ -517,6 +531,8 @@ describe("Client storage + observe", () => {
         return 0;
       },
       async clear() {},
+      getOutboxBound: async () => undefined,
+      setOutboxBound: async () => {},
     };
     const client = Client.builder()
       .storage(store)
@@ -555,6 +571,8 @@ describe("Client storage + observe", () => {
         return 0;
       },
       async clear() {},
+      getOutboxBound: async () => undefined,
+      setOutboxBound: async () => {},
     };
     const client = Client.builder().storage(store).enableReconnect(false).build();
     expect(client.onstorageerror).toBeNull();

@@ -12,6 +12,9 @@ export type PutResult =
 /** NIP-77 item: event id + created_at. Sorted created_at asc, then id. */
 export type NegentropyItem = { id: string; created_at: number };
 
+/** Inclusive created_at window of stored live events for one author+kind. */
+export type OutboxBound = { oldest: number; newest: number };
+
 /**
  * Event store contract (aligned with nula-storage NostrDatabase, narrowed for v0).
  * Implementations apply replaceable / addressable / deletion semantics on put.
@@ -29,6 +32,8 @@ export interface EventStore {
    * Does not allocate an `Event[]`.
    */
   negentropyItems(filter: Filter): Promise<NegentropyItem[]>;
+  getOutboxBound(pubkey: string, kind: number): Promise<OutboxBound | undefined>;
+  setOutboxBound(pubkey: string, kind: number, bound: OutboxBound): Promise<void>;
   /** Remove by id (does not publish NIP-09). */
   remove(ids: string[]): Promise<number>;
   clear(): Promise<void>;

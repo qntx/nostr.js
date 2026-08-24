@@ -5,12 +5,10 @@ import { Kind } from "../core/kind.ts";
 import { normalizeURL } from "../core/util.ts";
 import type { Gossip } from "../gossip/gossip.ts";
 import type { Pool } from "../relay/pool.ts";
-import type { EventStore } from "../storage/types.ts";
+import { toStorageError, type StorageError } from "../storage/error.ts";
+import type { EventStore, OutboxBound, PutResult } from "../storage/types.ts";
 
-export type OutboxBound = {
-  oldest: number;
-  newest: number;
-};
+export type { OutboxBound } from "../storage/types.ts";
 
 export type OutboxFeedOptions = {
   pool: Pool;
@@ -24,13 +22,14 @@ export type OutboxFeedOptions = {
   /** Max write-relays to use per author. Default 3. */
   maxRelaysPerAuthor?: number;
   fetchTimeoutMs?: number;
-  /** Called for every new event (after optional observe). */
+  /** Called for every new event after persist/observe. */
   onEvent?: (event: Event) => void;
-  /**
-   * Ingest hook (e.g. `client.observe`). When set, sync/live events are
-   * passed through before `onEvent`.
-   */
+  /** Live ingest (e.g. `client.observe`). When set, startLive does not putMany. */
   observe?: (event: Event) => void;
+  /** Sync-path meta ingest (e.g. gossip/cache). Does not persist. */
+  ingestMeta?: (event: Event) => void;
+  /** Live `putMany` failure when `observe` is omitted. */
+  onStorageError?: (err: StorageError) => void;
   /**
    * Load kind:10002 for authors before sync when routes are missing.
    * Requires a relay-list loader.
@@ -95,9 +94,6 @@ export function groupAuthorsByOutboxRelay(
 /**
  * Outbox-model feed: history sync + live subscription for a set of authors,
  * routed via NIP-65 write relays (with discovery fallback).
- *
- * Intentionally smaller than gadgets' OutboxManager — no multi-tab WASM store,
- * no global pool, single-process bounds only.
  */
 export class OutboxFeed {
   readonly #pool: Pool;
@@ -109,6 +105,8 @@ export class OutboxFeed {
   readonly #timeoutMs: number;
   readonly #onEvent: ((event: Event) => void) | undefined;
   readonly #observe: ((event: Event) => void) | undefined;
+  readonly #ingestMeta: ((event: Event) => void) | undefined;
+  readonly #onStorageError: ((err: StorageError) => void) | undefined;
   readonly #hydrate: ((pubkeys: readonly string[]) => Promise<void>) | undefined;
   readonly #bounds = new Map<string, OutboxBound>();
   #authors: string[];
@@ -126,6 +124,8 @@ export class OutboxFeed {
     this.#timeoutMs = opts.fetchTimeoutMs ?? 4400;
     this.#onEvent = opts.onEvent;
     this.#observe = opts.observe;
+    this.#ingestMeta = opts.ingestMeta;
+    this.#onStorageError = opts.onStorageError;
     this.#hydrate = opts.hydrate;
   }
 
@@ -158,7 +158,7 @@ export class OutboxFeed {
   }
 
   /**
-   * One-shot history pull. Updates in-memory bounds and writes via observe/storage.
+   * One-shot history pull. Writes unique events once via putMany, then ingestMeta.
    */
   async sync(opts?: {
     limit?: number;
@@ -193,17 +193,35 @@ export class OutboxFeed {
             timeoutMs: this.#timeoutMs,
             signal: opts?.signal,
           });
-          for (const event of batch) {
-            byId.set(event.id, event);
-            this.#noteEvent(event);
-          }
+          for (const event of batch) byId.set(event.id, event);
         } catch {
           // skip failed relay
         }
       }),
     );
 
-    return sortedEvents([...byId.values()]);
+    const unique = [...byId.values()];
+    if (unique.length === 0) return [];
+
+    let results: PutResult[];
+    try {
+      results = await this.#storage.putMany(unique);
+    } catch (err) {
+      throw toStorageError(err);
+    }
+
+    const dirty = new Set<string>();
+    for (let i = 0; i < unique.length; i++) {
+      const event = unique[i]!;
+      const result = results[i];
+      if (result === "rejected" || result === "ephemeral") continue;
+      this.#ingestMeta?.(event);
+      this.#updateBounds(event);
+      dirty.add(boundKey(event.pubkey, event.kind));
+      this.#onEvent?.(event);
+    }
+    await this.#persistBounds(dirty);
+    return sortedEvents(unique);
   }
 
   /**
@@ -238,7 +256,20 @@ export class OutboxFeed {
           onevent: (event) => {
             if (seen.has(event.id)) return;
             seen.add(event.id);
-            this.#noteEvent(event);
+            if (this.#observe) {
+              this.#noteEvent(event);
+              return;
+            }
+            void this.#storage
+              .putMany([event])
+              .then((results) => {
+                const result = results[0];
+                if (result === "rejected" || result === "ephemeral") return;
+                this.#noteEvent(event);
+              })
+              .catch((err: unknown) => {
+                this.#onStorageError?.(toStorageError(err));
+              });
           },
         }),
       );
@@ -274,20 +305,16 @@ export class OutboxFeed {
     if (this.#closed) throw new Error("OutboxFeed is closed");
   }
 
-  async #newestFromStore(pubkey: string, kind: number): Promise<number | undefined> {
-    const [ev] = await this.#storage.query([{ authors: [pubkey], kinds: [kind], limit: 1 }]);
-    return ev?.created_at;
-  }
-
   async #hydrateBoundsFromStore(): Promise<void> {
     await Promise.all(
       this.#authors.flatMap((pk) =>
         this.#kinds.map(async (kind) => {
           const key = boundKey(pk, kind);
           if (this.#bounds.has(key)) return;
-          const newest = await this.#newestFromStore(pk, kind);
-          if (newest === undefined) return;
-          this.#bounds.set(key, { oldest: newest, newest });
+          const bound = await this.#storage.getOutboxBound(pk, kind);
+          if (!bound) return;
+          await this.#storage.setOutboxBound(pk, kind, bound);
+          this.#bounds.set(key, { oldest: bound.oldest, newest: bound.newest });
         }),
       ),
     );
@@ -346,12 +373,38 @@ export class OutboxFeed {
 
   #noteEvent(event: Event): void {
     this.#updateBounds(event);
-    this.#observe?.(event);
-    if (!this.#observe) {
-      // Still persist when no observe hook is provided.
-      void this.#storage.put(event).catch(() => {});
+    const bound = this.#bounds.get(boundKey(event.pubkey, event.kind));
+    if (bound) {
+      void this.#storage
+        .setOutboxBound(event.pubkey, event.kind, {
+          oldest: bound.oldest,
+          newest: bound.newest,
+        })
+        .catch(() => {});
     }
+    this.#observe?.(event);
     this.#onEvent?.(event);
+  }
+
+  async #persistBounds(keys: Iterable<string>): Promise<void> {
+    const writes: Promise<void>[] = [];
+    for (const key of keys) {
+      const bound = this.#bounds.get(key);
+      if (!bound) continue;
+      const sep = key.lastIndexOf(":");
+      writes.push(
+        this.#storage.setOutboxBound(key.slice(0, sep), Number(key.slice(sep + 1)), {
+          oldest: bound.oldest,
+          newest: bound.newest,
+        }),
+      );
+    }
+    if (writes.length === 0) return;
+    try {
+      await Promise.all(writes);
+    } catch (err) {
+      throw toStorageError(err);
+    }
   }
 
   #updateBounds(event: Event): void {

@@ -359,6 +359,7 @@ export {
   type EventStore,
   type PutResult,
   type NegentropyItem,
+  type OutboxBound,
   type IndexedDbEventStoreOptions,
 } from "./storage/index.ts";
 export {
@@ -375,7 +376,6 @@ export {
   type NostrUser,
   type MutedEntity,
   type LoadStyle,
-  type OutboxBound,
   type OutboxFeedOptions,
 } from "./loaders/index.ts";
 export { Gossip, type BrokenDownFilters, type PubkeyRoutes } from "./gossip/index.ts";

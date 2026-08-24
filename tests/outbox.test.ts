@@ -7,9 +7,13 @@ import {
   Keys,
   MemoryEventStore,
   OutboxFeed,
+  StorageError,
   groupAuthorsByOutboxRelay,
   normalizeURL,
   useWebSocketImplementation,
+  type Event,
+  type EventStore,
+  type PutResult,
 } from "../src/index.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 
@@ -87,6 +91,54 @@ function eoseAllReqs(): void {
       ws.receive(JSON.stringify(["EOSE", msg[1] as string]));
     }
   }
+}
+
+function trackingStore(
+  inner: MemoryEventStore,
+  opts?: {
+    putMany?: (events: readonly Event[]) => Promise<PutResult[]>;
+  },
+): EventStore & { persistCalls: string[] } {
+  const persistCalls: string[] = [];
+  return {
+    persistCalls,
+    put: async (event) => {
+      persistCalls.push("put");
+      return inner.put(event);
+    },
+    putMany: async (events) => {
+      persistCalls.push(`putMany:${events.length}`);
+      if (opts?.putMany) return opts.putMany(events);
+      return inner.putMany(events);
+    },
+    get: (id) => inner.get(id),
+    query: async () => {
+      throw new Error("query should not be called");
+    },
+    count: (filters) => inner.count(filters),
+    negentropyItems: (filter) => inner.negentropyItems(filter),
+    getOutboxBound: (pubkey, kind) => inner.getOutboxBound(pubkey, kind),
+    setOutboxBound: (pubkey, kind, bound) => inner.setOutboxBound(pubkey, kind, bound),
+    remove: (ids) => inner.remove(ids),
+    clear: () => inner.clear(),
+  };
+}
+
+async function feedClient(opts: {
+  store: EventStore;
+  gossip: Gossip;
+  persistEvents?: boolean;
+}): Promise<Client> {
+  const client = Client.builder()
+    .storage(opts.store)
+    .gossip(opts.gossip)
+    .relays(["wss://discovery.example"])
+    .websocketImplementation(MockWebSocketCtor)
+    .enableReconnect(false)
+    .persistEvents(opts.persistEvents ?? true)
+    .build();
+  await client.connect();
+  return client;
 }
 
 beforeEach(() => {
@@ -235,7 +287,7 @@ describe("OutboxFeed", () => {
     expect(events.some((e) => e.id === note.id)).toBe(true);
     await new Promise((r) => setTimeout(r, 5));
     expect(await store.get(note.id)).toBeDefined();
-    expect(feed.getBound(a.publicKey, Kind.TextNote)?.newest).toBe(50);
+    expect(feed.getBound(a.publicKey, Kind.TextNote)).toEqual({ oldest: 50, newest: 50 });
 
     feed.close();
     await client.shutdown();
@@ -329,7 +381,7 @@ describe("OutboxFeed", () => {
     for (const filter of filters) {
       expect(filter.since).toBe(99);
     }
-    expect(feed.getBound(a.publicKey, Kind.TextNote)?.newest).toBe(100);
+    expect(feed.getBound(a.publicKey, Kind.TextNote)).toEqual({ oldest: 100, newest: 100 });
 
     feed.close();
     await client.shutdown();
@@ -519,6 +571,281 @@ describe("OutboxFeed", () => {
         (ws) => ws.url.includes("out-a.example") && reqMessages(ws).length > 0,
       ),
     ).toBe(true);
+
+    live.close();
+    feed.close();
+    await client.shutdown();
+  });
+
+  test("hydrate oldest and newest from two stored events", async () => {
+    const a = Keys.fromSecretKey(SK_A);
+    const older = EventBuilder.textNote("old").createdAt(10).signWithKeys(a);
+    const newer = EventBuilder.textNote("new").createdAt(20).signWithKeys(a);
+    const inner = new MemoryEventStore();
+    await inner.put(older);
+    await inner.put(newer);
+    const store = trackingStore(inner);
+    const gossip = new Gossip();
+    gossip.setRoutes(a.publicKey, [{ url: "wss://out.example", read: true, write: true }]);
+
+    const client = await feedClient({ store, gossip });
+    const feed = new OutboxFeed({
+      pool: client.pool,
+      gossip,
+      storage: store,
+      discoveryRelays: client.relays,
+      authors: [a.publicKey],
+      kinds: [Kind.TextNote],
+    });
+
+    const syncP = feed.sync({ skipHydrate: true, limit: 20 });
+    await waitForReq();
+    eoseAllReqs();
+    await syncP;
+
+    expect(feed.getBound(a.publicKey, Kind.TextNote)).toEqual({ oldest: 10, newest: 20 });
+    expect(await inner.getOutboxBound(a.publicKey, Kind.TextNote)).toEqual({
+      oldest: 10,
+      newest: 20,
+    });
+
+    feed.close();
+    await client.shutdown();
+  });
+
+  test("Memory derive min/max without setOutboxBound; clear drops bounds", async () => {
+    const a = Keys.fromSecretKey(SK_A);
+    const older = EventBuilder.textNote("old").createdAt(10).signWithKeys(a);
+    const newer = EventBuilder.textNote("new").createdAt(20).signWithKeys(a);
+    const store = new MemoryEventStore();
+    await store.put(older);
+    await store.put(newer);
+    expect(await store.getOutboxBound(a.publicKey, Kind.TextNote)).toEqual({
+      oldest: 10,
+      newest: 20,
+    });
+    await store.clear();
+    expect(await store.getOutboxBound(a.publicKey, Kind.TextNote)).toBeUndefined();
+    await store.setOutboxBound(a.publicKey, Kind.TextNote, { oldest: 3, newest: 9 });
+    expect(await store.getOutboxBound(a.publicKey, Kind.TextNote)).toEqual({
+      oldest: 3,
+      newest: 9,
+    });
+    await store.clear();
+    expect(await store.getOutboxBound(a.publicKey, Kind.TextNote)).toBeUndefined();
+  });
+
+  test("sync writes unique events once via putMany then ingestMeta", async () => {
+    const a = Keys.fromSecretKey(SK_A);
+    const note = EventBuilder.textNote("once").createdAt(50).signWithKeys(a);
+    const inner = new MemoryEventStore();
+    const store = trackingStore(inner);
+    const gossip = new Gossip();
+    gossip.setRoutes(a.publicKey, [{ url: "wss://out.example", read: true, write: true }]);
+
+    const client = await feedClient({ store, gossip, persistEvents: true });
+    const observed: string[] = [];
+    const origObserve = client.observe.bind(client);
+    client.observe = (event) => {
+      observed.push(event.id);
+      origObserve(event);
+    };
+    let ingested = 0;
+    const origIngest = gossip.ingest.bind(gossip);
+    gossip.ingest = (event) => {
+      ingested += 1;
+      return origIngest(event);
+    };
+
+    const feed = client.outbox({ authors: [a.publicKey], kinds: [Kind.TextNote] });
+    const syncP = feed.sync({ skipHydrate: true, limit: 20 });
+    await waitForReq();
+    for (const ws of MockWebSocket.instances) {
+      for (const raw of ws.sent) {
+        const msg = JSON.parse(raw) as unknown[];
+        if (msg[0] !== "REQ") continue;
+        const subId = msg[1] as string;
+        ws.receive(JSON.stringify(["EVENT", subId, note]));
+        ws.receive(JSON.stringify(["EOSE", subId]));
+      }
+    }
+    const events = await syncP;
+    expect(events.map((e) => e.id)).toEqual([note.id]);
+    await client.shutdown();
+
+    expect(store.persistCalls).toEqual(["putMany:1"]);
+    expect(observed).toEqual([]);
+    expect(ingested).toBe(1);
+    expect(await inner.get(note.id)).toBeDefined();
+    expect(feed.getBound(a.publicKey, Kind.TextNote)).toEqual({ oldest: 50, newest: 50 });
+  });
+
+  test("sync putMany throw does not advance bounds and is StorageError", async () => {
+    const a = Keys.fromSecretKey(SK_A);
+    const note = EventBuilder.textNote("fail").createdAt(50).signWithKeys(a);
+    const inner = new MemoryEventStore();
+    const store = trackingStore(inner, {
+      putMany: async () => {
+        throw new Error("disk full");
+      },
+    });
+    const gossip = new Gossip();
+    gossip.setRoutes(a.publicKey, [{ url: "wss://out.example", read: true, write: true }]);
+    const meta: string[] = [];
+    const got: string[] = [];
+
+    const client = await feedClient({ store, gossip });
+    const feed = new OutboxFeed({
+      pool: client.pool,
+      gossip,
+      storage: store,
+      discoveryRelays: client.relays,
+      authors: [a.publicKey],
+      kinds: [Kind.TextNote],
+      ingestMeta: (event) => {
+        meta.push(event.id);
+      },
+      onEvent: (event) => {
+        got.push(event.id);
+      },
+    });
+
+    const syncP = feed.sync({ skipHydrate: true, limit: 20 });
+    await waitForReq();
+    for (const ws of MockWebSocket.instances) {
+      for (const raw of ws.sent) {
+        const msg = JSON.parse(raw) as unknown[];
+        if (msg[0] !== "REQ") continue;
+        const subId = msg[1] as string;
+        ws.receive(JSON.stringify(["EVENT", subId, note]));
+        ws.receive(JSON.stringify(["EOSE", subId]));
+      }
+    }
+    await expect(syncP).rejects.toBeInstanceOf(StorageError);
+    expect(feed.getBound(a.publicKey, Kind.TextNote)).toBeUndefined();
+    expect(meta).toEqual([]);
+    expect(got).toEqual([]);
+    expect(store.persistCalls).toEqual(["putMany:1"]);
+    expect(await inner.get(note.id)).toBeUndefined();
+
+    feed.close();
+    await client.shutdown();
+  });
+
+  test("startLive with observe does not putMany from OutboxFeed", async () => {
+    const a = Keys.fromSecretKey(SK_A);
+    const note = EventBuilder.textNote("live")
+      .createdAt(Math.floor(Date.now() / 1000))
+      .signWithKeys(a);
+    const inner = new MemoryEventStore();
+    const store = trackingStore(inner);
+    const gossip = new Gossip();
+    gossip.setRoutes(a.publicKey, [{ url: "wss://live.example", read: true, write: true }]);
+    const observed: string[] = [];
+    const got: string[] = [];
+
+    const client = await feedClient({ store, gossip });
+    const feed = new OutboxFeed({
+      pool: client.pool,
+      gossip,
+      storage: store,
+      discoveryRelays: client.relays,
+      authors: [a.publicKey],
+      observe: (event) => {
+        observed.push(event.id);
+      },
+      onEvent: (event) => {
+        got.push(event.id);
+      },
+    });
+
+    const live = feed.startLive({ since: 0 });
+    await waitForReq();
+    for (const ws of MockWebSocket.instances) {
+      for (const raw of ws.sent) {
+        const msg = JSON.parse(raw) as unknown[];
+        if (msg[0] !== "REQ") continue;
+        const subId = msg[1] as string;
+        ws.receive(JSON.stringify(["EVENT", subId, note]));
+      }
+    }
+    await sleep(20);
+
+    expect(observed).toEqual([note.id]);
+    expect(got).toEqual([note.id]);
+    expect(store.persistCalls).toEqual([]);
+
+    live.close();
+    feed.close();
+    await client.shutdown();
+  });
+
+  test("startLive without observe putMany and onStorageError skips onEvent", async () => {
+    const a = Keys.fromSecretKey(SK_A);
+    const note = EventBuilder.textNote("live-fail")
+      .createdAt(Math.floor(Date.now() / 1000))
+      .signWithKeys(a);
+    const ok = EventBuilder.textNote("live-ok")
+      .createdAt(Math.floor(Date.now() / 1000) + 1)
+      .signWithKeys(a);
+    const inner = new MemoryEventStore();
+    const store = trackingStore(inner, {
+      putMany: async (events) => {
+        if (events.some((e) => e.id === note.id)) throw new Error("disk full");
+        return inner.putMany(events);
+      },
+    });
+    const gossip = new Gossip();
+    gossip.setRoutes(a.publicKey, [{ url: "wss://live.example", read: true, write: true }]);
+    const errors: StorageError[] = [];
+    const got: string[] = [];
+
+    const client = await feedClient({ store, gossip });
+    const feed = new OutboxFeed({
+      pool: client.pool,
+      gossip,
+      storage: store,
+      discoveryRelays: client.relays,
+      authors: [a.publicKey],
+      onEvent: (event) => {
+        got.push(event.id);
+      },
+      onStorageError: (err) => {
+        errors.push(err);
+      },
+    });
+
+    const live = feed.startLive({ since: 0 });
+    await waitForReq();
+    for (const ws of MockWebSocket.instances) {
+      for (const raw of ws.sent) {
+        const msg = JSON.parse(raw) as unknown[];
+        if (msg[0] !== "REQ") continue;
+        const subId = msg[1] as string;
+        ws.receive(JSON.stringify(["EVENT", subId, note]));
+      }
+    }
+    await sleep(20);
+    expect(got).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(StorageError);
+    expect(errors[0]!.message).toBe("disk full");
+    expect(store.persistCalls).toEqual(["putMany:1"]);
+
+    for (const ws of MockWebSocket.instances) {
+      for (const raw of ws.sent) {
+        const msg = JSON.parse(raw) as unknown[];
+        if (msg[0] !== "REQ") continue;
+        const subId = msg[1] as string;
+        ws.receive(JSON.stringify(["EVENT", subId, ok]));
+      }
+    }
+    await sleep(20);
+    expect(got).toEqual([ok.id]);
+    expect(errors).toHaveLength(1);
+    expect(store.persistCalls).toEqual(["putMany:1", "putMany:1"]);
+    expect(await inner.get(ok.id)).toBeDefined();
+    expect(await inner.get(note.id)).toBeUndefined();
 
     live.close();
     feed.close();
