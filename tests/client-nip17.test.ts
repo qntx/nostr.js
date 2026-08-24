@@ -151,7 +151,6 @@ describe("Client NIP-17", () => {
     expect(onBob).toHaveLength(1);
     expect(onAlice).toHaveLength(1);
     expect(sent.wraps.every((w) => w.wrap.kind === Kind.GiftWrap)).toBe(true);
-    expect(sent.wraps.some((w) => w.wrap.kind === Kind.GiftWrapEphemeral)).toBe(false);
     expect(bus.eventsOn(ALICE_OUT).some((e) => e.kind === Kind.GiftWrap)).toBe(false);
     expect(bus.eventsOn(IDX).some((e) => e.kind === Kind.GiftWrap)).toBe(false);
 
@@ -285,7 +284,6 @@ describe("Client NIP-17", () => {
 
     const inbox = await bob.fetchPrivateMessages({ timeoutMs: 2000 });
     expect(giftWrapReqKinds(BOB_DM, bobKeys.publicKey)).toEqual([Kind.GiftWrap]);
-    expect(giftWrapReqKinds(BOB_DM, bobKeys.publicKey)).not.toContain(Kind.GiftWrapEphemeral);
     expect(inbox).toHaveLength(1);
     expect(inbox[0]!.wrap.kind).toBe(Kind.GiftWrap);
     expect(inbox[0]!.rumor.content).toBe("stored");
@@ -351,7 +349,6 @@ describe("Client NIP-17", () => {
       Kind.GiftWrap,
       Kind.GiftWrapEphemeral,
     ]);
-    expect(clientFrames(BOB_DM).some((m) => m[0] === "REQ")).toBe(true);
 
     sub.close();
     await bob.shutdown();
@@ -374,21 +371,6 @@ describe("Client NIP-17", () => {
       .websocketImplementation(MockWebSocketCtor)
       .enableReconnect(false)
       .build();
-    await alice.connect();
-    await bob.connect();
-
-    const got: Array<{ content: string; kind: number; id: string }> = [];
-    const sub = await bob.subscribePrivateMessages({
-      onevent: (msg) => {
-        got.push({ content: msg.rumor.content, kind: msg.wrap.kind, id: msg.wrap.id });
-      },
-    });
-    await waitFor(() => reqFilters(BOB_DM).some((f) => Array.isArray(f["#p"])));
-    expect(giftWrapReqKinds(BOB_DM, bobKeys.publicKey)).toEqual([
-      Kind.GiftWrap,
-      Kind.GiftWrapEphemeral,
-    ]);
-
     const junk = finalizeEvent(
       {
         kind: Kind.GiftWrapEphemeral,
@@ -398,10 +380,26 @@ describe("Client NIP-17", () => {
       },
       Keys.generate().secretKey,
     );
-    await alice.hydrateGossip([bobKeys.publicKey]);
-    await alice.publish(junk);
-    await new Promise((r) => setTimeout(r, 40));
-    expect(got).toEqual([]);
+    bus.seed(BOB_DM, [junk]);
+
+    await alice.connect();
+    await bob.connect();
+
+    const got: Array<{ content: string; kind: number; id: string }> = [];
+    let eosed = false;
+    const sub = await bob.subscribePrivateMessages({
+      onevent: (msg) => {
+        got.push({ content: msg.rumor.content, kind: msg.wrap.kind, id: msg.wrap.id });
+      },
+      oneose: () => {
+        eosed = true;
+      },
+    });
+    await waitFor(() => eosed);
+    expect(giftWrapReqKinds(BOB_DM, bobKeys.publicKey)).toEqual([
+      Kind.GiftWrap,
+      Kind.GiftWrapEphemeral,
+    ]);
 
     const sent = await alice.sendPrivateMessage(bobKeys.publicKey, "stored-1059");
     const wrap1059 = sent.wraps.find((w) => w.recipient === bobKeys.publicKey)?.wrap;
@@ -416,15 +414,15 @@ describe("Client NIP-17", () => {
     );
     expect(storedKind).toBe(Kind.GiftWrap);
     expect(wrap21059.kind).toBe(Kind.GiftWrapEphemeral);
-    expect(wrap21059.kind).not.toBe(Kind.GiftWrap);
     await alice.publish(wrap21059);
 
     await waitFor(() => got.some((m) => m.content === "stored-1059"));
+    expect(got.some((m) => m.id === junk.id)).toBe(false);
+
     await waitFor(() => got.some((m) => m.content === "live-21059"));
     expect(got.map((m) => m.content).sort()).toEqual(["live-21059", "stored-1059"]);
     expect(got.find((m) => m.content === "live-21059")!.kind).toBe(Kind.GiftWrapEphemeral);
     expect(got.find((m) => m.content === "stored-1059")!.kind).toBe(Kind.GiftWrap);
-    expect(got.some((m) => m.id === junk.id)).toBe(false);
 
     await waitFor(async () => (await bob.queryLocal({ kinds: [Kind.GiftWrap] })).length > 0);
     const stored1059 = await bob.queryLocal({ kinds: [Kind.GiftWrap] });
