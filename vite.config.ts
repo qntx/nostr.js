@@ -1,10 +1,48 @@
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { defineConfig } from "vite-plus";
+
+const packWasm = process.env.WASM_PACK === "1";
+const wasmTest = process.env.WASM_TEST === "1";
+
+/** Asset-URL for `*.wasm?url`. Does not instantiate the module. */
+function wasmUrlAsset() {
+  return {
+    name: "wasm-url-asset",
+    resolveId(id: string, importer: string | undefined) {
+      if (!id.endsWith(".wasm?url")) return;
+      const bare = id.slice(0, -"?url".length);
+      const from = importer ? path.dirname(importer.split("?")[0] ?? importer) : process.cwd();
+      const file = path.resolve(from, bare);
+      if (!existsSync(file)) {
+        throw new Error(`missing wasm asset ${file}`);
+      }
+      return `\0wasm-url:${file}`;
+    },
+    load(
+      this: {
+        emitFile: (asset: { type: "asset"; fileName: string; source: Uint8Array }) => string;
+      },
+      id: string,
+    ) {
+      if (!id.startsWith("\0wasm-url:")) return;
+      const file = id.slice("\0wasm-url:".length);
+      const ref = this.emitFile({
+        type: "asset",
+        fileName: "nostr_crypto_wasm_bg.wasm",
+        source: new Uint8Array(readFileSync(file)),
+      });
+      return `export default import.meta.ROLLUP_FILE_URL_${ref};`;
+    },
+  };
+}
 
 export default defineConfig({
   staged: {
     "*": "vp check --fix",
   },
   pack: {
+    plugins: packWasm ? [wasmUrlAsset()] : [],
     entry: {
       index: "src/index.ts",
       core: "src/core/index.ts",
@@ -35,6 +73,7 @@ export default defineConfig({
       "nips/nip77": "src/nips/nip77.ts",
       "nips/nip96": "src/nips/nip96.ts",
       "nips/nip98": "src/nips/nip98.ts",
+      ...(packWasm ? { wasm: "src/wasm/index.ts" } : {}),
     },
     dts: {
       tsgo: true,
@@ -49,12 +88,18 @@ export default defineConfig({
             import: value,
           };
         }
+        if (packWasm) {
+          pkgExports["./wasm"] = {
+            types: "./dist/wasm.d.mts",
+            import: "./dist/wasm.mjs",
+          };
+        }
         return pkgExports;
       },
     },
   },
   test: {
-    include: ["tests/**/*.{test,spec}.ts"],
+    include: wasmTest ? ["wasm-tests/**/*.ts"] : ["tests/**/*.{test,spec}.ts"],
     exclude: ["3rdparty/**", "node_modules/**", "dist/**"],
   },
   lint: {

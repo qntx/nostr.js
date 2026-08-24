@@ -16,3 +16,8 @@ dist
 
 # Internal documentation (kept locally, not published)
 docs
+
+# Rust / wasm artifacts (built by scripts/build-wasm.sh, not committed)
+/target
+src/wasm/generated/
+src/wasm/nostr_crypto_wasm_bg.wasm
