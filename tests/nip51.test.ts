@@ -354,8 +354,8 @@ describe("nip51 private tags", () => {
     const signer = new KeysSigner(AUTHOR_SK);
     const author = await signer.getPublicKey();
     const privateTags = [
-      ["e", ID],
-      ["word", "secret"],
+      ["e", ID.toUpperCase()],
+      ["word", "Secret"],
     ] as const;
     const content = await encryptPrivateTags(signer, privateTags);
     const event = {
@@ -438,6 +438,28 @@ describe("nip51 private tags", () => {
       return;
     }
     throw new Error(`NIP-04 content must not decrypt, got ${JSON.stringify(succeeded)}`);
+  });
+
+  test("plaintext JSON in content is not a parse-first fallback", async () => {
+    const signer = new KeysSigner(AUTHOR_SK);
+    const author = await signer.getPublicKey();
+    const tags = [["p", PK]] as const;
+    const plaintextJson = JSON.stringify(tags);
+    expect(() => JSON.parse(plaintextJson)).not.toThrow();
+    const crypto = trackingCrypto({
+      pubkey: author,
+      decrypt: (peer, payload) => signer.nip44Decrypt(peer, payload),
+    });
+    let succeeded: unknown;
+    try {
+      succeeded = await decryptPrivateTags(crypto, { pubkey: author, content: plaintextJson });
+    } catch (error) {
+      expect(error).toBeInstanceOf(CryptoError);
+      expect(error).not.toBeInstanceOf(EventValidationError);
+      expect(crypto.decryptInvocations).toBe(1);
+      return;
+    }
+    throw new Error(`plaintext JSON must not decrypt, got ${JSON.stringify(succeeded)}`);
   });
 
   test("NIP-44 decrypt of not-json throws EventValidationError not SyntaxError", async () => {
