@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { itemCompare } from "../src/core/index.ts";
-import { EventBuilder, IndexedDbEventStore, Keys, Kind } from "../src/index.ts";
+import { EventBuilder, IndexedDbEventStore, Keys, Kind, StorageError } from "../src/index.ts";
 import { installIdbMock, seedIdbV1, type IdbMock } from "./helpers/idb-mock.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
@@ -711,6 +711,67 @@ describe("IndexedDbEventStore", () => {
     expect(await store.query([{ authors: [keys.publicKey], kinds: [1] }])).toHaveLength(1);
     expect(await store.query([{ "#e": [EID] }])).toHaveLength(1);
     expect(mock.eventsGetAllCount()).toBe(0);
+    store.close();
+  });
+
+  test("putMany empty does not open a transaction", async () => {
+    const store = new IndexedDbEventStore({ dbName: "putmany-empty" });
+    await store.open();
+    mock.resetStats();
+    expect(await store.putMany([])).toEqual([]);
+    expect(mock.readwriteTransactions()).toEqual([]);
+    store.close();
+  });
+
+  test("putMany writes N events in one transaction", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "putmany-one-tx" });
+    await store.open();
+    const notes = [1, 2, 3].map((t) =>
+      EventBuilder.textNote(String(t)).createdAt(t).signWithKeys(keys),
+    );
+    mock.resetStats();
+    expect(await store.putMany(notes)).toEqual(["accepted", "accepted", "accepted"]);
+    expect(mock.readwriteTransactions()).toHaveLength(1);
+    expect(mock.readwriteTransactions()[0]).toEqual([
+      "events",
+      "tag_refs",
+      "addresses",
+      "tombstones",
+    ]);
+    expect((await store.query([{ kinds: [1] }])).map((e) => e.created_at)).toEqual([3, 2, 1]);
+    store.close();
+  });
+
+  test("putMany applies replaceable semantics in input order", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "putmany-repl" });
+    await store.open();
+    const old = EventBuilder.metadata({ name: "v1" }).createdAt(10).signWithKeys(keys);
+    const neu = EventBuilder.metadata({ name: "v2" }).createdAt(20).signWithKeys(keys);
+    mock.resetStats();
+    expect(await store.putMany([old, neu])).toEqual(["accepted", "replaced"]);
+    expect(mock.readwriteTransactions()).toHaveLength(1);
+    expect(await store.get(old.id)).toBeUndefined();
+    expect((await store.get(neu.id))?.content).toContain("v2");
+
+    const older = EventBuilder.metadata({ name: "v0" }).createdAt(5).signWithKeys(keys);
+    expect(await store.putMany([older])).toEqual(["rejected"]);
+    expect((await store.get(neu.id))?.id).toBe(neu.id);
+    store.close();
+  });
+
+  test("putMany abort rejects StorageError and persists nothing", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "putmany-abort" });
+    await store.open();
+    const a = EventBuilder.textNote("a").createdAt(1).signWithKeys(keys);
+    const b = EventBuilder.textNote("b").createdAt(2).signWithKeys(keys);
+    mock.failGetOnCall(2);
+    await expect(store.putMany([a, b])).rejects.toBeInstanceOf(StorageError);
+    expect(await store.get(a.id)).toBeUndefined();
+    expect(await store.get(b.id)).toBeUndefined();
+    expect(await store.query([{ kinds: [1] }])).toEqual([]);
     store.close();
   });
 });

@@ -6,6 +6,7 @@ import { isEphemeralKind, Kind } from "../core/kind.ts";
 import { eventAddress } from "../core/tag.ts";
 import { CryptoError } from "../core/error.ts";
 import { coordinateRemovals, DeletionState, planDeletion, type DeletionPlan } from "./deletion.ts";
+import { toStorageError } from "./error.ts";
 import type { EventStore, NegentropyItem, PutResult } from "./types.ts";
 
 const IDB_VERSION = 3;
@@ -58,7 +59,9 @@ type IDBTransactionLike = {
   objectStore(name: string): IDBObjectStoreLike;
   oncomplete: ((ev: unknown) => void) | null;
   onerror: ((ev: unknown) => void) | null;
+  onabort: ((ev: unknown) => void) | null;
   error: Error | null;
+  abort(): void;
 };
 
 type IDBDatabaseLike = {
@@ -158,92 +161,164 @@ export class IndexedDbEventStore implements EventStore {
     await done;
   }
 
-  async put(raw: Event): Promise<PutResult> {
-    const event = normalizeEvent(raw);
-    const db = await this.#ensure();
+  async put(event: Event): Promise<PutResult> {
+    const [result] = await this.putMany([event]);
+    return result!;
+  }
+
+  /** One readwrite transaction; abort rejects the whole batch with no partial persist. */
+  async putMany(events: readonly Event[]): Promise<PutResult[]> {
+    if (events.length === 0) return [];
+    let db: IDBDatabaseLike;
+    try {
+      db = await this.#ensure();
+    } catch (err) {
+      throw toStorageError(err);
+    }
     const tx = db.transaction(WRITE_STORES, "readwrite");
+    const txSettled = new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error("IndexedDB transaction failed"));
+      tx.onabort = () => reject(tx.error ?? new Error("IndexedDB transaction aborted"));
+    });
+    const txOutcome = txSettled.then(
+      () => undefined,
+      (err: unknown) => err,
+    );
+    const cache = this.#snapshotCaches();
+    try {
+      const results = await this.#putAllInTx(tx, events);
+      const txErr = await txOutcome;
+      if (txErr !== undefined) throw txErr;
+      return results;
+    } catch (err) {
+      this.#restoreCaches(cache);
+      try {
+        tx.abort();
+      } catch {
+        // already aborted or complete
+      }
+      await txOutcome;
+      throw toStorageError(err);
+    }
+  }
+
+  /** Sequential puts in one async function so the tx stays alive between events. */
+  async #putAllInTx(tx: IDBTransactionLike, batch: readonly Event[]): Promise<PutResult[]> {
     const events = tx.objectStore(EVENTS);
     const tagRefs = tx.objectStore(TAG_REFS);
     const addresses = tx.objectStore(ADDRESSES);
     const tombstones = tx.objectStore(TOMBSTONES);
-    const done = txDone(tx);
+    const results: PutResult[] = [];
+    for (const raw of batch) {
+      const event = normalizeEvent(raw);
 
-    if (this.#deletion.ids.has(event.id)) {
-      await done;
-      return "duplicate";
-    }
-
-    const existing = await reqOf<Event | undefined>(events.get(event.id));
-    if (existing) {
-      await done;
-      return "duplicate";
-    }
-
-    if (event.kind === Kind.EventDeletion) {
-      this.#deletion.pending.delete(event.id);
-      const byId = new Map<string, Event>();
-      for (const tag of event.tags) {
-        if (tag[0] !== "e" || tag[1] === undefined) continue;
-        const got = await reqOf<Event | undefined>(events.get(tag[1].toLowerCase()));
-        if (got) byId.set(got.id, got);
+      if (this.#deletion.ids.has(event.id)) {
+        results.push("duplicate");
+        continue;
       }
-      const plan = planDeletion(event, (id) => byId.get(id));
-      const current = new Map<string, Pick<Event, "id" | "created_at">>();
-      for (const c of plan.coordinates) {
-        const row = await reqOf<AddressRow | undefined>(addresses.get(c.key));
-        if (row) current.set(c.key, row);
+
+      const existing = await reqOf<Event | undefined>(events.get(event.id));
+      if (existing) {
+        results.push("duplicate");
+        continue;
       }
-      const coordIds = coordinateRemovals(plan.coordinates, (key) => current.get(key));
-      const remove = new Set([...plan.removeIds, ...coordIds]);
-      for (const id of remove) {
-        await this.#deleteEventRows(tx, id);
-      }
-      persistPlanTombstones(tombstones, plan, coordIds, this.#deletion);
-      this.#deletion.absorb(plan);
-      for (const id of coordIds) this.#deletion.ids.add(id);
-      events.put(event);
-      writeTagRefs(tagRefs, event);
-      await done;
-      return "deleted";
-    }
 
-    if (this.#deletion.covers(event)) {
-      tombstones.put({ key: `id:${event.id}`, type: "id" } satisfies Tombstone);
-      tombstones.delete(`pending:${event.id}`);
-      this.#deletion.ids.add(event.id);
-      this.#deletion.pending.delete(event.id);
-      await done;
-      return "duplicate";
-    }
-
-    if (isEphemeralKind(event.kind)) {
-      await done;
-      return "ephemeral";
-    }
-
-    const key = eventAddress(event);
-    if (key) {
-      const addrRow = await reqOf<AddressRow | undefined>(addresses.get(key));
-      if (addrRow) {
-        const prev = await reqOf<Event | undefined>(events.get(addrRow.id));
-        if (prev && !isReplaceableWinner(event, prev)) {
-          await done;
-          return "rejected";
+      if (event.kind === Kind.EventDeletion) {
+        this.#deletion.pending.delete(event.id);
+        const byId = new Map<string, Event>();
+        for (const tag of event.tags) {
+          if (tag[0] !== "e" || tag[1] === undefined) continue;
+          const got = await reqOf<Event | undefined>(events.get(tag[1].toLowerCase()));
+          if (got) byId.set(got.id, got);
         }
-        if (prev) await this.#deleteEventRows(tx, prev.id);
+        const plan = planDeletion(event, (id) => byId.get(id));
+        const current = new Map<string, Pick<Event, "id" | "created_at">>();
+        for (const c of plan.coordinates) {
+          const row = await reqOf<AddressRow | undefined>(addresses.get(c.key));
+          if (row) current.set(c.key, row);
+        }
+        const coordIds = coordinateRemovals(plan.coordinates, (key) => current.get(key));
+        const remove = new Set([...plan.removeIds, ...coordIds]);
+        for (const id of remove) {
+          await this.#deleteEventRows(tx, id);
+        }
+        persistPlanTombstones(tombstones, plan, coordIds, this.#deletion);
+        this.#deletion.absorb(plan);
+        for (const id of coordIds) this.#deletion.ids.add(id);
+        events.put(event);
+        writeTagRefs(tagRefs, event);
+        results.push("deleted");
+        continue;
       }
+
+      if (this.#deletion.covers(event)) {
+        tombstones.put({ key: `id:${event.id}`, type: "id" } satisfies Tombstone);
+        tombstones.delete(`pending:${event.id}`);
+        this.#deletion.ids.add(event.id);
+        this.#deletion.pending.delete(event.id);
+        results.push("duplicate");
+        continue;
+      }
+
+      if (isEphemeralKind(event.kind)) {
+        results.push("ephemeral");
+        continue;
+      }
+
+      const key = eventAddress(event);
+      if (key) {
+        const addrRow = await reqOf<AddressRow | undefined>(addresses.get(key));
+        if (addrRow) {
+          const prev = await reqOf<Event | undefined>(events.get(addrRow.id));
+          if (prev && !isReplaceableWinner(event, prev)) {
+            results.push("rejected");
+            continue;
+          }
+          if (prev) await this.#deleteEventRows(tx, prev.id);
+        }
+        events.put(event);
+        writeTagRefs(tagRefs, event);
+        addresses.put({ address: key, id: event.id, created_at: event.created_at });
+        this.#replaceable.set(key, event.id);
+        results.push(addrRow ? "replaced" : "accepted");
+        continue;
+      }
+
       events.put(event);
       writeTagRefs(tagRefs, event);
-      addresses.put({ address: key, id: event.id, created_at: event.created_at });
-      this.#replaceable.set(key, event.id);
-      await done;
-      return addrRow ? "replaced" : "accepted";
+      results.push("accepted");
     }
+    return results;
+  }
 
-    events.put(event);
-    writeTagRefs(tagRefs, event);
-    await done;
-    return "accepted";
+  #snapshotCaches(): {
+    replaceable: Map<string, string>;
+    ids: Set<string>;
+    pending: Map<string, string>;
+    coordinates: Map<string, number>;
+  } {
+    return {
+      replaceable: new Map(this.#replaceable),
+      ids: new Set(this.#deletion.ids),
+      pending: new Map(this.#deletion.pending),
+      coordinates: new Map(this.#deletion.coordinates),
+    };
+  }
+
+  #restoreCaches(snap: {
+    replaceable: Map<string, string>;
+    ids: Set<string>;
+    pending: Map<string, string>;
+    coordinates: Map<string, number>;
+  }): void {
+    this.#replaceable = snap.replaceable;
+    this.#deletion.ids.clear();
+    for (const id of snap.ids) this.#deletion.ids.add(id);
+    this.#deletion.pending.clear();
+    for (const [k, v] of snap.pending) this.#deletion.pending.set(k, v);
+    this.#deletion.coordinates.clear();
+    for (const [k, v] of snap.coordinates) this.#deletion.coordinates.set(k, v);
   }
 
   async get(id: string): Promise<Event | undefined> {

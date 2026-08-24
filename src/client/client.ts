@@ -16,6 +16,7 @@ import {
 } from "../loaders/index.ts";
 import { Gossip } from "../gossip/index.ts";
 import type { EventStore } from "../storage/types.ts";
+import { toStorageError, type StorageError } from "../storage/error.ts";
 import { MemoryEventStore } from "../storage/memory.ts";
 import {
   isGiftWrapKind,
@@ -118,6 +119,8 @@ export type ClientOptions = {
    * Set false to disable automatic persistence while keeping the store for manual use.
    */
   persistEvents?: boolean;
+  /** Live persist failures. Does not throw on the subscribe path. */
+  onstorageerror?: (err: StorageError) => void;
 };
 
 export type FetchEventsOptions = {
@@ -208,10 +211,13 @@ export class Client {
   readonly loaders: Loaders;
   readonly gossip: Gossip;
   readonly storage: EventStore;
+  onstorageerror: ((err: StorageError) => void) | null;
   #signer: NostrSigner | undefined;
   #relays: string[];
   #shutdown = false;
   #persistEvents: boolean;
+  #persistQueue: Event[] = [];
+  #flushing: Promise<void> | undefined;
 
   constructor(opts: ClientOptions = {}) {
     this.#signer = opts.signer;
@@ -219,6 +225,7 @@ export class Client {
     this.gossip = opts.gossip ?? new Gossip();
     this.storage = opts.storage ?? new MemoryEventStore();
     this.#persistEvents = opts.persistEvents ?? true;
+    this.onstorageerror = opts.onstorageerror ?? null;
     const autoAuth = opts.automaticAuth ?? Boolean(opts.signer);
     this.pool = new Pool({
       websocketImplementation: opts.websocketImplementation,
@@ -290,6 +297,7 @@ export class Client {
 
   async shutdown(): Promise<void> {
     this.#shutdown = true;
+    while (this.#flushing) await this.#flushing;
     this.pool.close();
     this.loaders.context.cache.clear();
   }
@@ -305,10 +313,29 @@ export class Client {
   }
 
   /**
-   * Unified ingest pipeline: storage → gossip → replaceable loader cache.
-   * Fire-and-forget storage writes; failures are swallowed so network paths stay resilient.
+   * Unified ingest pipeline: gossip + replaceable loader cache immediately;
+   * storage writes are coalesced into a single-flight `putMany`.
    */
   observe(event: Event): void {
+    this.#ingestMeta(event);
+    if (!this.#persistEvents) return;
+    this.#persistQueue.push(event);
+    this.#armFlush();
+  }
+
+  /** Observe many events (deduped by id, order preserved) as one persist batch. */
+  observeAll(events: readonly Event[]): void {
+    const seen = new Set<string>();
+    for (const event of events) {
+      if (seen.has(event.id)) continue;
+      seen.add(event.id);
+      this.#ingestMeta(event);
+      if (this.#persistEvents) this.#persistQueue.push(event);
+    }
+    if (this.#persistEvents && this.#persistQueue.length > 0) this.#armFlush();
+  }
+
+  #ingestMeta(event: Event): void {
     this.gossip.ingest(event);
     if (
       event.kind === Kind.Metadata ||
@@ -319,20 +346,29 @@ export class Client {
     ) {
       this.loaders.context.cache.putIfNewer(event);
     }
-    if (this.#persistEvents) {
-      void this.storage.put(event).catch(() => {
-        // storage errors must not break live pipelines
-      });
-    }
   }
 
-  /** Observe many events (deduped by id order preserved). */
-  observeAll(events: readonly Event[]): void {
-    const seen = new Set<string>();
-    for (const event of events) {
-      if (seen.has(event.id)) continue;
-      seen.add(event.id);
-      this.observe(event);
+  #armFlush(): void {
+    if (this.#flushing) return;
+    this.#flushing = this.#flushLoop();
+  }
+
+  async #flushLoop(): Promise<void> {
+    try {
+      await new Promise<void>((resolve) => {
+        queueMicrotask(resolve);
+      });
+      while (this.#persistQueue.length > 0) {
+        const batch = this.#persistQueue.splice(0);
+        try {
+          await this.storage.putMany(batch);
+        } catch (err) {
+          this.onstorageerror?.(toStorageError(err));
+        }
+      }
+    } finally {
+      this.#flushing = undefined;
+      if (this.#persistQueue.length > 0) this.#armFlush();
     }
   }
 
@@ -864,16 +900,16 @@ export class Client {
           timeoutMs: opts?.timeoutMs,
           signal: opts?.signal,
         });
-        for (const event of events) {
-          let stored = false;
-          try {
-            const result = await this.storage.put(event);
-            stored = result !== "rejected";
-          } catch {
-            stored = false;
-          }
-          if (!stored) continue;
-          if (shouldObserve) this.observe(event);
+        let results;
+        try {
+          results = await this.storage.putMany(events);
+        } catch {
+          continue;
+        }
+        for (let j = 0; j < events.length; j++) {
+          const event = events[j]!;
+          if (results[j] === "rejected") continue;
+          if (shouldObserve) this.#ingestMeta(event);
           summary.received.push(event.id);
         }
       }

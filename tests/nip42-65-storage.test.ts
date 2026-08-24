@@ -390,6 +390,24 @@ describe("MemoryEventStore", () => {
     expect((await store.query([{ kinds: [1] }])).map((e) => e.id)).toEqual([note.id]);
   });
 
+  test("putMany empty and sequential replaceable input order", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+    expect(await store.putMany([])).toEqual([]);
+    const old = EventBuilder.metadata({ name: "v1" }).createdAt(10).signWithKeys(keys);
+    const neu = EventBuilder.metadata({ name: "v2" }).createdAt(20).signWithKeys(keys);
+    expect(await store.putMany([old, neu])).toEqual(["accepted", "replaced"]);
+    expect(await store.get(old.id)).toBeUndefined();
+    expect((await store.get(neu.id))?.content).toContain("v2");
+    const older = EventBuilder.metadata({ name: "v0" }).createdAt(5).signWithKeys(keys);
+    expect(await store.putMany([older])).toEqual(["rejected"]);
+    expect(store.size).toBe(1);
+    const a = EventBuilder.textNote("a").createdAt(1).signWithKeys(keys);
+    const b = EventBuilder.textNote("b").createdAt(2).signWithKeys(keys);
+    expect(await store.putMany([a, b])).toEqual(["accepted", "accepted"]);
+    expect(store.size).toBe(3);
+  });
+
   test("negentropyItems same created_at sorts by id lexicographically", async () => {
     const store = new MemoryEventStore();
     const keys = Keys.fromSecretKey(SK);

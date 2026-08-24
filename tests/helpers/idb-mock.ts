@@ -9,6 +9,8 @@ export type IdbMock = {
   cursorVisitCount(): number;
   readwriteTransactions(): string[][];
   resetStats(): void;
+  /** Fail the next Nth `get` after this call (1-based). Restores tx snapshot on abort. */
+  failGetOnCall(n: number): void;
 };
 
 type Row = Record<string, unknown>;
@@ -28,6 +30,8 @@ export function installIdbMock(): IdbMock {
     eventsGetAll: 0,
     cursorVisits: 0,
     readwrite: [] as string[][],
+    getCalls: 0,
+    failGetOn: undefined as number | undefined,
   };
 
   class MockKeyRange {
@@ -64,16 +68,27 @@ export function installIdbMock(): IdbMock {
   class MockTx {
     oncomplete: ((ev: unknown) => void) | null = null;
     onerror: ((ev: unknown) => void) | null = null;
+    onabort: ((ev: unknown) => void) | null = null;
     error: Error | null = null;
     #pending = 0;
     #held = false;
     #completed = false;
     #scheduled = false;
+    #aborted = false;
+    #backup = new Map<string, Map<string, Row>>();
 
     constructor(
       private db: MockDb,
       private names: string[] | "all",
     ) {
+      const list = names === "all" ? db.storeNames() : names;
+      for (const name of list) {
+        const data = db.getStore(name);
+        if (!data) continue;
+        const copy = new Map<string, Row>();
+        for (const [k, v] of data.rows) copy.set(k, structuredClone(v));
+        this.#backup.set(name, copy);
+      }
       this.#queue();
     }
 
@@ -88,6 +103,25 @@ export function installIdbMock(): IdbMock {
 
     get completed() {
       return this.#completed;
+    }
+
+    get aborted() {
+      return this.#aborted;
+    }
+
+    abort() {
+      if (this.#aborted) return;
+      if (this.#completed) throw new Error("InvalidStateError: transaction already finished");
+      this.#aborted = true;
+      for (const [name, rows] of this.#backup) {
+        const data = this.db.getStore(name);
+        if (!data) continue;
+        data.rows.clear();
+        for (const [k, v] of rows) data.rows.set(k, structuredClone(v));
+      }
+      this.error = new Error("transaction aborted");
+      this.#completed = true;
+      this.onabort?.({});
     }
 
     begin() {
@@ -171,7 +205,20 @@ export function installIdbMock(): IdbMock {
     get(id: string) {
       const req = new MockRequest<Row | undefined>();
       this.tx.begin();
+      stats.getCalls += 1;
+      const fail = stats.failGetOn !== undefined && stats.getCalls === stats.failGetOn;
       queueMicrotask(() => {
+        if (this.tx.aborted || this.tx.completed) {
+          this.tx.end();
+          return;
+        }
+        if (fail) {
+          req.error = new Error("IndexedDB request failed");
+          req.onerror?.({});
+          this.tx.abort();
+          this.tx.end();
+          return;
+        }
         const row = this.data.rows.get(id);
         req.result = row ? structuredClone(row) : undefined;
         req.onsuccess?.({});
@@ -221,6 +268,10 @@ export function installIdbMock(): IdbMock {
 
     getStore(name: string) {
       return this.rec.stores.get(name);
+    }
+
+    storeNames() {
+      return [...this.rec.stores.keys()];
     }
 
     createObjectStore(name: string, options?: { keyPath?: string }) {
@@ -299,6 +350,12 @@ export function installIdbMock(): IdbMock {
       stats.eventsGetAll = 0;
       stats.cursorVisits = 0;
       stats.readwrite = [];
+      stats.getCalls = 0;
+      stats.failGetOn = undefined;
+    },
+    failGetOnCall(n: number) {
+      stats.getCalls = 0;
+      stats.failGetOn = n;
     },
   };
 }
