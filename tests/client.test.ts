@@ -29,6 +29,19 @@ function sentMessages(ws: MockWebSocket): unknown[][] {
   return ws.sent.map((s) => JSON.parse(s) as unknown[]);
 }
 
+function lastReqId(ws: MockWebSocket): string {
+  const reqs = ws.sent.map((s) => JSON.parse(s) as unknown[]).filter((m) => m[0] === "REQ");
+  const last = reqs[reqs.length - 1] as [string, string] | undefined;
+  if (!last) throw new Error("no REQ");
+  return last[1];
+}
+
+function dummyPingReqs(ws: MockWebSocket): unknown[][] {
+  return ws.sent
+    .map((s) => JSON.parse(s) as unknown[])
+    .filter((m) => m[0] === "REQ" && String(m[1]).startsWith("__ping__"));
+}
+
 beforeEach(() => {
   MockWebSocket.reset();
   useWebSocketImplementation(MockWebSocketCtor);
@@ -231,6 +244,140 @@ describe("Client", () => {
     expect(eose).toBe(1);
     expect(sentMessages(silent).some((m) => m[0] === "CLOSE")).toBe(false);
     closer.close();
+    await client.shutdown();
+  });
+
+  test("custom verifyEvent returning false drops events on subscribe", async () => {
+    let verifies = 0;
+    const client = Client.builder()
+      .relays(["wss://verify-drop.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .verifyEvent(() => {
+        verifies += 1;
+        return false;
+      })
+      .build();
+
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("rejected").createdAt(1).signWithKeys(keys);
+    const received: string[] = [];
+
+    await client.connect();
+    const sub = client.subscribe({ kinds: [1] }, { onevent: (e) => received.push(e.id) });
+    await sleep(10);
+
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["EVENT", lastReqId(ws), note]));
+    expect(verifies).toBe(1);
+    expect(received).toHaveLength(0);
+
+    const local = await client.queryLocal({ kinds: [1] });
+    expect(local).toHaveLength(0);
+
+    sub.close();
+    await client.shutdown();
+  });
+
+  test("custom verifyEvent returning true still delivers events on subscribe", async () => {
+    let verifies = 0;
+    const client = Client.builder()
+      .relays(["wss://verify-pass.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .verifyEvent(() => {
+        verifies += 1;
+        return true;
+      })
+      .build();
+
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("accepted").createdAt(1).signWithKeys(keys);
+    const received: string[] = [];
+
+    await client.connect();
+    const sub = client.subscribe({ kinds: [1] }, { onevent: (e) => received.push(e.id) });
+    await sleep(10);
+
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["EVENT", lastReqId(ws), note]));
+    expect(verifies).toBe(1);
+    expect(received).toEqual([note.id]);
+
+    sub.close();
+    await client.shutdown();
+  });
+
+  test("ClientOptions.verifyEvent on the constructor drops subscribe events", async () => {
+    const client = new Client({
+      relays: ["wss://verify-ctor.example"],
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: false,
+      verifyEvent: () => false,
+    });
+
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("ctor-drop").createdAt(1).signWithKeys(keys);
+    const received: string[] = [];
+
+    await client.connect();
+    const sub = client.subscribe({ kinds: [1] }, { onevent: (e) => received.push(e.id) });
+    await sleep(10);
+
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["EVENT", lastReqId(ws), note]));
+    expect(received).toHaveLength(0);
+
+    sub.close();
+    await client.shutdown();
+  });
+
+  test("enablePing forwards interval so relays send dummy ping REQ", async () => {
+    const client = Client.builder()
+      .relays(["wss://ping.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .enablePing(true)
+      .pingIntervalMs(30)
+      .pingTimeoutMs(400)
+      .build();
+
+    await client.connect();
+    const ws = MockWebSocket.last();
+    await waitUntil(() => dummyPingReqs(ws).length > 0);
+    expect(dummyPingReqs(ws)[0]![2]).toEqual({ ids: ["a".repeat(64)], limit: 0 });
+    await client.shutdown();
+  });
+
+  test("enablePing stays off by default", async () => {
+    const client = Client.builder()
+      .relays(["wss://no-ping.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .pingIntervalMs(10)
+      .build();
+
+    await client.connect();
+    const ws = MockWebSocket.last();
+    await sleep(50);
+    expect(dummyPingReqs(ws)).toHaveLength(0);
+    await client.shutdown();
+  });
+
+  test("unanswered dummy ping closes the socket using forwarded pingTimeoutMs", async () => {
+    const client = Client.builder()
+      .relays(["wss://ping-timeout.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .enablePing(true)
+      .pingIntervalMs(20)
+      .pingTimeoutMs(40)
+      .build();
+
+    await client.connect();
+    const ws = MockWebSocket.last();
+    await waitUntil(() => dummyPingReqs(ws).length > 0);
+    await waitUntil(() => ws.readyState === MockWebSocket.CLOSED);
     await client.shutdown();
   });
 });

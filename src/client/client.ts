@@ -94,12 +94,18 @@ export type ClientOptions = {
   signer?: NostrSigner;
   relays?: readonly string[];
   websocketImplementation?: WebSocketConstructor;
+  /** Injected EVENT verifier. Default is core BIP-340. */
+  verifyEvent?: (event: Event) => boolean;
   connectTimeoutMs?: number;
   publishTimeoutMs?: number;
   /** When true (default if signer present), answer NIP-42 AUTH automatically. */
   automaticAuth?: boolean;
   /** When true (default), relays reconnect with backoff after disconnect. */
   enableReconnect?: boolean;
+  /** Keepalive ping. Default false. */
+  enablePing?: boolean;
+  pingIntervalMs?: number;
+  pingTimeoutMs?: number;
   gossip?: Gossip;
   /**
    * Local event store. Defaults to {@link MemoryEventStore}.
@@ -215,6 +221,10 @@ export class Client {
     const autoAuth = opts.automaticAuth ?? Boolean(opts.signer);
     this.pool = new Pool({
       websocketImplementation: opts.websocketImplementation,
+      verifyEvent: opts.verifyEvent,
+      enablePing: opts.enablePing,
+      pingIntervalMs: opts.pingIntervalMs,
+      pingTimeoutMs: opts.pingTimeoutMs,
       connectTimeoutMs: opts.connectTimeoutMs,
       publishTimeoutMs: opts.publishTimeoutMs,
       maxWaitForConnectionMs: opts.connectTimeoutMs ?? 3000,
