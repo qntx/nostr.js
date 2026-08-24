@@ -33,6 +33,7 @@ Version is `0.0.0`. The package is unpublished until a human publishes it.
 - Pool/Client `oneose` waits for the slowest relay unless `eoseTimeoutMs` is set. Each URL contributes at most once; reconnect EOSE does not complete the set. Caller `close()` does not fire `oneose`. An empty relay list still calls `onclose("no relays")` and not `oneose`.
 - `eoseTimeoutMs` no longer closes the live REQ. Timeout synthesizes `oneose` once; a later real EOSE is ignored. Direct `Relay.subscribe` may `oneose` again after reconnect. `Relay.fetch` remains the one-shot closer.
 - `Client.sync` mixed-success no longer fail-fast. Per-relay sessions run in parallel (`Promise.allSettled`). Fulfilled summaries merge. Throw only when `urls.length > 0` and every relay rejects (first rejection in URL order).
+- NIP-77 upload: one `storage.query([{ ids: have }])` (skipped when `have` is empty), then publish in chunks of 8. Ids missing from the store go to `sendFailures`. `sent` order is not stable.
 - Gossip `publish` includes up to five normalized `e`/`a` tag relay hints (index 2).
 - `groupAuthorsByOutboxRelay` / `OutboxFeed` prefer already-connected URLs that are already candidates. A connected URL that is not in the author's outbox or discovery list is not added.
 - `OutboxFeed` rehydrates newest bounds from `storage.query({ limit: 1 })`. Mixed bounded/unbounded author groups split filters. Bounds stay process-local.

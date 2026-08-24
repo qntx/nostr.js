@@ -32,6 +32,24 @@ function note(sk: string, content: string, createdAt: number) {
   return EventBuilder.textNote(content).createdAt(createdAt).signWithKeys(Keys.fromSecretKey(sk));
 }
 
+function wrapEventStore(
+  inner: EventStore,
+  overrides: Partial<Pick<EventStore, "get" | "query">> = {},
+): EventStore {
+  return {
+    put: (event) => inner.put(event),
+    putMany: (events) => inner.putMany(events),
+    get: overrides.get ?? ((id) => inner.get(id)),
+    query: overrides.query ?? ((filters) => inner.query(filters)),
+    count: (filters) => inner.count(filters),
+    negentropyItems: (filter) => inner.negentropyItems(filter),
+    remove: (ids) => inner.remove(ids),
+    clear: () => inner.clear(),
+    getOutboxBound: (pubkey, kind) => inner.getOutboxBound(pubkey, kind),
+    setOutboxBound: (pubkey, kind, bound) => inner.setOutboxBound(pubkey, kind, bound),
+  };
+}
+
 function runUntilDone(
   init: Reconciliation,
   responder: Responder,
@@ -244,6 +262,158 @@ describe("Relay.negReconcile + Client.sync", () => {
     expect(summary.local).toEqual([local.id]);
     expect(summary.sent).toEqual([local.id]);
     expect(bus.eventsOn("wss://neg.example").some((e) => e.id === local.id)).toBe(true);
+    await client.shutdown();
+  });
+
+  test("Client.syncToRelay up loads via query not get", async () => {
+    const events = [note(SK_A, "a", 1), note(SK_A, "b", 2), note(SK_A, "c", 3)];
+    const inner = new MemoryEventStore();
+    for (const event of events) await inner.put(event);
+    let getCount = 0;
+    let queryCount = 0;
+    const store = wrapEventStore(inner, {
+      get: (id) => {
+        getCount += 1;
+        return inner.get(id);
+      },
+      query: (filters) => {
+        queryCount += 1;
+        return inner.query(filters);
+      },
+    });
+    const client = Client.builder()
+      .storage(store)
+      .relays(["wss://neg.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .persistEvents(false)
+      .build();
+    await client.connect();
+    const summary = await client.syncToRelay(
+      "wss://neg.example",
+      { kinds: [1] },
+      { direction: SyncDirection.Up, timeoutMs: 2000 },
+    );
+    expect(getCount).toBe(0);
+    expect(queryCount).toBe(1);
+    expect(new Set(summary.sent)).toEqual(new Set(events.map((event) => event.id)));
+    await client.shutdown();
+  });
+
+  test("Client.syncToRelay up skips query when have is empty", async () => {
+    const shared = note(SK_A, "shared", 1);
+    bus.seed("wss://neg.example", [shared]);
+    const inner = new MemoryEventStore();
+    await inner.put(shared);
+    let getCount = 0;
+    let queryCount = 0;
+    const store = wrapEventStore(inner, {
+      get: (id) => {
+        getCount += 1;
+        return inner.get(id);
+      },
+      query: (filters) => {
+        queryCount += 1;
+        return inner.query(filters);
+      },
+    });
+    const client = Client.builder()
+      .storage(store)
+      .relays(["wss://neg.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .persistEvents(false)
+      .build();
+    await client.connect();
+    const summary = await client.syncToRelay(
+      "wss://neg.example",
+      { kinds: [1] },
+      { direction: SyncDirection.Up, timeoutMs: 2000 },
+    );
+    expect(summary.local).toEqual([]);
+    expect(summary.sent).toEqual([]);
+    expect(queryCount).toBe(0);
+    expect(getCount).toBe(0);
+    await client.shutdown();
+  });
+
+  test("Client.syncToRelay up publishes with concurrency 8", async () => {
+    const events: Event[] = [];
+    const store = new MemoryEventStore();
+    for (let i = 0; i < 16; i++) {
+      const event = note(SK_A, `n${i}`, 100 + i);
+      events.push(event);
+      await store.put(event);
+    }
+    const client = Client.builder()
+      .storage(store)
+      .relays(["wss://neg.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    await client.connect();
+    let inflight = 0;
+    let maxInflight = 0;
+    const origPublish = client.pool.publish.bind(client.pool);
+    client.pool.publish = async (relays, event, opts) => {
+      inflight += 1;
+      maxInflight = Math.max(maxInflight, inflight);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      try {
+        return await origPublish(relays, event, opts);
+      } finally {
+        inflight -= 1;
+      }
+    };
+    const summary = await client.syncToRelay(
+      "wss://neg.example",
+      { kinds: [1] },
+      { direction: SyncDirection.Up, timeoutMs: 2000 },
+    );
+    expect(maxInflight).toBeGreaterThan(1);
+    expect(maxInflight).toBe(8);
+    expect(new Set(summary.sent)).toEqual(new Set(events.map((event) => event.id)));
+    await client.shutdown();
+  });
+
+  test("Client.syncToRelay up records sendFailures for ids missing from query", async () => {
+    const events = [note(SK_A, "a", 1), note(SK_A, "b", 2), note(SK_A, "c", 3)];
+    const missing = events[1]!;
+    const inner = new MemoryEventStore();
+    for (const event of events) await inner.put(event);
+    let getCount = 0;
+    let queryCount = 0;
+    const store = wrapEventStore(inner, {
+      get: (id) => {
+        getCount += 1;
+        return inner.get(id);
+      },
+      query: async (filters) => {
+        queryCount += 1;
+        const found = await inner.query(filters);
+        return found.filter((event) => event.id !== missing.id);
+      },
+    });
+    const client = Client.builder()
+      .storage(store)
+      .relays(["wss://neg.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .persistEvents(false)
+      .build();
+    await client.connect();
+    const summary = await client.syncToRelay(
+      "wss://neg.example",
+      { kinds: [1] },
+      { direction: SyncDirection.Up, timeoutMs: 2000 },
+    );
+    expect(getCount).toBe(0);
+    expect(queryCount).toBe(1);
+    expect(summary.sendFailures[missing.id]).toBe("event not found in local store");
+    expect(Object.keys(summary.sendFailures)).toEqual([missing.id]);
+    expect(new Set(summary.sent)).toEqual(
+      new Set(events.filter((event) => event.id !== missing.id).map((event) => event.id)),
+    );
     await client.shutdown();
   });
 
