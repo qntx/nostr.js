@@ -225,6 +225,39 @@ describe("Relay.count", () => {
     relay.close();
   });
 
+  test("COUNT times out after AUTH retry, not during AUTH", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://count-auth-post-timeout.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const filters = [{ kinds: [1], authors: [keys.publicKey] }];
+    const countP = relay.count(filters, { id: "count:post-auth-timeout", timeoutMs: 40 });
+    await Promise.resolve();
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "post-timeout-challenge"]));
+    ws.receive(JSON.stringify(["CLOSED", "count:post-auth-timeout", "auth-required: login"]));
+    await new Promise((r) => setTimeout(r, 20));
+    const authFrame = ws.sent
+      .map((s) => JSON.parse(s) as unknown[])
+      .find((m) => m[0] === "AUTH") as [string, { id: string }] | undefined;
+    expect(authFrame?.[0]).toBe("AUTH");
+    await new Promise((r) => setTimeout(r, 80));
+    ws.receive(JSON.stringify(["OK", authFrame![1].id, true, ""]));
+    await new Promise((r) => setTimeout(r, 20));
+    const counts = ws.sent.map((s) => JSON.parse(s) as unknown[]).filter((m) => m[0] === "COUNT");
+    expect(counts).toHaveLength(2);
+    expect(counts[1]).toEqual(["COUNT", "count:post-auth-timeout", filters[0]]);
+    await expect(countP).rejects.toThrow(/count timed out/);
+    relay.close();
+  });
+
   test("auth-required CLOSED with no challenge rejects and does not leak the waiter", async () => {
     const keys = Keys.fromSecretKey(SK);
     const relay = await Relay.connect("wss://count-no-challenge.example", {
