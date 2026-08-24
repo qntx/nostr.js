@@ -399,8 +399,7 @@ export class Client {
 
   /**
    * Create an outbox-model feed for the given authors (NIP-65 write relays).
-   * Live events go through {@link observe}; sync persists via putMany then ingestMeta
-   * unless `observe: false` (received ids are still listed; `persistEvents` is not consulted).
+   * Live events go through {@link observe}; sync persists via putMany then ingestMeta.
    */
   outbox(opts: {
     authors: readonly string[];
@@ -901,6 +900,7 @@ export class Client {
   /**
    * NIP-77 sync against one relay: reconcile, then optionally upload
    * local-only events and/or download remote-only events.
+   * `observe: false` skips putMany and ingestMeta; received ids are still listed.
    */
   async syncToRelay(
     url: string,
