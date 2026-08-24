@@ -39,6 +39,12 @@ describe("package.json wasm publish", () => {
     expect(readPkg().scripts.prepublishOnly).toBe("bun run build:wasm");
   });
 
+  test("wasm subpath does not export resetNostrWasmForTests", () => {
+    const src = readFileSync(join(root, "src/wasm/index.ts"), "utf8");
+    expect(src).not.toMatch(/resetNostrWasmForTests/);
+    expect(src).toMatch(/export \{ loadNostrWasm/);
+  });
+
   test("build:wasm fails closed when dist/*.wasm is missing", () => {
     const script = readPkg().scripts["build:wasm"];
     expect(script).toBe(

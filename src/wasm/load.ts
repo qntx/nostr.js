@@ -139,3 +139,8 @@ export function loadNostrWasm(opts?: LoadNostrWasmOptions): Promise<NostrWasm> {
   interned = pending;
   return pending;
 }
+
+/** Clears intern so tests can re-instantiate. Not exported from the wasm subpath. */
+export function resetNostrWasmForTests(): void {
+  interned = undefined;
+}

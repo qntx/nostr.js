@@ -5,7 +5,7 @@ import { Kind } from "../src/core/kind.ts";
 import { HexError } from "../src/core/error.ts";
 import { assertAllowedWasmImports, instantiateCryptoWasm } from "../src/wasm/abi.ts";
 import { makeVerifyEvent, WasmVerifyPoisonedError } from "../src/wasm/adapter.ts";
-import { loadNostrWasm, type NostrWasm } from "../src/wasm/load.ts";
+import { loadNostrWasm, resetNostrWasmForTests, type NostrWasm } from "../src/wasm/load.ts";
 import { readBuiltWasm } from "./read-wasm.ts";
 
 const SK_HEX = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
@@ -47,6 +47,7 @@ let wasm: NostrWasm;
 
 describe("loadNostrWasm intern", () => {
   test("invalid bytes throw and are not interned as success", async () => {
+    resetNostrWasmForTests();
     await expect(loadNostrWasm({ module: invalidWasm })).rejects.toThrow();
     await expect(instantiateCryptoWasm(invalidWasm)).rejects.toThrow();
     wasm = await loadNostrWasm({ module: bytes });

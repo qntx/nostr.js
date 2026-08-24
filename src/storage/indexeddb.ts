@@ -148,6 +148,7 @@ export class IndexedDbEventStore implements EventStore {
     return this.#db!;
   }
 
+  /** Loads every tombstone and address row into RAM. Tens of MB at 10^5 addressables. */
   async #loadCaches(): Promise<void> {
     const db = this.#db!;
     const tx = db.transaction([TOMBSTONES, ADDRESSES], "readonly");

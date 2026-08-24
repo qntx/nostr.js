@@ -111,7 +111,7 @@ export type ClientOptions = {
   gossip?: Gossip;
   /**
    * Local event store. Defaults to {@link MemoryEventStore}.
-   * Pass a custom store (e.g. IndexedDbEventStore) for persistence.
+   * Browser apps that want persistence must pass {@link IndexedDbEventStore} and `await open()`.
    */
   storage?: EventStore;
   /**
