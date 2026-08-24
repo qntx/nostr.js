@@ -21,13 +21,32 @@ if [[ -z "${lock_ver}" || "${cli_ver}" != "${lock_ver}" ]]; then
   exit 1
 fi
 
-# secp256k1-sys: clang must accept --target=wasm32-unknown-unknown (not Apple clang).
-if [[ -z "${CC_wasm32_unknown_unknown:-}" ]]; then
+wasm_cc_hint() {
   echo "set CC_wasm32_unknown_unknown to a wasm-capable clang" >&2
   echo "  macOS: brew install llvm && CC_wasm32_unknown_unknown=\$(brew --prefix llvm)/bin/clang" >&2
   echo "  CI:    CC_wasm32_unknown_unknown=clang" >&2
+}
+
+# secp256k1-sys: clang must accept --target=wasm32-unknown-unknown (not Apple clang).
+if [[ -z "${CC_wasm32_unknown_unknown:-}" ]]; then
+  wasm_cc_hint
   exit 1
 fi
+
+cc_wasm="${CC_wasm32_unknown_unknown}"
+cc_ver="$("${cc_wasm}" --version 2>/dev/null | head -n 1 || true)"
+if echo "${cc_ver}" | grep -q "Apple clang"; then
+  echo "CC_wasm32_unknown_unknown is Apple clang (no wasm backend): ${cc_wasm}" >&2
+  wasm_cc_hint
+  exit 1
+fi
+if ! "${cc_wasm}" --print-targets 2>/dev/null | grep -q wasm32; then
+  echo "CC_wasm32_unknown_unknown does not list wasm32 in --print-targets: ${cc_wasm}" >&2
+  echo "${cc_ver}" >&2
+  wasm_cc_hint
+  exit 1
+fi
+
 export AR_wasm32_unknown_unknown="${AR_wasm32_unknown_unknown:-llvm-ar}"
 export CFLAGS_wasm32_unknown_unknown="${CFLAGS_wasm32_unknown_unknown:---target=wasm32-unknown-unknown -Wno-implicit-function-declaration}"
 

@@ -5,7 +5,7 @@ import { Kind } from "../src/core/kind.ts";
 import { HexError } from "../src/core/error.ts";
 import { assertAllowedWasmImports, instantiateCryptoWasm } from "../src/wasm/abi.ts";
 import { makeVerifyEvent, WasmVerifyPoisonedError } from "../src/wasm/adapter.ts";
-import { loadNostrWasm } from "../src/wasm/load.ts";
+import { loadNostrWasm, type NostrWasm } from "../src/wasm/load.ts";
 import { readBuiltWasm } from "./read-wasm.ts";
 
 const SK_HEX = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
@@ -42,7 +42,24 @@ function copyEvent(event: Event): Event {
 }
 
 const bytes = await readBuiltWasm();
-const wasm = await loadNostrWasm({ module: bytes });
+const invalidWasm = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]);
+let wasm: NostrWasm;
+
+describe("loadNostrWasm intern", () => {
+  test("invalid bytes throw and are not interned as success", async () => {
+    await expect(loadNostrWasm({ module: invalidWasm })).rejects.toThrow();
+    await expect(instantiateCryptoWasm(invalidWasm)).rejects.toThrow();
+    wasm = await loadNostrWasm({ module: bytes });
+    const again = await loadNostrWasm({ module: bytes });
+    expect(again).toBe(wasm);
+    expect(wasm.verify(BIP340_V0_MSG, BIP340_V0_PK, BIP340_V0_SIG)).toBe(true);
+  });
+
+  test("repeats reuse the same instance", async () => {
+    const second = await loadNostrWasm({ module: bytes });
+    expect(second).toBe(wasm);
+  });
+});
 
 describe("wasm module imports", () => {
   test("Module.imports is a subset of the pinned 0.2.122 list", async () => {
@@ -54,19 +71,6 @@ describe("wasm module imports", () => {
       (imp) => imp.name !== "__wbindgen_throw",
     );
     expect(unexpected).toEqual([]);
-  });
-
-  test("invalid bytes throw and are not interned as success", async () => {
-    await expect(instantiateCryptoWasm(new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]))).rejects.toThrow();
-    const again = await loadNostrWasm({ module: bytes });
-    expect(again).toBe(wasm);
-  });
-});
-
-describe("loadNostrWasm intern", () => {
-  test("repeats reuse the same instance", async () => {
-    const second = await loadNostrWasm({ module: bytes });
-    expect(second).toBe(wasm);
   });
 });
 

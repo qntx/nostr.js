@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { defineConfig } from "vite-plus";
 
@@ -19,9 +19,20 @@ function wasmUrlAsset() {
       }
       return `\0wasm-url:${file}`;
     },
-    load(id: string) {
+    load(
+      this: {
+        emitFile: (asset: { type: "asset"; fileName: string; source: Uint8Array }) => string;
+      },
+      id: string,
+    ) {
       if (!id.startsWith("\0wasm-url:")) return;
-      return `export default new URL("./nostr_crypto_wasm_bg.wasm", import.meta.url).href;`;
+      const file = id.slice("\0wasm-url:".length);
+      const ref = this.emitFile({
+        type: "asset",
+        fileName: "nostr_crypto_wasm_bg.wasm",
+        source: new Uint8Array(readFileSync(file)),
+      });
+      return `export default import.meta.ROLLUP_FILE_URL_${ref};`;
     },
   };
 }

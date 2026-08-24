@@ -46,8 +46,6 @@ pub fn verify_serialized_bytes(serialized: &[u8], id: &[u8], pubkey: &[u8], sig:
     verify_id_sig(id, pubkey, sig)
 }
 
-/// wasm-bindgen wrapper for [`verify_id_sig`].
-///
 /// Owned slices so the wasm allocator frees the JS-copied buffers after return.
 #[must_use]
 #[allow(
@@ -59,8 +57,6 @@ pub fn verify(id: Box<[u8]>, pubkey: Box<[u8]>, sig: Box<[u8]>) -> bool {
     verify_id_sig(&id, &pubkey, &sig)
 }
 
-/// wasm-bindgen wrapper for [`verify_serialized_bytes`].
-///
 /// Owned slices so the wasm allocator frees the JS-copied buffers after return.
 #[must_use]
 #[allow(
