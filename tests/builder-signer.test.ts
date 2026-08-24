@@ -92,6 +92,14 @@ describe("EventBuilder", () => {
     ).toEqual(["e", target.id, normalizeURL("https://r.example/path/")]);
   });
 
+  test("repost rejects non-kind-1", () => {
+    const keys = Keys.fromSecretKey(SK);
+    const target = new EventBuilder(Kind.Reaction, "+").createdAt(1).signWithKeys(keys);
+    expect(target.kind).toBe(Kind.Reaction);
+    expect(() => EventBuilder.repost(target, RELAY_HINT)).toThrow(EventValidationError);
+    expect(() => EventBuilder.repost(target, RELAY_HINT)).toThrow(/genericRepost/);
+  });
+
   test("genericRepost rejects kind 1", () => {
     const keys = Keys.fromSecretKey(SK);
     const target = EventBuilder.textNote("n").createdAt(1).signWithKeys(keys);
@@ -235,11 +243,16 @@ describe("EventBuilder", () => {
     expect(() => EventBuilder.reaction(target)).toThrow(/missing d tag/);
   });
 
-  test("reaction addressable with empty d throws", () => {
+  test("reaction addressable with empty d emits a", () => {
     const keys = Keys.fromSecretKey(SK);
     const target = new EventBuilder(34235, "v").tag(["d", ""]).createdAt(1).signWithKeys(keys);
-    expect(() => EventBuilder.reaction(target)).toThrow(EventValidationError);
-    expect(() => EventBuilder.reaction(target)).toThrow(/missing d tag/);
+    const draft = EventBuilder.reaction(target);
+    expect(draft.currentTags).toEqual([
+      ["e", target.id, "", target.pubkey],
+      ["p", target.pubkey],
+      ["k", "34235"],
+      ["a", `34235:${target.pubkey}:`],
+    ]);
   });
 
   test("reaction empty relayHint throws EventValidationError", () => {

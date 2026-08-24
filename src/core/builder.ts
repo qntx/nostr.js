@@ -85,7 +85,7 @@ export class EventBuilder {
     let coord: string | undefined;
     if (isAddressableKind(target.kind)) {
       const d = getDTag(target.tags);
-      if (!d) {
+      if (d === undefined) {
         throw new EventValidationError("addressable event is missing d tag");
       }
       coord = `${target.kind}:${target.pubkey}:${d}`;
@@ -103,6 +103,9 @@ export class EventBuilder {
   }
 
   static repost(target: Event, opts: { relayHint: string }): EventBuilder {
+    if (target.kind !== Kind.TextNote) {
+      throw new EventValidationError("non-kind-1 uses EventBuilder.genericRepost");
+    }
     const hint = requireRelayUrl(opts?.relayHint);
     const content = hasProtectedTag(target) ? "" : JSON.stringify(target);
     const b = new EventBuilder(Kind.Repost, content);

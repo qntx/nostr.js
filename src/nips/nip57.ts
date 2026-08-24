@@ -48,7 +48,7 @@ export function makeZapRequest(params: ProfileZapRequest | EventZapRequest): Eve
     tags.push(["e", event.id]);
     if (isAddressableKind(event.kind)) {
       const d = getDTag(event.tags);
-      if (!d) throw new EventValidationError("d tag not found or is empty");
+      if (d === undefined) throw new EventValidationError("d tag not found");
       const addr = eventAddress(event);
       if (addr) tags.push(["a", addr]);
     }

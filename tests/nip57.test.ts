@@ -117,18 +117,16 @@ describe("makeZapRequest", () => {
       EventValidationError,
     );
     expect(() => makeZapRequest({ event, amount: 21, relays: ["wss://r.example"] })).toThrow(
-      /d tag not found or is empty/,
+      /d tag not found/,
     );
   });
 
-  test("addressable event with empty d throws", () => {
+  test("addressable event with empty d emits a", () => {
     const event = new EventBuilder(30023, "article").tag(["d", ""]).signWithKeys(keys);
-    expect(() => makeZapRequest({ event, amount: 21, relays: ["wss://r.example"] })).toThrow(
-      EventValidationError,
-    );
-    expect(() => makeZapRequest({ event, amount: 21, relays: ["wss://r.example"] })).toThrow(
-      /d tag not found or is empty/,
-    );
+    const zr = makeZapRequest({ event, amount: 21, relays: ["wss://r.example"] });
+    expect(zr.tags).toContainEqual(["a", `30023:${event.pubkey}:`]);
+    expect(zr.tags).toContainEqual(["e", event.id]);
+    expect(zr.tags).toContainEqual(["k", "30023"]);
   });
 
   test("optional lnurl tag", () => {
