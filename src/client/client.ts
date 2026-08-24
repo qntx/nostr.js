@@ -72,6 +72,7 @@ export type SyncSummary = {
 };
 
 const SYNC_ID_BATCH = 100;
+const SYNC_UPLOAD_CONCURRENCY = 8;
 
 function mergeSyncSummary(into: SyncSummary, other: SyncSummary): SyncSummary {
   const sendFailures = { ...into.sendFailures, ...other.sendFailures };
@@ -873,22 +874,34 @@ export class Client {
     if (opts?.dryRun) return summary;
 
     if (direction === SyncDirection.Up || direction === SyncDirection.Both) {
-      for (const id of have) {
-        const event = await this.storage.get(id);
-        if (!event) {
-          summary.sendFailures[id] = "event not found in local store";
-          continue;
-        }
-        try {
-          const results = await this.pool.publish([url], event, { timeoutMs: opts?.timeoutMs });
-          const ok = results.some((r) => r.result?.ok);
-          if (ok) summary.sent.push(id);
-          else {
-            summary.sendFailures[id] =
-              results[0]?.error ?? results[0]?.result?.message ?? "publish failed";
+      if (have.length > 0) {
+        const found = await this.storage.query([{ ids: have }]);
+        const foundById = new Map(found.map((event) => [event.id, event]));
+        for (const id of have) {
+          if (!foundById.has(id)) {
+            summary.sendFailures[id] = "event not found in local store";
           }
-        } catch (error) {
-          summary.sendFailures[id] = error instanceof Error ? error.message : String(error);
+        }
+        for (let i = 0; i < found.length; i += SYNC_UPLOAD_CONCURRENCY) {
+          const chunk = found.slice(i, i + SYNC_UPLOAD_CONCURRENCY);
+          await Promise.all(
+            chunk.map(async (event) => {
+              try {
+                const results = await this.pool.publish([url], event, {
+                  timeoutMs: opts?.timeoutMs,
+                });
+                const ok = results.some((r) => r.result?.ok);
+                if (ok) summary.sent.push(event.id);
+                else {
+                  summary.sendFailures[event.id] =
+                    results[0]?.error ?? results[0]?.result?.message ?? "publish failed";
+                }
+              } catch (error) {
+                summary.sendFailures[event.id] =
+                  error instanceof Error ? error.message : String(error);
+              }
+            }),
+          );
         }
       }
     }
