@@ -1062,6 +1062,72 @@ describe("Pool aggregated EOSE", () => {
     pool.close();
   });
 
+  test("enableReconnect first socket error does not fire oneose; REQ is on socket 2", async () => {
+    MockWebSocket.failConnect = true;
+    const pool = new Pool({
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: true,
+      reconnectBackoffMs: [80],
+    });
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("live after fail").createdAt(1).signWithKeys(keys);
+    let eose = 0;
+    let closed: string | undefined;
+    const events: string[] = [];
+    const closer = pool.subscribe(["wss://first-socket-fail.example"], [{ kinds: [1] }], {
+      onevent: (e) => events.push(e.id),
+      oneose: () => {
+        eose += 1;
+      },
+      onclose: (reason) => {
+        closed = reason;
+      },
+    });
+    await waitUntil(
+      () =>
+        MockWebSocket.instances.length === 1 &&
+        MockWebSocket.instances[0]!.readyState === MockWebSocket.CLOSED,
+    );
+    expect(eose).toBe(0);
+    expect(closed).toBeUndefined();
+    expect(pool.listRelays().some((u) => u.includes("first-socket-fail.example"))).toBe(true);
+
+    MockWebSocket.failConnect = false;
+    await sleep(20);
+    expect(eose).toBe(0);
+    expect(closed).toBeUndefined();
+    await waitUntil(() => {
+      const second = MockWebSocket.instances.find(
+        (ws) => ws !== MockWebSocket.instances[0] && ws.readyState === MockWebSocket.OPEN,
+      );
+      return Boolean(second && sentMessages(second).some((m) => m[0] === "REQ"));
+    });
+    expect(eose).toBe(0);
+    expect(closed).toBeUndefined();
+
+    const first = MockWebSocket.instances[0]!;
+    const second = MockWebSocket.instances.find(
+      (ws) => ws !== first && ws.readyState === MockWebSocket.OPEN,
+    );
+    if (!second) throw new Error("expected second socket");
+    const req = sentMessages(second).find((m) => m[0] === "REQ") as
+      | [string, string, ...unknown[]]
+      | undefined;
+    if (!req) throw new Error("expected REQ on socket 2");
+    expect(req[0]).toBe("REQ");
+    expect(typeof req[1]).toBe("string");
+    expect(req[1].length).toBeGreaterThan(0);
+    expect(sentMessages(first).some((m) => m[0] === "REQ")).toBe(false);
+
+    second.receive(JSON.stringify(["EVENT", req[1], note]));
+    expect(events).toEqual([note.id]);
+    expect(eose).toBe(0);
+    second.receive(JSON.stringify(["EOSE", req[1]]));
+    expect(eose).toBe(1);
+    closer.close();
+    pool.close();
+  });
+
   test("connect failure plus EOSE fires oneose once", async () => {
     MockWebSocket.autoConnect = false;
     const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
@@ -1189,6 +1255,41 @@ describe("Pool aggregated EOSE", () => {
     b.receive(JSON.stringify(["EOSE", reqId(b)]));
     expect(eose).toBe(1);
     closer.close();
+    pool.close();
+  });
+
+  test("fetch, count, and publish do not arm reconnect on first connect failure", async () => {
+    MockWebSocket.failConnect = true;
+    const pool = new Pool({
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: true,
+      reconnectBackoffMs: [10],
+    });
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("one-shot").createdAt(1).signWithKeys(keys);
+
+    const events = await pool.fetch(["wss://fetch-fail.example"], [{ kinds: [1] }], {
+      timeoutMs: 50,
+    });
+    expect(events).toEqual([]);
+
+    const counts = await pool.count(["wss://count-fail.example"], [{ kinds: [1] }], {
+      timeoutMs: 50,
+    });
+    expect(counts).toHaveLength(1);
+    expect(counts[0]!.error).toBeDefined();
+    expect(counts[0]!.error!.length).toBeGreaterThan(0);
+    expect(counts[0]!.count).toBeUndefined();
+
+    const pubs = await pool.publish(["wss://pub-fail.example"], note);
+    expect(pubs).toHaveLength(1);
+    expect(pubs[0]!.error).toBeDefined();
+    expect(pubs[0]!.error!.length).toBeGreaterThan(0);
+    expect(pubs[0]!.result).toBeUndefined();
+
+    expect(MockWebSocket.instances).toHaveLength(3);
+    await sleep(40);
+    expect(MockWebSocket.instances).toHaveLength(3);
     pool.close();
   });
 

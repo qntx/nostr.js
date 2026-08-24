@@ -99,6 +99,134 @@ describe("Relay reconnect", () => {
     relay.close();
   });
 
+  test("failed initial connect with enableReconnect keeps a live sub and REQ on socket 2", async () => {
+    MockWebSocket.failConnect = true;
+    const relay = new Relay("wss://first-fail.example", {
+      enableReconnect: true,
+      reconnectBackoffMs: [80],
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("after first fail").createdAt(1).signWithKeys(keys);
+    const events: string[] = [];
+    let eose = 0;
+    let closed: string | undefined;
+    const connecting = relay.connect();
+    const sub = relay.subscribe([{ kinds: [1] }], {
+      onevent: (e) => events.push(e.id),
+      oneose: () => {
+        eose += 1;
+      },
+      onclose: (reason) => {
+        closed = reason;
+      },
+    });
+    await expect(connecting).rejects.toThrow();
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(MockWebSocket.instances[0]!.readyState).toBe(MockWebSocket.CLOSED);
+    expect(sub.closed).toBe(false);
+    expect(closed).toBeUndefined();
+    expect(eose).toBe(0);
+
+    MockWebSocket.failConnect = false;
+    await waitUntil(
+      () =>
+        relay.connected &&
+        MockWebSocket.instances.length >= 2 &&
+        sentMessages(MockWebSocket.last()).some((m) => m[0] === "REQ"),
+    );
+    expect(sub.closed).toBe(false);
+    expect(closed).toBeUndefined();
+    expect(eose).toBe(0);
+
+    const second = MockWebSocket.last();
+    expect(second).not.toBe(MockWebSocket.instances[0]);
+    const reReq = reqFilters(second)[0];
+    if (!reReq) throw new Error("expected REQ on socket 2");
+    expect(reReq[0]).toBe("REQ");
+    expect(reReq[1]).toBe(sub.id);
+
+    second.receive(JSON.stringify(["EVENT", sub.id, note]));
+    expect(events).toEqual([note.id]);
+    second.receive(JSON.stringify(["EOSE", sub.id]));
+    expect(eose).toBe(1);
+    relay.close();
+  });
+
+  test("first-connect timeout with enableReconnect still REQ on socket 2", async () => {
+    MockWebSocket.autoConnect = false;
+    const relay = new Relay("wss://timeout-first.example", {
+      enableReconnect: true,
+      reconnectBackoffMs: [80],
+      connectTimeoutMs: 30,
+      websocketImplementation: MockWebSocketCtor,
+    });
+    let eose = 0;
+    const connecting = relay.connect();
+    const sub = relay.subscribe([{ kinds: [1] }], {
+      oneose: () => {
+        eose += 1;
+      },
+    });
+    await expect(connecting).rejects.toThrow(/timed out/);
+    expect(sub.closed).toBe(false);
+    expect(eose).toBe(0);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    MockWebSocket.autoConnect = true;
+    await waitUntil(
+      () =>
+        relay.connected &&
+        MockWebSocket.instances.length >= 2 &&
+        sentMessages(MockWebSocket.last()).some((m) => m[0] === "REQ"),
+    );
+    expect(eose).toBe(0);
+    const second = MockWebSocket.last();
+    expect(second).not.toBe(MockWebSocket.instances[0]);
+    const reReq = reqFilters(second)[0];
+    if (!reReq) throw new Error("expected REQ on socket 2");
+    expect(reReq[1]).toBe(sub.id);
+    second.receive(JSON.stringify(["EOSE", sub.id]));
+    expect(eose).toBe(1);
+    relay.close();
+  });
+
+  test("abort during first connect does not reconnect", async () => {
+    MockWebSocket.autoConnect = false;
+    const ac = new AbortController();
+    const relay = new Relay("wss://abort-first.example", {
+      enableReconnect: true,
+      reconnectBackoffMs: [10],
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const connecting = relay.connect({ signal: ac.signal });
+    const sub = relay.subscribe([{ kinds: [1] }], {});
+    ac.abort();
+    await expect(connecting).rejects.toThrow();
+    expect(sub.closed).toBe(true);
+    const before = MockWebSocket.instances.length;
+    expect(before).toBe(1);
+    await sleep(40);
+    expect(MockWebSocket.instances.length).toBe(before);
+    expect(relay.connected).toBe(false);
+    relay.close();
+  });
+
+  test("fetch after failed first connect does not arm reconnect", async () => {
+    MockWebSocket.failConnect = true;
+    const relay = new Relay("wss://fetch-first-fail.example", {
+      enableReconnect: true,
+      reconnectBackoffMs: [10],
+      websocketImplementation: MockWebSocketCtor,
+    });
+    await expect(relay.fetch([{ kinds: [1] }], { timeoutMs: 50 })).rejects.toThrow();
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await sleep(40);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(relay.connected).toBe(false);
+    relay.close();
+  });
+
   test("intentional close does not reconnect", async () => {
     const relay = new Relay("wss://nogo.example", {
       enableReconnect: true,
