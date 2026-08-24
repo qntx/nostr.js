@@ -65,28 +65,22 @@ export function createEventLoader(ctx: LoaderContext) {
   type Key = { ref: EventRef; parsed: ReturnType<typeof parseRef> };
 
   const loader = new DataLoader<Key, Event | undefined, string>(
-    async (keys) => {
-      // group by identical filter shape is hard; fetch per key for v0 simplicity,
-      // still coalesces identical cache keys via DataLoader.
-      const out: Array<Event | undefined> = [];
-      for (const key of keys) {
-        const relays = [...new Set([...key.parsed.hints, ...ctx.relays])];
-        if (relays.length === 0) {
-          out.push(undefined);
-          continue;
-        }
-        const events = await ctx.pool.fetch(relays, [key.parsed.filter], {
-          timeoutMs: ctx.fetchTimeoutMs,
-        });
-        // newest first already from sort in pool? pool doesn't sort; pick first match
-        let best: Event | undefined;
-        for (const e of events) {
-          if (!best || e.created_at > best.created_at) best = e;
-        }
-        out.push(best);
-      }
-      return out;
-    },
+    (keys) =>
+      Promise.all(
+        keys.map(async (key) => {
+          const relays = [...new Set([...key.parsed.hints, ...ctx.relays])];
+          if (relays.length === 0) return undefined;
+          const events = await ctx.pool.fetch(relays, [key.parsed.filter], {
+            timeoutMs: ctx.fetchTimeoutMs,
+          });
+          // pool.fetch does not sort
+          let best: Event | undefined;
+          for (const e of events) {
+            if (!best || e.created_at > best.created_at) best = e;
+          }
+          return best;
+        }),
+      ),
     { cacheKeyFn: (k) => k.parsed.cacheKey },
   );
 
