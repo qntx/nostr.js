@@ -380,4 +380,122 @@ describe("Client", () => {
     await waitUntil(() => ws.readyState === MockWebSocket.CLOSED);
     await client.shutdown();
   });
+
+  test("gossip publish includes e/a relay hints and skips invalid ones", async () => {
+    const author = new KeysSigner(SK);
+    const client = Client.builder()
+      .signer(author)
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .build();
+    await client.connect();
+
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://author-write.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(Keys.fromSecretKey(SK)),
+    );
+
+    const eId = "aa".repeat(32);
+    const publishP = client.publish(
+      EventBuilder.textNote("hi")
+        .tag(["e", eId, "wss://e-hint.example"])
+        .tag(["a", `30023:${Keys.fromSecretKey(SK).publicKey}:x`, "wss://a-hint.example"])
+        .tag(["e", "bb".repeat(32), "not a url"])
+        .tag(["e", "cc".repeat(32), ""])
+        .tag(["p", "dd".repeat(32), "wss://p-hint.example"])
+        .createdAt(1),
+      { gossip: true },
+    );
+    await new Promise((r) => setTimeout(r, 20));
+
+    const eventUrls = MockWebSocket.instances
+      .filter((ws) => ws.sent.some((s) => (JSON.parse(s) as unknown[])[0] === "EVENT"))
+      .map((ws) => ws.url);
+    expect(eventUrls.some((u) => u.includes("author-write.example"))).toBe(true);
+    expect(eventUrls.some((u) => u.includes("e-hint.example"))).toBe(true);
+    expect(eventUrls.some((u) => u.includes("a-hint.example"))).toBe(true);
+    expect(eventUrls.some((u) => u.includes("p-hint.example"))).toBe(false);
+
+    for (const ws of MockWebSocket.instances) {
+      const eventMsg = ws.sent
+        .map((s) => JSON.parse(s) as unknown[])
+        .find((m) => m[0] === "EVENT") as [string, { id: string; kind: number }] | undefined;
+      if (eventMsg) {
+        expect(eventMsg[1].kind).not.toBe(Kind.RelayList);
+        ws.receive(JSON.stringify(["OK", eventMsg[1].id, true, ""]));
+      }
+    }
+    const results = await publishP;
+    expect(results.some((r) => r.result?.ok)).toBe(true);
+    await client.shutdown();
+  });
+
+  test("gossip publish caps e/a hints at 5 unique URLs", async () => {
+    const author = new KeysSigner(SK);
+    const client = Client.builder()
+      .signer(author)
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .build();
+    await client.connect();
+
+    const note = EventBuilder.textNote("hints").createdAt(1);
+    for (let i = 0; i < 6; i++) {
+      note.tag(["e", i.toString(16).padStart(64, "0"), `wss://hint${i}.example`]);
+    }
+    note.tag(["e", "f".repeat(64), "wss://hint0.example"]);
+
+    const publishP = client.publish(note, { gossip: true });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const eventUrls = MockWebSocket.instances
+      .filter((ws) => ws.sent.some((s) => (JSON.parse(s) as unknown[])[0] === "EVENT"))
+      .map((ws) => ws.url);
+    expect(eventUrls.filter((u) => u.includes("hint")).length).toBe(5);
+    expect(eventUrls.some((u) => u.includes("hint5.example"))).toBe(false);
+    expect(eventUrls.some((u) => u.includes("default.example"))).toBe(false);
+
+    for (const ws of MockWebSocket.instances) {
+      const eventMsg = ws.sent
+        .map((s) => JSON.parse(s) as unknown[])
+        .find((m) => m[0] === "EVENT") as [string, { id: string }] | undefined;
+      if (eventMsg) ws.receive(JSON.stringify(["OK", eventMsg[1].id, true, ""]));
+    }
+    await publishP;
+    await client.shutdown();
+  });
+
+  test("gossip publish with only invalid hints uses default relays", async () => {
+    const author = new KeysSigner(SK);
+    const client = Client.builder()
+      .signer(author)
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .build();
+    await client.connect();
+
+    const publishP = client.publish(
+      EventBuilder.textNote("no routes")
+        .tag(["e", "aa".repeat(32), "not a url"])
+        .createdAt(1),
+      { gossip: true },
+    );
+    await new Promise((r) => setTimeout(r, 20));
+
+    const eventUrls = MockWebSocket.instances
+      .filter((ws) => ws.sent.some((s) => (JSON.parse(s) as unknown[])[0] === "EVENT"))
+      .map((ws) => ws.url);
+    expect(eventUrls.some((u) => u.includes("default.example"))).toBe(true);
+
+    for (const ws of MockWebSocket.instances) {
+      const eventMsg = ws.sent
+        .map((s) => JSON.parse(s) as unknown[])
+        .find((m) => m[0] === "EVENT") as [string, { id: string }] | undefined;
+      if (eventMsg) ws.receive(JSON.stringify(["OK", eventMsg[1].id, true, ""]));
+    }
+    const results = await publishP;
+    expect(results.some((r) => r.result?.ok)).toBe(true);
+    await client.shutdown();
+  });
 });

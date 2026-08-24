@@ -2,6 +2,7 @@ import type { Event } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { sortedEvents } from "../core/event.ts";
 import { Kind } from "../core/kind.ts";
+import { normalizeURL } from "../core/util.ts";
 import type { Gossip } from "../gossip/gossip.ts";
 import type { Pool } from "../relay/pool.ts";
 import type { EventStore } from "../storage/types.ts";
@@ -41,8 +42,24 @@ function boundKey(pubkey: string, kind: number): string {
   return `${pubkey.toLowerCase()}:${kind}`;
 }
 
+/** Same skip/dedup as Gossip.setRoutes so prefer can match Client.relays. */
+function canonicalRelayUrls(urls: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const raw of urls) {
+    try {
+      const url = normalizeURL(raw);
+      if (!out.includes(url)) out.push(url);
+    } catch {
+      // not a relay URL
+    }
+  }
+  return out;
+}
+
 /**
  * Group authors by outbox relay (discovery fallback).
+ * `prefer` reorders existing candidates only; it never appends a URL
+ * that is not already in the author's outbox or discovery list.
  * Returns Map<relayUrl, authors[]>.
  */
 export function groupAuthorsByOutboxRelay(
@@ -50,13 +67,22 @@ export function groupAuthorsByOutboxRelay(
   gossip: Gossip,
   discoveryRelays: readonly string[],
   maxRelaysPerAuthor = 3,
+  prefer: readonly string[] = [],
 ): Map<string, string[]> {
   const map = new Map<string, string[]>();
+  const preferSet = new Set(canonicalRelayUrls(prefer));
+  const discovery = canonicalRelayUrls(discoveryRelays);
   for (const author of authors) {
     const pk = author.toLowerCase();
     let relays = gossip.outboxRelays(pk);
-    if (relays.length === 0) relays = [...discoveryRelays];
-    relays = relays.slice(0, maxRelaysPerAuthor);
+    if (relays.length === 0) relays = discovery;
+    const preferred: string[] = [];
+    const rest: string[] = [];
+    for (const url of relays) {
+      if (preferSet.has(url)) preferred.push(url);
+      else rest.push(url);
+    }
+    relays = preferred.concat(rest).slice(0, maxRelaysPerAuthor);
     for (const url of relays) {
       const list = map.get(url) ?? [];
       if (!list.includes(pk)) list.push(pk);
@@ -151,6 +177,7 @@ export class OutboxFeed {
       this.#gossip,
       this.#discovery,
       this.#maxRelays,
+      this.#pool.connectedUrls(),
     );
 
     if (byRelay.size === 0) return [];
@@ -192,6 +219,7 @@ export class OutboxFeed {
       this.#gossip,
       this.#discovery,
       this.#maxRelays,
+      this.#pool.connectedUrls(),
     );
 
     const seen = new Set<string>();

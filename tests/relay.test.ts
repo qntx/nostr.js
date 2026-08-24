@@ -337,6 +337,26 @@ describe("Pool", () => {
     expect(results.every((r) => r.result?.ok)).toBe(true);
     pool.close();
   });
+
+  test("connectedUrls excludes disconnected pool entries that listRelays still has", async () => {
+    const pool = new Pool({
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: true,
+    });
+    try {
+      await pool.ensureRelay("wss://up.example");
+      MockWebSocket.failConnect = true;
+      await expect(pool.ensureRelay("wss://down.example")).rejects.toThrow();
+      const listed = pool.listRelays();
+      expect(listed.some((u) => u.includes("up.example"))).toBe(true);
+      expect(listed.some((u) => u.includes("down.example"))).toBe(true);
+      const connected = pool.connectedUrls();
+      expect(connected).toHaveLength(1);
+      expect(connected[0]).toContain("up.example");
+    } finally {
+      pool.close();
+    }
+  });
 });
 
 describe("isInsecureRelayUrl", () => {

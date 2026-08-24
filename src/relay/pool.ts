@@ -472,4 +472,13 @@ export class Pool {
   listRelays(): string[] {
     return [...this.#relays.keys()];
   }
+
+  /** Currently connected URLs. Unlike listRelays(), excludes reconnecting/disconnected entries. */
+  connectedUrls(): string[] {
+    const urls: string[] = [];
+    for (const [url, relay] of this.#relays) {
+      if (relay.connected) urls.push(url);
+    }
+    return urls;
+  }
 }
