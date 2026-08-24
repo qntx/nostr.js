@@ -174,17 +174,18 @@ describe("nip44", () => {
       expect(await c.nip44Decrypt(await b.getPublicKey(), fromB)).toBe("from b");
     });
 
-    test("encryptToPubkey / decryptFromPubkey spy-count 0 on getConversationKey export", async () => {
+    test("encryptToPubkey is independent of KeysSigner conversation-key cache", async () => {
       const a = new KeysSigner("0000000000000000000000000000000000000000000000000000000000000001");
       const b = new KeysSigner("0000000000000000000000000000000000000000000000000000000000000002");
       const peer = await b.getPublicKey();
-      const spy = vi.spyOn(nip44, "getConversationKey");
+      const signed = await a.nip44Encrypt(peer, "cached");
       const first = nip44.encryptToPubkey("gift wrap", a.keys.secretKey.bytes, peer);
       const second = nip44.encryptToPubkey("gift wrap 2", a.keys.secretKey.bytes, peer);
       expect(first).not.toBe(second);
+      expect(first).not.toBe(signed);
       expect(nip44.decryptFromPubkey(first, a.keys.secretKey.bytes, peer)).toBe("gift wrap");
       expect(nip44.decryptFromPubkey(second, a.keys.secretKey.bytes, peer)).toBe("gift wrap 2");
-      expect(spy.mock.calls.length).toBe(0);
+      expect(await a.nip44Decrypt(peer, signed)).toBe("cached");
     });
   });
 
