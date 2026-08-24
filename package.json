@@ -145,20 +145,24 @@
       "types": "./dist/storage.d.mts",
       "import": "./dist/storage.mjs"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./wasm": {
+      "types": "./dist/wasm.d.mts",
+      "import": "./dist/wasm.mjs"
+    }
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
     "build": "vp pack",
-    "build:wasm": "bash scripts/build-wasm.sh && WASM_PACK=1 vp pack && if ! ls dist/*.wasm >/dev/null 2>&1; then cp src/wasm/nostr_crypto_wasm_bg.wasm dist/nostr_crypto_wasm_bg.wasm; fi",
+    "build:wasm": "bash scripts/build-wasm.sh && WASM_PACK=1 vp pack && ls dist/*.wasm >/dev/null",
     "dev": "vp pack --watch",
     "test": "vp test",
     "test:wasm": "WASM_TEST=1 vp test wasm-tests/verify.ts wasm-tests/node-load.ts wasm-tests/sign.ts",
     "bench:wasm": "WASM_TEST=1 vp test wasm-tests/bench.ts",
     "check": "vp check",
-    "prepublishOnly": "vp run build",
+    "prepublishOnly": "bun run build:wasm",
     "prepare": "vp config"
   },
   "dependencies": {

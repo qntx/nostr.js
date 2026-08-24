@@ -133,7 +133,7 @@ After init, `wasm.verifyEvent` is sync — the live EVENT hook. A `Worker` is no
 
 CSP: `'wasm-unsafe-eval'` on `script-src`. That permits WASM compilation, not JS `eval()`. v1 requires WASM SIMD (`simd128`); engines without it fail instantiate.
 
-`build` stays `vp pack`. `build:wasm` packs this subpath and needs a wasm-capable clang (macOS: Homebrew llvm, not Apple clang: `CC_wasm32_unknown_unknown=$(brew --prefix llvm)/bin/clang`). CI runs a sibling `wasm` job; the bun job does not.
+`bun run build` is `vp pack` and does not emit `dist/wasm.mjs` or `dist/*.wasm`. Publish runs `prepublishOnly` → `bun run build:wasm`, which packs this subpath and fails if `dist/*.wasm` is missing. `build:wasm` needs a wasm-capable clang (macOS: Homebrew llvm, not Apple clang: `CC_wasm32_unknown_unknown=$(brew --prefix llvm)/bin/clang`). CI runs a sibling `wasm` job; the bun job does not.
 
 Named-machine record (Apple M5, Darwin arm64). Kind-1, content `"hello"`, tags `[]`. N=10000 ingest-equivalent after warmup: noble 1648 ops/s (607 µs), wasm 9654 ops/s (104 µs), 5.86×. Wasm 1,275,255 bytes uncompressed. Init 0.57 ms. That record is this machine, not a generic 4× production SLA.
 

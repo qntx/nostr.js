@@ -5,6 +5,22 @@ import { defineConfig } from "vite-plus";
 const packWasm = process.env.WASM_PACK === "1";
 const wasmTest = process.env.WASM_TEST === "1";
 
+/** Always declare ./wasm so `vp pack` without WASM_PACK does not strip the export. */
+export function applyPackExports(pkgExports: Record<string, unknown>): Record<string, unknown> {
+  for (const [key, value] of Object.entries(pkgExports)) {
+    if (typeof value !== "string" || !value.endsWith(".mjs")) continue;
+    pkgExports[key] = {
+      types: value.replace(/\.mjs$/, ".d.mts"),
+      import: value,
+    };
+  }
+  pkgExports["./wasm"] = {
+    types: "./dist/wasm.d.mts",
+    import: "./dist/wasm.mjs",
+  };
+  return pkgExports;
+}
+
 /** Asset-URL for `*.wasm?url`. Does not instantiate the module. */
 function wasmUrlAsset() {
   return {
@@ -73,6 +89,7 @@ export default defineConfig({
       "nips/nip77": "src/nips/nip77.ts",
       "nips/nip96": "src/nips/nip96.ts",
       "nips/nip98": "src/nips/nip98.ts",
+      // bun CI is Rust-free; wasm entry is publish / build:wasm only
       ...(packWasm ? { wasm: "src/wasm/index.ts" } : {}),
     },
     dts: {
@@ -80,22 +97,7 @@ export default defineConfig({
     },
     sourcemap: true,
     exports: {
-      customExports(pkgExports: Record<string, unknown>) {
-        for (const [key, value] of Object.entries(pkgExports)) {
-          if (typeof value !== "string" || !value.endsWith(".mjs")) continue;
-          pkgExports[key] = {
-            types: value.replace(/\.mjs$/, ".d.mts"),
-            import: value,
-          };
-        }
-        if (packWasm) {
-          pkgExports["./wasm"] = {
-            types: "./dist/wasm.d.mts",
-            import: "./dist/wasm.mjs",
-          };
-        }
-        return pkgExports;
-      },
+      customExports: applyPackExports,
     },
   },
   test: {
