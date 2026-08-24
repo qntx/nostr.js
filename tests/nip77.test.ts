@@ -271,6 +271,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     for (const event of events) await inner.put(event);
     let getCount = 0;
     let queryCount = 0;
+    let queried: Filter[] | undefined;
     const store = wrapEventStore(inner, {
       get: (id) => {
         getCount += 1;
@@ -278,6 +279,7 @@ describe("Relay.negReconcile + Client.sync", () => {
       },
       query: (filters) => {
         queryCount += 1;
+        queried = filters;
         return inner.query(filters);
       },
     });
@@ -296,6 +298,11 @@ describe("Relay.negReconcile + Client.sync", () => {
     );
     expect(getCount).toBe(0);
     expect(queryCount).toBe(1);
+    expect(queried).toBeDefined();
+    expect(queried).toHaveLength(1);
+    expect(queried![0]!.ids).toBeDefined();
+    expect(queried![0]!.kinds).toBeUndefined();
+    expect(new Set(queried![0]!.ids)).toEqual(new Set(events.map((event) => event.id)));
     expect(new Set(summary.sent)).toEqual(new Set(events.map((event) => event.id)));
     await client.shutdown();
   });
@@ -383,6 +390,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     for (const event of events) await inner.put(event);
     let getCount = 0;
     let queryCount = 0;
+    let queried: Filter[] | undefined;
     const store = wrapEventStore(inner, {
       get: (id) => {
         getCount += 1;
@@ -390,6 +398,7 @@ describe("Relay.negReconcile + Client.sync", () => {
       },
       query: async (filters) => {
         queryCount += 1;
+        queried = filters;
         const found = await inner.query(filters);
         return found.filter((event) => event.id !== missing.id);
       },
@@ -409,10 +418,45 @@ describe("Relay.negReconcile + Client.sync", () => {
     );
     expect(getCount).toBe(0);
     expect(queryCount).toBe(1);
+    expect(queried).toBeDefined();
+    expect(queried).toHaveLength(1);
+    expect(queried![0]!.ids).toBeDefined();
+    expect(queried![0]!.kinds).toBeUndefined();
+    expect(new Set(queried![0]!.ids)).toEqual(new Set(events.map((event) => event.id)));
     expect(summary.sendFailures[missing.id]).toBe("event not found in local store");
     expect(Object.keys(summary.sendFailures)).toEqual([missing.id]);
     expect(new Set(summary.sent)).toEqual(
       new Set(events.filter((event) => event.id !== missing.id).map((event) => event.id)),
+    );
+    await client.shutdown();
+  });
+
+  test("Client.syncToRelay up isolates a throwing publish in the chunk", async () => {
+    const events = [note(SK_A, "a", 1), note(SK_A, "b", 2), note(SK_A, "c", 3)];
+    const boom = events[1]!;
+    const store = new MemoryEventStore();
+    for (const event of events) await store.put(event);
+    const client = Client.builder()
+      .storage(store)
+      .relays(["wss://neg.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    await client.connect();
+    const origPublish = client.pool.publish.bind(client.pool);
+    client.pool.publish = async (relays, event, opts) => {
+      if (event.id === boom.id) throw new Error("boom");
+      return origPublish(relays, event, opts);
+    };
+    const summary = await client.syncToRelay(
+      "wss://neg.example",
+      { kinds: [1] },
+      { direction: SyncDirection.Up, timeoutMs: 2000 },
+    );
+    expect(summary.sendFailures[boom.id]).toBe("boom");
+    expect(Object.keys(summary.sendFailures)).toEqual([boom.id]);
+    expect(new Set(summary.sent)).toEqual(
+      new Set(events.filter((event) => event.id !== boom.id).map((event) => event.id)),
     );
     await client.shutdown();
   });
