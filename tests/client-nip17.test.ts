@@ -6,11 +6,18 @@ import {
   Keys,
   KeysSigner,
   Nip17Error,
+  createGiftWrap,
   createRumor,
+  createSeal,
   dmRelayListEventBuilder,
+  encryptToPubkey,
+  eventToJson,
   finalizeEvent,
+  normalizeURL,
   useWebSocketImplementation,
   wrapGift,
+  type Event,
+  type Filter,
 } from "../src/index.ts";
 import { FakeRelayBus } from "./helpers/fake-relay.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
@@ -31,6 +38,80 @@ function seedLists(bus: FakeRelayBus, alice: Keys, bob: Keys): void {
   const aliceDm = dmRelayListEventBuilder([ALICE_DM]).createdAt(2).signWithKeys(alice);
   const bobDm = dmRelayListEventBuilder([BOB_DM]).createdAt(3).signWithKeys(bob);
   bus.seed(IDX, [aliceOut, aliceDm, bobDm]);
+}
+
+function clientFrames(url: string): unknown[][] {
+  const key = normalizeURL(url);
+  const frames: unknown[][] = [];
+  for (const ws of MockWebSocket.instances) {
+    if (normalizeURL(ws.url) !== key) continue;
+    for (const raw of ws.sent) {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) frames.push(parsed as unknown[]);
+    }
+  }
+  return frames;
+}
+
+function reqFilters(url: string): Filter[] {
+  const filters: Filter[] = [];
+  for (const msg of clientFrames(url)) {
+    if (msg[0] !== "REQ") continue;
+    for (const item of msg.slice(2)) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new Error("REQ filter is not an object");
+      }
+      filters.push(item as Filter);
+    }
+  }
+  return filters;
+}
+
+function giftWrapReqKinds(url: string, recipient: string): number[] {
+  const hits = reqFilters(url).filter((f) => {
+    const p = f["#p"];
+    return Array.isArray(p) && p.includes(recipient);
+  });
+  if (hits.length === 0) throw new Error(`no REQ with #p ${recipient} on ${url}`);
+  const kinds = hits[hits.length - 1]!.kinds;
+  if (kinds === undefined) throw new Error("REQ kinds missing");
+  return [...kinds];
+}
+
+async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await check()) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error("timed out");
+}
+
+async function wrapKind21059(
+  sender: KeysSigner,
+  senderKeys: Keys,
+  recipientPk: string,
+  content: string,
+): Promise<{ wrap: Event; storedKind: number }> {
+  const rumor = createRumor(senderKeys.publicKey, {
+    kind: Kind.PrivateDirectMessage,
+    content,
+    tags: [["p", recipientPk]],
+    created_at: 10,
+  });
+  const seal = await createSeal(sender, recipientPk, rumor);
+  const stored = createGiftWrap(seal, recipientPk);
+  const ephemeral = Keys.generate();
+  const wrap = finalizeEvent(
+    {
+      kind: Kind.GiftWrapEphemeral,
+      content: encryptToPubkey(eventToJson(seal), ephemeral.secretKey.bytes, recipientPk),
+      created_at: 1,
+      tags: [["p", recipientPk]],
+    },
+    ephemeral.secretKey,
+  );
+  return { wrap, storedKind: stored.kind };
 }
 
 describe("Client NIP-17", () => {
@@ -69,6 +150,7 @@ describe("Client NIP-17", () => {
     const onAlice = bus.eventsOn(ALICE_DM).filter((e) => e.kind === Kind.GiftWrap);
     expect(onBob).toHaveLength(1);
     expect(onAlice).toHaveLength(1);
+    expect(sent.wraps.every((w) => w.wrap.kind === Kind.GiftWrap)).toBe(true);
     expect(bus.eventsOn(ALICE_OUT).some((e) => e.kind === Kind.GiftWrap)).toBe(false);
     expect(bus.eventsOn(IDX).some((e) => e.kind === Kind.GiftWrap)).toBe(false);
 
@@ -161,6 +243,52 @@ describe("Client NIP-17", () => {
     expect(inbox).toHaveLength(1);
     expect(inbox[0]!.rumor.content).toBe("hola");
     expect(inbox[0]!.rumor.pubkey).toBe(aliceKeys.publicKey);
+    expect(giftWrapReqKinds(BOB_DM, bobKeys.publicKey)).toEqual([Kind.GiftWrap]);
+
+    await bob.shutdown();
+  });
+
+  test("fetchPrivateMessages REQ kinds are 1059 only and skip seeded 21059", async () => {
+    const aliceKeys = Keys.fromSecretKey(ALICE_SK);
+    const bobKeys = Keys.fromSecretKey(BOB_SK);
+    seedLists(bus, aliceKeys, bobKeys);
+
+    const alice = new KeysSigner(aliceKeys);
+    const wrap = await wrapGift(
+      alice,
+      bobKeys.publicKey,
+      createRumor(aliceKeys.publicKey, {
+        kind: Kind.PrivateDirectMessage,
+        content: "stored",
+        tags: [["p", bobKeys.publicKey]],
+        created_at: 10,
+      }),
+    );
+    const { wrap: ephemeral, storedKind } = await wrapKind21059(
+      alice,
+      aliceKeys,
+      bobKeys.publicKey,
+      "not-fetched",
+    );
+    expect(storedKind).toBe(Kind.GiftWrap);
+    expect(ephemeral.kind).toBe(Kind.GiftWrapEphemeral);
+    bus.seed(BOB_DM, [wrap, ephemeral]);
+
+    const bob = Client.builder()
+      .signer(new KeysSigner(bobKeys))
+      .relays([IDX])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    await bob.connect();
+
+    const inbox = await bob.fetchPrivateMessages({ timeoutMs: 2000 });
+    expect(giftWrapReqKinds(BOB_DM, bobKeys.publicKey)).toEqual([Kind.GiftWrap]);
+    expect(inbox).toHaveLength(1);
+    expect(inbox[0]!.wrap.kind).toBe(Kind.GiftWrap);
+    expect(inbox[0]!.rumor.content).toBe("stored");
+    expect(inbox.some((m) => m.wrap.kind === Kind.GiftWrapEphemeral)).toBe(false);
+    expect(inbox.some((m) => m.wrap.id === ephemeral.id)).toBe(false);
 
     await bob.shutdown();
   });
@@ -196,6 +324,112 @@ describe("Client NIP-17", () => {
     await alice.sendPrivateMessage(bobKeys.publicKey, "live");
     await new Promise((r) => setTimeout(r, 40));
     expect(got).toContain("live");
+
+    sub.close();
+    await alice.shutdown();
+    await bob.shutdown();
+  });
+
+  test("subscribePrivateMessages REQ kinds include 1059 and 21059", async () => {
+    const aliceKeys = Keys.fromSecretKey(ALICE_SK);
+    const bobKeys = Keys.fromSecretKey(BOB_SK);
+    seedLists(bus, aliceKeys, bobKeys);
+
+    const bob = Client.builder()
+      .signer(new KeysSigner(bobKeys))
+      .relays([IDX])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    await bob.connect();
+
+    const sub = await bob.subscribePrivateMessages();
+    await waitFor(() => reqFilters(BOB_DM).some((f) => Array.isArray(f["#p"])));
+    expect(giftWrapReqKinds(BOB_DM, bobKeys.publicKey)).toEqual([
+      Kind.GiftWrap,
+      Kind.GiftWrapEphemeral,
+    ]);
+
+    sub.close();
+    await bob.shutdown();
+  });
+
+  test("subscribePrivateMessages delivers kind 21059 and does not store it", async () => {
+    const aliceKeys = Keys.fromSecretKey(ALICE_SK);
+    const bobKeys = Keys.fromSecretKey(BOB_SK);
+    seedLists(bus, aliceKeys, bobKeys);
+
+    const alice = Client.builder()
+      .signer(new KeysSigner(aliceKeys))
+      .relays([IDX])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    const bob = Client.builder()
+      .signer(new KeysSigner(bobKeys))
+      .relays([IDX])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    const junk = finalizeEvent(
+      {
+        kind: Kind.GiftWrapEphemeral,
+        content: "not-valid-nip44",
+        created_at: 11,
+        tags: [["p", bobKeys.publicKey]],
+      },
+      Keys.generate().secretKey,
+    );
+    bus.seed(BOB_DM, [junk]);
+
+    await alice.connect();
+    await bob.connect();
+
+    const got: Array<{ content: string; kind: number; id: string }> = [];
+    let eosed = false;
+    const sub = await bob.subscribePrivateMessages({
+      onevent: (msg) => {
+        got.push({ content: msg.rumor.content, kind: msg.wrap.kind, id: msg.wrap.id });
+      },
+      oneose: () => {
+        eosed = true;
+      },
+    });
+    await waitFor(() => eosed);
+    expect(giftWrapReqKinds(BOB_DM, bobKeys.publicKey)).toEqual([
+      Kind.GiftWrap,
+      Kind.GiftWrapEphemeral,
+    ]);
+
+    const sent = await alice.sendPrivateMessage(bobKeys.publicKey, "stored-1059");
+    const wrap1059 = sent.wraps.find((w) => w.recipient === bobKeys.publicKey)?.wrap;
+    if (!wrap1059) throw new Error("missing 1059 wrap for bob");
+    expect(wrap1059.kind).toBe(Kind.GiftWrap);
+
+    const { wrap: wrap21059, storedKind } = await wrapKind21059(
+      new KeysSigner(aliceKeys),
+      aliceKeys,
+      bobKeys.publicKey,
+      "live-21059",
+    );
+    expect(storedKind).toBe(Kind.GiftWrap);
+    expect(wrap21059.kind).toBe(Kind.GiftWrapEphemeral);
+    await alice.publish(wrap21059);
+
+    await waitFor(() => got.some((m) => m.content === "stored-1059"));
+    expect(got.some((m) => m.id === junk.id)).toBe(false);
+
+    await waitFor(() => got.some((m) => m.content === "live-21059"));
+    expect(got.map((m) => m.content).sort()).toEqual(["live-21059", "stored-1059"]);
+    expect(got.find((m) => m.content === "live-21059")!.kind).toBe(Kind.GiftWrapEphemeral);
+    expect(got.find((m) => m.content === "stored-1059")!.kind).toBe(Kind.GiftWrap);
+
+    await waitFor(async () => (await bob.queryLocal({ kinds: [Kind.GiftWrap] })).length > 0);
+    const stored1059 = await bob.queryLocal({ kinds: [Kind.GiftWrap] });
+    expect(stored1059.some((e) => e.id === wrap1059.id)).toBe(true);
+    expect(await bob.queryLocal({ kinds: [Kind.GiftWrapEphemeral] })).toEqual([]);
+    expect(await bob.storage.get(wrap21059.id)).toBeUndefined();
+    expect(await bob.storage.get(junk.id)).toBeUndefined();
 
     sub.close();
     await alice.shutdown();

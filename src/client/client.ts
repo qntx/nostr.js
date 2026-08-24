@@ -814,7 +814,8 @@ export class Client {
     let tail = Promise.resolve();
     return this.pool.subscribe(
       relays,
-      [{ kinds: [Kind.GiftWrap], "#p": [self], since: opts?.since }],
+      // 21059 is ephemeral (relays MUST NOT store); live inbox has to REQ it.
+      [{ kinds: [Kind.GiftWrap, Kind.GiftWrapEphemeral], "#p": [self], since: opts?.since }],
       {
         signal: opts?.signal,
         oneose: opts?.oneose,

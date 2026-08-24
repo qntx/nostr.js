@@ -226,7 +226,7 @@ Gossip publish uses the author's outbox, tagged `p` inboxes, and up to five `e` 
 
 ## NIP-17 private messages
 
-Kind 14 rumors wrapped as kind 1059. Delivery relays come only from the recipient's kind 10050 list. Missing 10050 throws. There is no fallback to kind 10002.
+Kind 14 rumors wrapped as kind 1059. Delivery relays come only from the recipient's kind 10050 list. Missing 10050 throws. There is no fallback to kind 10002. Live `subscribePrivateMessages` also REQs kind 21059. `fetchPrivateMessages` REQs 1059 only. Kind 21059 is ephemeral and is not stored.
 
 ```ts
 await client.setDmRelays(["wss://inbox.example"]);
