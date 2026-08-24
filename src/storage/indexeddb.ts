@@ -8,7 +8,7 @@ import { CryptoError } from "../core/error.ts";
 import { coordinateRemovals, DeletionState, planDeletion, type DeletionPlan } from "./deletion.ts";
 import type { EventStore, NegentropyItem, PutResult } from "./types.ts";
 
-const IDB_VERSION = 2;
+const IDB_VERSION = 3;
 const EVENTS = "events";
 const TAG_REFS = "tag_refs";
 const ADDRESSES = "addresses";
@@ -110,6 +110,9 @@ export type IndexedDbEventStoreOptions = {
 /**
  * Browser IndexedDB event store with the same replaceable / deletion semantics
  * as {@link MemoryEventStore}. Requires a DOM IndexedDB implementation.
+ *
+ * `open` loads every tombstone and address row into memory. Fine at 10^4 events;
+ * tens of MB at 10^5 addressables.
  */
 export class IndexedDbEventStore implements EventStore {
   readonly #dbName: string;
@@ -280,10 +283,8 @@ export class IndexedDbEventStore implements EventStore {
     const seen = new Set<string>();
     for (const filter of filters) {
       const local = new Set<string>();
-      await this.#scan(tx, filter, "prev", this.#useKeyCursor(filter), (event, id, created_at) => {
-        if (local.has(id)) return false;
-        if (!this.#acceptHit(filter, event, id, created_at)) return false;
-        local.add(id);
+      await this.#scan(tx, filter, (event) => {
+        local.add(event.id);
         return filter.limit !== undefined && local.size >= filter.limit;
       });
       for (const id of local) seen.add(id);
@@ -297,43 +298,24 @@ export class IndexedDbEventStore implements EventStore {
     const tx = db.transaction([EVENTS, TAG_REFS], "readonly");
     const done = txDone(tx);
     const items: NegentropyItem[] = [];
-    const seenIds = new Set<string>();
-    await this.#scan(tx, filter, "next", this.#useKeyCursor(filter), (event, id, created_at) => {
-      if (seenIds.has(id)) return false;
-      if (!this.#acceptHit(filter, event, id, created_at)) return false;
-      seenIds.add(id);
-      items.push({ id, created_at });
-      return false;
+    await this.#scan(tx, filter, (event) => {
+      items.push({ id: event.id, created_at: event.created_at });
+      return filter.limit !== undefined && items.length >= filter.limit;
     });
     await done;
-    if (filter.limit !== undefined) {
-      items.sort(queryItemOrder);
-      if (items.length > filter.limit) items.length = filter.limit;
-    }
     items.sort(itemCompare);
     return items;
   }
 
-  #acceptHit(filter: Filter, event: Event | undefined, id: string, created_at: number): boolean {
-    if (this.#deletion.ids.has(id)) return false;
-    if (filter.since !== undefined && created_at < filter.since) return false;
-    if (filter.until !== undefined && created_at > filter.until) return false;
-    if (event) {
-      if (this.#deletion.covers(event)) return false;
-      if (!matchFilter(filter, event)) return false;
-    }
-    return true;
+  #acceptHit(filter: Filter, event: Event): boolean {
+    if (this.#deletion.ids.has(event.id)) return false;
+    if (this.#deletion.covers(event)) return false;
+    return matchFilter(filter, event);
   }
 
   async #queryOne(tx: IDBTransactionLike, filter: Filter): Promise<Event[]> {
     const matched: Event[] = [];
-    const seenIds = new Set<string>();
-    await this.#scan(tx, filter, "prev", false, (event, id) => {
-      if (!event) return false;
-      if (seenIds.has(id)) return false;
-      if (this.#deletion.ids.has(id) || this.#deletion.covers(event)) return false;
-      if (!matchFilter(filter, event)) return false;
-      seenIds.add(id);
+    await this.#scan(tx, filter, (event) => {
       matched.push(event);
       return filter.limit !== undefined && matched.length >= filter.limit;
     });
@@ -344,112 +326,62 @@ export class IndexedDbEventStore implements EventStore {
   async #scan(
     tx: IDBTransactionLike,
     filter: Filter,
-    direction: IDBCursorDirectionLike,
-    keyOnly: boolean,
-    take: (event: Event | undefined, id: string, created_at: number) => boolean,
+    take: (event: Event) => boolean,
   ): Promise<void> {
     if (filter.limit === 0) return;
     if (filter.since !== undefined && filter.until !== undefined && filter.since > filter.until) {
       return;
     }
 
-    const events = tx.objectStore(EVENTS);
-    let stopped = false;
-    const handleEvent = (event: Event | undefined): boolean => {
-      if (!event) return false;
-      stopped = take(event, event.id.toLowerCase(), event.created_at);
-      return stopped;
-    };
-    const handleCursor = (cursor: IDBCursorLike): boolean => {
-      if (keyOnly) {
-        stopped = take(
-          undefined,
-          String(cursor.primaryKey).toLowerCase(),
-          createdAtFromKey(cursor.key),
-        );
-        return stopped;
-      }
-      return handleEvent(cursor.value as Event);
-    };
-
+    const accept = (event: Event) => this.#acceptHit(filter, event);
     if (filter.ids) {
-      for (const id of filter.ids) {
-        const event = await reqOf<Event | undefined>(events.get(id.toLowerCase()));
-        if (handleEvent(event)) break;
-      }
+      await scanIds(tx, filter, accept, take);
       return;
     }
 
+    const events = tx.objectStore(EVENTS);
+    const openers: MergeOpener[] = [];
     if (filter.authors && filter.kinds) {
       const index = events.index("kind_pubkey_created_at");
-      loop: for (const kind of filter.kinds) {
+      for (const kind of filter.kinds) {
         for (const pk of filter.authors) {
-          await walkCursor(
-            index,
-            prefixRange([kind, pk.toLowerCase()], filter.since, filter.until),
-            direction,
-            handleCursor,
-            keyOnly,
+          openers.push(
+            eventCursor(index, prefixRange([kind, pk.toLowerCase()], filter.since, filter.until)),
           );
-          if (stopped) break loop;
         }
       }
-      return;
-    }
-
-    if (filter.authors) {
+    } else if (filter.authors) {
       const index = events.index("pubkey_created_at");
       for (const pk of filter.authors) {
-        await walkCursor(
-          index,
-          prefixRange([pk.toLowerCase()], filter.since, filter.until),
-          direction,
-          handleCursor,
-          keyOnly,
+        openers.push(
+          eventCursor(index, prefixRange([pk.toLowerCase()], filter.since, filter.until)),
         );
-        if (stopped) break;
       }
-      return;
-    }
-
-    if (filter.kinds) {
+    } else if (filter.kinds) {
       const index = events.index("kind_created_at");
       for (const kind of filter.kinds) {
-        await walkCursor(
-          index,
-          prefixRange([kind], filter.since, filter.until),
-          direction,
-          handleCursor,
-          keyOnly,
-        );
-        if (stopped) break;
+        openers.push(eventCursor(index, prefixRange([kind], filter.since, filter.until)));
       }
-      return;
-    }
-
-    const tag = singleEpTag(filter);
-    if (tag) {
-      const index = tx.objectStore(TAG_REFS).index("name_value_created");
-      loop: for (const value of tag.values) {
-        await walkTagRefs(
-          index,
-          events,
-          prefixRange([tag.name, value.toLowerCase()], filter.since, filter.until),
-          direction,
-          handleEvent,
+    } else {
+      const tags = epTagPrefixes(filter);
+      if (tags.length > 0) {
+        const index = tx.objectStore(TAG_REFS).index("name_value_created");
+        for (const tag of tags) {
+          openers.push(
+            tagCursor(
+              index,
+              events,
+              prefixRange([tag.name, tag.value], filter.since, filter.until),
+            ),
+          );
+        }
+      } else {
+        openers.push(
+          eventCursor(events.index("created_at"), createdAtRange(filter.since, filter.until)),
         );
-        if (stopped) break loop;
       }
-      return;
     }
-
-    await walkCursor(
-      events.index("created_at"),
-      createdAtRange(filter.since, filter.until),
-      direction,
-      handleCursor,
-      keyOnly,
-    );
+    await kWayMerge(openers, accept, take);
   }
 
   async remove(ids: string[]): Promise<number> {
@@ -489,43 +421,21 @@ export class IndexedDbEventStore implements EventStore {
     const events = tx.objectStore(EVENTS);
     const event = await reqOf<Event | undefined>(events.get(id.toLowerCase()));
     if (!event) return false;
-    const tagRefs = tx.objectStore(TAG_REFS);
-    for (const tag of event.tags) {
-      if ((tag[0] === "e" || tag[0] === "p") && tag[1] !== undefined) {
-        tagRefs.delete(tagRefKey(tag[0], tag[1], event.id));
-      }
-    }
     const addr = eventAddress(event);
+    let row: AddressRow | undefined;
     if (addr) {
-      const addresses = tx.objectStore(ADDRESSES);
-      const row = await reqOf<AddressRow | undefined>(addresses.get(addr));
-      if (row?.id === event.id) addresses.delete(addr);
+      row = await reqOf<AddressRow | undefined>(tx.objectStore(ADDRESSES).get(addr));
       if (this.#replaceable.get(addr) === event.id) this.#replaceable.delete(addr);
     }
-    events.delete(event.id);
-    return true;
-  }
-
-  #useKeyCursor(filter: Filter): boolean {
-    if (filter.ids) return false;
-    if (this.#deletion.coordinates.size > 0 || this.#deletion.pending.size > 0) return false;
-    for (const key of Object.keys(filter)) {
-      if (key.charAt(0) === "#") return false;
-    }
+    deleteStoredEvent(tx, event, row);
     return true;
   }
 }
 
-function createdAtFromKey(key: unknown): number {
-  if (typeof key === "number") return key;
-  if (Array.isArray(key) && key.length > 0) {
-    const last = key[key.length - 1];
-    if (typeof last === "number") return last;
-  }
-  return 0;
-}
-
-function queryItemOrder(a: NegentropyItem, b: NegentropyItem): number {
+function compareEventsDesc(
+  a: { id: string; created_at: number },
+  b: { id: string; created_at: number },
+): number {
   if (a.created_at !== b.created_at) return b.created_at - a.created_at;
   return a.id.localeCompare(b.id);
 }
@@ -551,14 +461,225 @@ function idbKeyRange(): {
   return (globalThis as unknown as { IDBKeyRange: ReturnType<typeof idbKeyRange> }).IDBKeyRange;
 }
 
-function singleEpTag(filter: Filter): { name: "e" | "p"; values: readonly string[] } | undefined {
-  const e = filter["#e"];
-  const p = filter["#p"];
-  const hasE = e !== undefined && e.length > 0;
-  const hasP = p !== undefined && p.length > 0;
-  if (hasE && !hasP) return { name: "e", values: e };
-  if (hasP && !hasE) return { name: "p", values: p };
-  return undefined;
+function epTagPrefixes(filter: Filter): Array<{ name: "e" | "p"; value: string }> {
+  const out: Array<{ name: "e" | "p"; value: string }> = [];
+  for (const name of ["e", "p"] as const) {
+    const values = filter[`#${name}`];
+    if (!values) continue;
+    for (const value of values) out.push({ name, value: value.toLowerCase() });
+  }
+  return out;
+}
+
+type MergeOpener = {
+  open(): IDBRequestLike;
+  read(
+    cursor: IDBCursorLike,
+    ok: (event: Event | undefined) => void,
+    err: (error: Error) => void,
+  ): void;
+};
+
+function eventCursor(
+  source: {
+    openCursor(range?: IDBKeyRangeLike, direction?: IDBCursorDirectionLike): IDBRequestLike;
+  },
+  range: IDBKeyRangeLike,
+): MergeOpener {
+  return {
+    open: () => source.openCursor(range, "prev"),
+    read: (cursor, ok) => {
+      ok(cursor.value as Event);
+    },
+  };
+}
+
+function tagCursor(
+  index: IDBIndexLike,
+  events: IDBObjectStoreLike,
+  range: IDBKeyRangeLike,
+): MergeOpener {
+  return {
+    open: () => index.openCursor(range, "prev"),
+    read: (cursor, ok, err) => {
+      const row = cursor.value as TagRef;
+      const req = events.get(row.id);
+      req.onerror = () => err(req.error ?? new Error("IndexedDB get failed"));
+      req.onsuccess = () => ok(req.result as Event | undefined);
+    },
+  };
+}
+
+function scanIds(
+  tx: IDBTransactionLike,
+  filter: Filter,
+  accept: (event: Event) => boolean,
+  take: (event: Event) => boolean,
+): Promise<void> {
+  const ids = filter.ids ?? [];
+  const events = tx.objectStore(EVENTS);
+  const reqs = ids.map((id) => events.get(id.toLowerCase()));
+  return Promise.all(reqs.map((req) => reqOf<Event | undefined>(req))).then((rows) => {
+    const matched: Event[] = [];
+    const seen = new Set<string>();
+    for (const event of rows) {
+      if (!event || seen.has(event.id) || !accept(event)) continue;
+      seen.add(event.id);
+      matched.push(event);
+    }
+    sortEvents(matched);
+    const out = filter.limit !== undefined ? matched.slice(0, filter.limit) : matched;
+    for (const event of out) {
+      if (take(event)) break;
+    }
+  });
+}
+
+/** IDB auto-commits when onsuccess returns with no outstanding requests. */
+function kWayMerge(
+  openers: readonly MergeOpener[],
+  accept: (event: Event) => boolean,
+  take: (event: Event) => boolean,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (openers.length === 0) {
+      resolve();
+      return;
+    }
+
+    type Slot = { cursor: IDBCursorLike | undefined; head: Event | undefined };
+    const slots: Slot[] = openers.map(() => ({ cursor: undefined, head: undefined }));
+    const seen = new Set<string>();
+    let inflight = 0;
+    let phase: "merge" | "drain" | "done" = "merge";
+    let drainT = 0;
+    let drainBuf: Event[] = [];
+
+    const finish = () => {
+      if (phase === "done") return;
+      phase = "done";
+      resolve();
+    };
+    const fail = (error: Error) => {
+      if (phase === "done") return;
+      phase = "done";
+      reject(error);
+    };
+
+    const stepCursor = (i: number) => {
+      const cursor = slots[i]!.cursor;
+      if (!cursor) return;
+      inflight++;
+      cursor.continue();
+    };
+
+    const emitDrain = () => {
+      sortEvents(drainBuf);
+      for (const event of drainBuf) {
+        if (seen.has(event.id) || !accept(event)) continue;
+        seen.add(event.id);
+        if (take(event)) {
+          finish();
+          return;
+        }
+      }
+      drainBuf = [];
+      phase = "merge";
+      pump();
+    };
+
+    const pump = () => {
+      if (phase === "done" || inflight > 0) return;
+      if (phase === "drain") {
+        emitDrain();
+        return;
+      }
+      let best: Event | undefined;
+      for (let i = 0; i < slots.length; i++) {
+        const event = slots[i]!.head;
+        if (!event) continue;
+        if (!best || compareEventsDesc(event, best) < 0) best = event;
+      }
+      if (!best) {
+        finish();
+        return;
+      }
+      phase = "drain";
+      drainT = best.created_at;
+      drainBuf = [];
+      for (let i = 0; i < slots.length; i++) {
+        const event = slots[i]!.head;
+        if (!event || event.created_at !== drainT) continue;
+        drainBuf.push(event);
+        slots[i]!.head = undefined;
+        stepCursor(i);
+      }
+      if (inflight === 0) pump();
+    };
+
+    const onEvent = (i: number, event: Event | undefined) => {
+      if (phase === "done") return;
+      const slot = slots[i]!;
+      const cursor = slot.cursor;
+      if (!event) {
+        if (cursor) {
+          inflight++;
+          cursor.continue();
+        } else {
+          pump();
+        }
+        return;
+      }
+      if (phase === "drain") {
+        if (event.created_at === drainT) {
+          drainBuf.push(event);
+          if (cursor) {
+            inflight++;
+            cursor.continue();
+          } else {
+            pump();
+          }
+          return;
+        }
+        slot.head = event;
+        pump();
+        return;
+      }
+      slot.head = event;
+      pump();
+    };
+
+    for (let i = 0; i < openers.length; i++) {
+      const req = openers[i]!.open();
+      req.onerror = () => fail(req.error ?? new Error("IndexedDB cursor failed"));
+      inflight++;
+      req.onsuccess = () => {
+        inflight--;
+        if (phase === "done") return;
+        const cursor = req.result as IDBCursorLike | undefined;
+        const slot = slots[i]!;
+        if (!cursor) {
+          slot.cursor = undefined;
+          slot.head = undefined;
+          pump();
+          return;
+        }
+        slot.cursor = cursor;
+        inflight++;
+        openers[i]!.read(
+          cursor,
+          (event) => {
+            inflight--;
+            onEvent(i, event);
+          },
+          (error) => {
+            inflight--;
+            fail(error);
+          },
+        );
+      };
+    }
+  });
 }
 
 function tagRefKey(name: string, value: string, id: string): string {
@@ -570,6 +691,19 @@ function normalizeEvent(event: Event): Event {
   const pubkey = event.pubkey.toLowerCase();
   if (id === event.id && pubkey === event.pubkey) return event;
   return { ...event, id, pubkey };
+}
+
+function deleteStoredEvent(tx: IDBTransactionLike, event: Event, addressRow?: AddressRow): void {
+  const tagRefs = tx.objectStore(TAG_REFS);
+  for (const tag of event.tags) {
+    if ((tag[0] === "e" || tag[0] === "p") && tag[1] !== undefined) {
+      tagRefs.delete(tagRefKey(tag[0], tag[1], event.id));
+    }
+  }
+  if (addressRow?.id === event.id) {
+    tx.objectStore(ADDRESSES).delete(addressRow.address);
+  }
+  tx.objectStore(EVENTS).delete(event.id);
 }
 
 function writeTagRefs(store: IDBObjectStoreLike, event: Event): void {
@@ -678,8 +812,11 @@ function openDb(dbName: string): Promise<IDBDatabaseLike> {
           const all = events.getAll();
           all.onsuccess = () => {
             migrateV1Events(tx, (all.result as Event[]) ?? []);
+            compactSupersededReplaceables(tx);
           };
         }
+      } else if (oldVersion < 3) {
+        compactSupersededReplaceables(tx);
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -746,6 +883,46 @@ function migrateV1Events(tx: IDBTransactionLike, events: Event[]): void {
   }
 }
 
+function compactSupersededReplaceables(tx: IDBTransactionLike): void {
+  const eventsStore = tx.objectStore(EVENTS);
+  const addressesStore = tx.objectStore(ADDRESSES);
+  const evReq = eventsStore.getAll();
+  const addrReq = addressesStore.getAll();
+  let events: Event[] | undefined;
+  let addressRows: AddressRow[] | undefined;
+  const run = () => {
+    if (events === undefined || addressRows === undefined) return;
+    const byAddr = new Map<string, AddressRow>();
+    for (const row of addressRows) byAddr.set(row.address, row);
+    const kept: Event[] = [];
+    for (const event of events) {
+      const addr = eventAddress(event);
+      if (addr) {
+        const row = byAddr.get(addr);
+        if (!row || row.id !== event.id) {
+          deleteStoredEvent(tx, event, row);
+          continue;
+        }
+      }
+      kept.push(event);
+    }
+    addressesStore.clear();
+    for (const event of kept) {
+      const addr = eventAddress(event);
+      if (!addr) continue;
+      addressesStore.put({ address: addr, id: event.id, created_at: event.created_at });
+    }
+  };
+  evReq.onsuccess = () => {
+    events = (evReq.result as Event[]) ?? [];
+    run();
+  };
+  addrReq.onsuccess = () => {
+    addressRows = (addrReq.result as AddressRow[]) ?? [];
+    run();
+  };
+}
+
 function reqOf<T>(req: IDBRequestLike): Promise<T> {
   return new Promise((resolve, reject) => {
     req.onsuccess = () => resolve(req.result as T);
@@ -763,17 +940,13 @@ function txDone(tx: IDBTransactionLike): Promise<void> {
 function walkCursor(
   source: {
     openCursor(range?: IDBKeyRangeLike, direction?: IDBCursorDirectionLike): IDBRequestLike;
-    openKeyCursor?(range?: IDBKeyRangeLike, direction?: IDBCursorDirectionLike): IDBRequestLike;
   },
   range: IDBKeyRangeLike | undefined,
   direction: IDBCursorDirectionLike,
   visit: (cursor: IDBCursorLike) => boolean,
-  keyOnly = false,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const req = keyOnly
-      ? source.openKeyCursor!(range, direction)
-      : source.openCursor(range, direction);
+    const req = source.openCursor(range, direction);
     req.onerror = () => reject(req.error ?? new Error("IndexedDB cursor failed"));
     req.onsuccess = () => {
       const cursor = req.result as IDBCursorLike | undefined;
@@ -786,36 +959,6 @@ function walkCursor(
         return;
       }
       cursor.continue();
-    };
-  });
-}
-
-function walkTagRefs(
-  index: IDBIndexLike,
-  events: IDBObjectStoreLike,
-  range: IDBKeyRangeLike,
-  direction: IDBCursorDirectionLike,
-  take: (event: Event | undefined) => boolean,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = index.openCursor(range, direction);
-    req.onerror = () => reject(req.error ?? new Error("IndexedDB cursor failed"));
-    req.onsuccess = () => {
-      const cursor = req.result as IDBCursorLike | undefined;
-      if (!cursor) {
-        resolve();
-        return;
-      }
-      const row = cursor.value as TagRef;
-      const getReq = events.get(row.id);
-      getReq.onerror = () => reject(getReq.error ?? new Error("IndexedDB get failed"));
-      getReq.onsuccess = () => {
-        if (take(getReq.result as Event | undefined)) {
-          resolve();
-          return;
-        }
-        cursor.continue();
-      };
     };
   });
 }
