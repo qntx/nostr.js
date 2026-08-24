@@ -10,7 +10,13 @@ export type IdbMock = {
   readwriteTransactions(): string[][];
   resetStats(): void;
   /** Fail the next Nth `get` after this call (1-based). Restores tx snapshot on abort. */
-  failGetOnCall(n: number): void;
+  failGetOnCall(n: number, error?: Error | null): void;
+  /** Fail the next `indexedDB.open` with this `req.error` (null exercises the fallback). */
+  failOpen(error: Error | null): void;
+  /** Fail the next `openCursor` with this `req.error` (null exercises the fallback). */
+  failCursor(error: Error | null): void;
+  /** Fail the next transaction complete with onabort/onerror (null exercises the fallback). */
+  failNextTxComplete(kind: "abort" | "error", error: Error | null): void;
   /** Park the Nth `get` (1-based, after this call) until `release()`. */
   gateGetOnCall(n: number): { release(): void };
 };
@@ -34,6 +40,10 @@ export function installIdbMock(): IdbMock {
     readwrite: [] as string[][],
     getCalls: 0,
     failGetOn: undefined as number | undefined,
+    failGetError: undefined as Error | null | undefined,
+    failOpenError: undefined as Error | null | undefined,
+    failCursorError: undefined as Error | null | undefined,
+    failTx: undefined as { kind: "abort" | "error"; error: Error | null } | undefined,
     gateOn: undefined as number | undefined,
     getGate: undefined as Promise<void> | undefined,
   };
@@ -143,6 +153,25 @@ export function installIdbMock(): IdbMock {
       queueMicrotask(() => {
         this.#scheduled = false;
         if (this.#completed || this.#held || this.#pending > 0) return;
+        if (stats.failTx) {
+          const fail = stats.failTx;
+          stats.failTx = undefined;
+          for (const [name, rows] of this.#backup) {
+            const data = this.db.getStore(name);
+            if (!data) continue;
+            data.rows.clear();
+            for (const [k, v] of rows) data.rows.set(k, structuredClone(v));
+          }
+          this.error = fail.error;
+          this.#completed = true;
+          if (fail.kind === "abort") {
+            this.#aborted = true;
+            this.onabort?.({});
+          } else {
+            this.onerror?.({});
+          }
+          return;
+        }
         this.#completed = true;
         this.oncomplete?.({});
       });
@@ -218,7 +247,10 @@ export function installIdbMock(): IdbMock {
           return;
         }
         if (fail) {
-          req.error = new Error("IndexedDB request failed");
+          req.error =
+            stats.failGetError !== undefined
+              ? stats.failGetError
+              : new Error("IndexedDB request failed");
           req.onerror?.({});
           this.tx.abort();
           this.tx.end();
@@ -307,6 +339,15 @@ export function installIdbMock(): IdbMock {
   const indexedDB = {
     open(name: string, version = 1) {
       const req = new MockRequest<MockDb>();
+      if (stats.failOpenError !== undefined) {
+        const err = stats.failOpenError;
+        stats.failOpenError = undefined;
+        queueMicrotask(() => {
+          req.error = err;
+          req.onerror?.({});
+        });
+        return req;
+      }
       let rec = dbs.get(name);
       if (!rec) {
         rec = { version: 0, stores: new Map() };
@@ -362,12 +403,26 @@ export function installIdbMock(): IdbMock {
       stats.readwrite = [];
       stats.getCalls = 0;
       stats.failGetOn = undefined;
+      stats.failGetError = undefined;
+      stats.failOpenError = undefined;
+      stats.failCursorError = undefined;
+      stats.failTx = undefined;
       stats.gateOn = undefined;
       stats.getGate = undefined;
     },
-    failGetOnCall(n: number) {
+    failGetOnCall(n: number, error?: Error | null) {
       stats.getCalls = 0;
       stats.failGetOn = n;
+      stats.failGetError = error !== undefined ? error : new Error("IndexedDB request failed");
+    },
+    failOpen(error: Error | null) {
+      stats.failOpenError = error;
+    },
+    failCursor(error: Error | null) {
+      stats.failCursorError = error;
+    },
+    failNextTxComplete(kind: "abort" | "error", error: Error | null) {
+      stats.failTx = { kind, error };
     },
     gateGetOnCall(n: number) {
       stats.getCalls = 0;
@@ -536,7 +591,7 @@ function openCursor(
   range: { lower: unknown; upper: unknown; lowerOpen: boolean; upperOpen: boolean } | undefined,
   direction: "next" | "prev",
   tx: { begin(): void; end(): void; readonly completed: boolean },
-  stats: { cursorVisits: number },
+  stats: { cursorVisits: number; failCursorError?: Error | null },
 ) {
   const req = {
     result: undefined as
@@ -546,6 +601,16 @@ function openCursor(
     onsuccess: null as ((ev: unknown) => void) | null,
     onerror: null as ((ev: unknown) => void) | null,
   };
+  if (stats.failCursorError !== undefined) {
+    req.error = stats.failCursorError;
+    stats.failCursorError = undefined;
+    tx.begin();
+    queueMicrotask(() => {
+      req.onerror?.({});
+      tx.end();
+    });
+    return req;
+  }
   const entries: Array<{ key: unknown; primaryKey: unknown; value: Row }> = [];
   for (const row of data.rows.values()) {
     const key = keyOf(row);

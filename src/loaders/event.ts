@@ -1,6 +1,6 @@
 import type { Event } from "../core/event.ts";
 import { isHex32 } from "../core/util.ts";
-import { decode, type AddressPointer, type EventPointer } from "../nips/nip19.ts";
+import { decode, Nip19Error, type AddressPointer, type EventPointer } from "../nips/nip19.ts";
 import type { LoaderContext } from "./context.ts";
 import { DataLoader } from "./dataloader.ts";
 
@@ -40,7 +40,7 @@ function parseRef(ref: EventRef): {
           cacheKey: `addr:${decoded.data.kind}:${decoded.data.pubkey}:${decoded.data.identifier}`,
         };
       default:
-        throw new Error(`cannot load event from ${decoded.type}`);
+        throw new Nip19Error(`cannot load event from ${decoded.type}`);
     }
   }
   if ("id" in ref) {

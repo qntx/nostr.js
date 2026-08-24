@@ -6,7 +6,7 @@ import { isEphemeralKind, Kind } from "../core/kind.ts";
 import { eventAddress } from "../core/tag.ts";
 import { CryptoError } from "../core/error.ts";
 import { coordinateRemovals, DeletionState, planDeletion, type DeletionPlan } from "./deletion.ts";
-import { toStorageError } from "./error.ts";
+import { StorageError, toStorageError } from "./error.ts";
 import type { EventStore, NegentropyItem, OutboxBound, PutResult } from "./types.ts";
 
 const IDB_VERSION = 4;
@@ -197,8 +197,8 @@ export class IndexedDbEventStore implements EventStore {
     const tx = db.transaction(WRITE_STORES, "readwrite");
     const txSettled = new Promise<void>((resolve, reject) => {
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error ?? new Error("IndexedDB transaction failed"));
-      tx.onabort = () => reject(tx.error ?? new Error("IndexedDB transaction aborted"));
+      tx.onerror = () => reject(tx.error ?? new StorageError("IndexedDB transaction failed"));
+      tx.onabort = () => reject(tx.error ?? new StorageError("IndexedDB transaction aborted"));
     });
     const txOutcome = txSettled.then(
       () => undefined,
@@ -675,7 +675,7 @@ function tagCursor(
     read: (cursor, ok, err) => {
       const row = cursor.value as TagRef;
       const req = events.get(row.id);
-      req.onerror = () => err(req.error ?? new Error("IndexedDB get failed"));
+      req.onerror = () => err(req.error ?? new StorageError("IndexedDB get failed"));
       req.onsuccess = () => ok(req.result as Event | undefined);
     },
   };
@@ -822,7 +822,7 @@ function kWayMerge(
 
     for (let i = 0; i < openers.length; i++) {
       const req = openers[i]!.open();
-      req.onerror = () => fail(req.error ?? new Error("IndexedDB cursor failed"));
+      req.onerror = () => fail(req.error ?? new StorageError("IndexedDB cursor failed"));
       inflight++;
       req.onsuccess = () => {
         inflight--;
@@ -998,7 +998,7 @@ function openDb(dbName: string): Promise<IDBDatabaseLike> {
       }
     };
     req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error("IndexedDB open failed"));
+    req.onerror = () => reject(req.error ?? new StorageError("IndexedDB open failed"));
   });
 }
 
@@ -1104,14 +1104,14 @@ function compactSupersededReplaceables(tx: IDBTransactionLike): void {
 function reqOf<T>(req: IDBRequestLike): Promise<T> {
   return new Promise((resolve, reject) => {
     req.onsuccess = () => resolve(req.result as T);
-    req.onerror = () => reject(req.error ?? new Error("IndexedDB request failed"));
+    req.onerror = () => reject(req.error ?? new StorageError("IndexedDB request failed"));
   });
 }
 
 function txDone(tx: IDBTransactionLike): Promise<void> {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error("IndexedDB transaction failed"));
+    tx.onerror = () => reject(tx.error ?? new StorageError("IndexedDB transaction failed"));
   });
 }
 
@@ -1125,7 +1125,7 @@ function walkCursor(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const req = source.openCursor(range, direction);
-    req.onerror = () => reject(req.error ?? new Error("IndexedDB cursor failed"));
+    req.onerror = () => reject(req.error ?? new StorageError("IndexedDB cursor failed"));
     req.onsuccess = () => {
       const cursor = req.result as IDBCursorLike | undefined;
       if (!cursor) {
