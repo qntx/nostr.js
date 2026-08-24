@@ -9,3 +9,62 @@ on:
 jobs:
   ci:
     uses: qntx/workflows/.github/workflows/ci-bun.yml@main
+    # bun run build → vp pack (no Rust)
+    # bun test → tests/**/*.test.ts only (wasm-tests/*.ts is not *.test.ts)
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: clang / lld / llvm for secp256k1-sys
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy -p nostr-crypto-wasm --all-targets -- -D warnings
+
+      - name: wasm-bindgen-cli == Cargo.lock
+        run: cargo install wasm-bindgen-cli --version 0.2.122 --locked
+
+      - name: native BIP-340 (rlib)
+        run: cargo test -p nostr-crypto-wasm
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+
+      - name: bun install
+        run: bun install
+
+      - name: build wasm + pack wasm entry
+        env:
+          CC_wasm32_unknown_unknown: clang
+          AR_wasm32_unknown_unknown: llvm-ar
+          CFLAGS_wasm32_unknown_unknown: "--target=wasm32-unknown-unknown -Wno-implicit-function-declaration"
+        run: bun run build:wasm
+
+      - name: dist contains .wasm
+        run: |
+          ls dist/*.wasm
+          test "$(find dist -name '*.wasm' | wc -l)" -ge 1
+
+      - name: wasm vs noble + Node loadNostrWasm
+        env:
+          CC_wasm32_unknown_unknown: clang
+          AR_wasm32_unknown_unknown: llvm-ar
+          CFLAGS_wasm32_unknown_unknown: "--target=wasm32-unknown-unknown -Wno-implicit-function-declaration"
+        run: bun run test:wasm
+
+      - name: record bench (fail only if wasm slower than noble or crash)
+        run: bun run bench:wasm
