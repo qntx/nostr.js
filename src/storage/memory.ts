@@ -70,6 +70,13 @@ export class MemoryEventStore implements EventStore {
     return "accepted";
   }
 
+  /** Sequential `put` in input order. No transaction: a throw leaves earlier events applied. */
+  async putMany(events: readonly Event[]): Promise<PutResult[]> {
+    const results: PutResult[] = [];
+    for (const event of events) results.push(await this.put(event));
+    return results;
+  }
+
   async get(id: string): Promise<Event | undefined> {
     const key = id.toLowerCase();
     if (this.#deletion.ids.has(key)) return undefined;

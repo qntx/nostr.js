@@ -2,6 +2,7 @@ import type { Event } from "../core/event.ts";
 import type { NostrSigner } from "../signer/types.ts";
 import type { WebSocketConstructor } from "../relay/websocket.ts";
 import type { EventStore } from "../storage/types.ts";
+import type { StorageError } from "../storage/error.ts";
 import type { Gossip } from "../gossip/gossip.ts";
 import { Client } from "./client.ts";
 
@@ -20,6 +21,7 @@ export type ClientBuilderOptions = {
   storage?: EventStore;
   persistEvents?: boolean;
   gossip?: Gossip;
+  onstorageerror?: (err: StorageError) => void;
 };
 
 /** Fluent constructor for {@link Client}. */
@@ -38,6 +40,7 @@ export class ClientBuilder {
   #storage: EventStore | undefined;
   #persistEvents: boolean | undefined;
   #gossip: Gossip | undefined;
+  #onstorageerror: ((err: StorageError) => void) | undefined;
 
   signer(signer: NostrSigner): this {
     this.#signer = signer;
@@ -115,6 +118,11 @@ export class ClientBuilder {
     return this;
   }
 
+  onstorageerror(fn: (err: StorageError) => void): this {
+    this.#onstorageerror = fn;
+    return this;
+  }
+
   build(): Client {
     return new Client({
       signer: this.#signer,
@@ -131,6 +139,7 @@ export class ClientBuilder {
       storage: this.#storage,
       persistEvents: this.#persistEvents,
       gossip: this.#gossip,
+      onstorageerror: this.#onstorageerror,
     });
   }
 }

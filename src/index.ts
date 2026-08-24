@@ -355,6 +355,7 @@ export {
 export {
   MemoryEventStore,
   IndexedDbEventStore,
+  StorageError,
   type EventStore,
   type PutResult,
   type NegentropyItem,

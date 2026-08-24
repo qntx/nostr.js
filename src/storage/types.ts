@@ -18,6 +18,8 @@ export type NegentropyItem = { id: string; created_at: number };
  */
 export interface EventStore {
   put(event: Event): Promise<PutResult>;
+  /** Persist events in input order. IndexedDB applies the batch in one transaction. */
+  putMany(events: readonly Event[]): Promise<PutResult[]>;
   get(id: string): Promise<Event | undefined>;
   query(filters: Filter[]): Promise<Event[]>;
   /** Unique events matching `filters` (same cardinality as {@link query}). */
