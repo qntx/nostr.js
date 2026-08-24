@@ -51,7 +51,7 @@ export class Subscription {
     opts: SubscribeOptions,
     private readonly sendClose: (id: string) => void,
   ) {
-    this.id = opts.id ?? createSubscriptionId();
+    this.id = createSubscriptionId(opts.id);
     this.filters = filters;
     this.closeOnEose = opts.closeOnEose === true;
     this.handlers = {

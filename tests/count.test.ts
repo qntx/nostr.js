@@ -360,6 +360,38 @@ describe("Relay.count", () => {
     await expect(relay.count([])).rejects.toThrow(/at least one filter/);
     relay.close();
   });
+
+  test("rejects empty and oversize custom ids without sending COUNT", async () => {
+    const relay = await Relay.connect("wss://count-id.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    await expect(relay.count([{ kinds: [1] }], { id: "" })).rejects.toThrow(MessageError);
+    await expect(relay.count([{ kinds: [1] }], { id: "a".repeat(65) })).rejects.toThrow(
+      MessageError,
+    );
+    expect(
+      MockWebSocket.last()
+        .sent.map((s) => JSON.parse(s) as unknown[])
+        .filter((m) => m[0] === "COUNT"),
+    ).toHaveLength(0);
+    relay.close();
+  });
+
+  test("sends COUNT with a 64-char custom id", async () => {
+    const relay = await Relay.connect("wss://count-id-ok.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const id = "a".repeat(64);
+    const countP = relay.count([{ kinds: [1] }], { id, timeoutMs: 2000 });
+    await Promise.resolve();
+    const countMsg = MockWebSocket.last()
+      .sent.map((s) => JSON.parse(s) as unknown[])
+      .find((m) => m[0] === "COUNT") as [string, string, ...unknown[]];
+    expect(countMsg[1]).toBe(id);
+    MockWebSocket.last().receive(JSON.stringify(["COUNT", id, { count: 1 }]));
+    await expect(countP).resolves.toEqual({ count: 1 });
+    relay.close();
+  });
 });
 
 describe("Pool.count + FakeRelayBus", () => {
