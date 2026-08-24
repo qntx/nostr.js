@@ -483,12 +483,16 @@ describe("MemoryEventStore", () => {
       .tag(["p", keys.publicKey])
       .createdAt(10)
       .signWithKeys(keys);
+    const mentioned = EventBuilder.textNote("mention")
+      .tag(["p", other.publicKey])
+      .createdAt(5)
+      .signWithKeys(keys);
     const otherE = EventBuilder.textNote("other-e")
       .tag(["e", eidOther])
       .createdAt(40)
       .signWithKeys(other);
     const untagged = EventBuilder.textNote("none").createdAt(50).signWithKeys(keys);
-    for (const e of [both, onlyE, onlyP, otherE, untagged]) {
+    for (const e of [both, onlyE, onlyP, mentioned, otherE, untagged]) {
       expect(await store.put(e)).toBe("accepted");
     }
 
@@ -499,6 +503,9 @@ describe("MemoryEventStore", () => {
 
     const byP = { "#p": [keys.publicKey] as const };
     expect((await store.query([byP])).map((e) => e.id)).toEqual([both.id, onlyP.id]);
+    expect((await store.query([{ "#p": [other.publicKey] }])).map((e) => e.id)).toEqual([
+      mentioned.id,
+    ]);
 
     const andBoth = { "#e": [eid] as const, "#p": [keys.publicKey] as const };
     expect((await store.query([andBoth])).map((e) => e.id)).toEqual([both.id]);
@@ -580,38 +587,63 @@ describe("MemoryEventStore", () => {
     expect((await store.negentropyItems({ "#t": ["nostr"] })).map((i) => i.id)).toEqual([nostr.id]);
   });
 
-  test("replace/remove/clear drop compound and e/p index entries", async () => {
+  test("replace/remove/clear keep live siblings on the same index keys", async () => {
     const store = new MemoryEventStore();
     const keys = Keys.fromSecretKey(SK);
+    const mentioned = Keys.generate();
     const eid = "aa".repeat(32);
     const meta1 = EventBuilder.metadata({ name: "v1" })
       .tag(["e", eid])
       .createdAt(10)
       .signWithKeys(keys);
+    const keepE = EventBuilder.textNote("keep-e").tag(["e", eid]).createdAt(15).signWithKeys(keys);
     const meta2 = EventBuilder.metadata({ name: "v2" })
       .tag(["e", eid])
       .createdAt(20)
       .signWithKeys(keys);
     expect(await store.put(meta1)).toBe("accepted");
+    expect(await store.put(keepE)).toBe("accepted");
     expect(await store.put(meta2)).toBe("replaced");
-    expect((await store.query([{ "#e": [eid] }])).map((e) => e.id)).toEqual([meta2.id]);
+    expect((await store.query([{ "#e": [eid] }])).map((e) => e.id)).toEqual([meta2.id, keepE.id]);
     expect(
       (await store.query([{ authors: [keys.publicKey], kinds: [Kind.Metadata] }])).map((e) => e.id),
     ).toEqual([meta2.id]);
 
-    const note = EventBuilder.textNote("n")
-      .tag(["p", keys.publicKey])
-      .createdAt(1)
+    const dropE = EventBuilder.textNote("drop-e").tag(["e", eid]).createdAt(12).signWithKeys(keys);
+    expect(await store.put(dropE)).toBe("accepted");
+    expect(await store.remove([dropE.id])).toBe(1);
+    expect((await store.query([{ "#e": [eid] }])).map((e) => e.id)).toEqual([meta2.id, keepE.id]);
+    expect(
+      (await store.query([{ authors: [keys.publicKey], kinds: [Kind.TextNote] }])).map((e) => e.id),
+    ).toEqual([keepE.id]);
+
+    const keepP = EventBuilder.textNote("keep-p")
+      .tag(["p", mentioned.publicKey])
+      .createdAt(5)
       .signWithKeys(keys);
-    expect(await store.put(note)).toBe("accepted");
-    expect(await store.remove([note.id])).toBe(1);
-    expect(await store.query([{ "#p": [keys.publicKey] }])).toEqual([]);
+    const dropP = EventBuilder.textNote("drop-p")
+      .tag(["p", mentioned.publicKey])
+      .createdAt(4)
+      .signWithKeys(keys);
+    expect(await store.put(keepP)).toBe("accepted");
+    expect(await store.put(dropP)).toBe("accepted");
+    expect(await store.remove([dropP.id])).toBe(1);
+    expect((await store.query([{ "#p": [mentioned.publicKey] }])).map((e) => e.id)).toEqual([
+      keepP.id,
+    ]);
+    expect(
+      (await store.query([{ authors: [keys.publicKey], kinds: [Kind.TextNote] }])).map((e) => e.id),
+    ).toEqual([keepE.id, keepP.id]);
 
     await store.clear();
     expect(store.size).toBe(0);
-    expect(await store.query([{ authors: [keys.publicKey], kinds: [Kind.Metadata] }])).toEqual([]);
-    expect(await store.query([{ "#e": [eid] }])).toEqual([]);
-    expect(await store.query([{ "#t": ["nostr"] }])).toEqual([]);
+    const fresh = EventBuilder.textNote("fresh").tag(["e", eid]).createdAt(1).signWithKeys(keys);
+    expect(await store.put(fresh)).toBe("accepted");
+    expect((await store.query([{ "#e": [eid] }])).map((e) => e.id)).toEqual([fresh.id]);
+    expect(
+      (await store.query([{ authors: [keys.publicKey], kinds: [Kind.TextNote] }])).map((e) => e.id),
+    ).toEqual([fresh.id]);
+    expect(await store.query([{ "#p": [mentioned.publicKey] }])).toEqual([]);
   });
 
   test("valueless e tag is not indexed; empty-string e tag is", async () => {
