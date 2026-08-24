@@ -151,11 +151,10 @@
   "scripts": {
     "build": "vp pack",
     "dev": "vp pack --watch",
-    "test": "bun test tests",
+    "test": "vp test",
     "check": "vp check",
     "prepublishOnly": "vp run build",
-    "prepare": "vp config",
-    "test:vp": "vp test"
+    "prepare": "vp config"
   },
   "dependencies": {
     "@noble/ciphers": "2.3.0",
