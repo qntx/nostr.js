@@ -380,7 +380,10 @@ export class Nip46Signer implements NostrSigner {
     if (metadata) {
       params.push(JSON.stringify(metadata));
     }
-    await this.#sendRequest("connect", params);
+    const result = await this.#sendRequest("connect", params);
+    if (result === "ack") return;
+    if (this.#pointer.secret && result === this.#pointer.secret) return;
+    throw new Nip46Error(`connect result is not ack or secret: ${result}`);
   }
 
   /**

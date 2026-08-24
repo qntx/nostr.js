@@ -252,6 +252,91 @@ describe("Nip46Signer", () => {
     ).toThrow(/fromBunker requires clientSecretKey/);
   });
 
+  test("connectRemote accepts the bunker secret as connect result", async () => {
+    const bunkerPk = getPublicKey(BUNKER_SK);
+    const clientPk = getPublicKey(CLIENT_SK);
+    const secret = "tok";
+    const stop = armBunkerResponder({
+      bunkerSk: BUNKER_SK,
+      userSk: USER_SK,
+      clientPubkey: clientPk,
+      connectResult: secret,
+    });
+    try {
+      const signer = await Nip46Signer.connect(
+        { pubkey: bunkerPk, relays: ["wss://bunker.example"], secret },
+        { clientSecretKey: CLIENT_SK, createPool: testPool, timeoutMs: 3000 },
+      );
+      expect(await signer.getPublicKey()).toBe(getPublicKey(USER_SK));
+      await signer.close();
+    } finally {
+      stop();
+    }
+  });
+
+  test("connectRemote rejects a connect result that is not ack or secret", async () => {
+    const bunkerPk = getPublicKey(BUNKER_SK);
+    const clientPk = getPublicKey(CLIENT_SK);
+    const stop = armBunkerResponder({
+      bunkerSk: BUNKER_SK,
+      userSk: USER_SK,
+      clientPubkey: clientPk,
+      connectResult: "ok",
+    });
+    try {
+      await expect(
+        Nip46Signer.connect(
+          { pubkey: bunkerPk, relays: ["wss://bunker.example"], secret: "tok" },
+          { clientSecretKey: CLIENT_SK, createPool: testPool, timeoutMs: 3000 },
+        ),
+      ).rejects.toThrow(/connect result is not ack or secret: ok/);
+    } finally {
+      stop();
+    }
+  });
+
+  test("connectRemote rejects a mismatched secret", async () => {
+    const bunkerPk = getPublicKey(BUNKER_SK);
+    const clientPk = getPublicKey(CLIENT_SK);
+    const stop = armBunkerResponder({
+      bunkerSk: BUNKER_SK,
+      userSk: USER_SK,
+      clientPubkey: clientPk,
+      connectResult: "other-secret",
+    });
+    try {
+      await expect(
+        Nip46Signer.connect(
+          { pubkey: bunkerPk, relays: ["wss://bunker.example"], secret: "tok" },
+          { clientSecretKey: CLIENT_SK, createPool: testPool, timeoutMs: 3000 },
+        ),
+      ).rejects.toThrow(/connect result is not ack or secret: other-secret/);
+    } finally {
+      stop();
+    }
+  });
+
+  test("connectRemote without a pointer secret rejects a non-ack result", async () => {
+    const bunkerPk = getPublicKey(BUNKER_SK);
+    const clientPk = getPublicKey(CLIENT_SK);
+    const stop = armBunkerResponder({
+      bunkerSk: BUNKER_SK,
+      userSk: USER_SK,
+      clientPubkey: clientPk,
+      connectResult: "tok",
+    });
+    try {
+      await expect(
+        Nip46Signer.connect(
+          { pubkey: bunkerPk, relays: ["wss://bunker.example"], secret: null },
+          { clientSecretKey: CLIENT_SK, createPool: testPool, timeoutMs: 3000 },
+        ),
+      ).rejects.toThrow(/connect result is not ack or secret: tok/);
+    } finally {
+      stop();
+    }
+  });
+
   test("connect closes signer when connectRemote fails", async () => {
     let poolClosed = false;
     let subClosed = false;

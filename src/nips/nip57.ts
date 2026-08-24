@@ -49,9 +49,9 @@ export function makeZapRequest(params: ProfileZapRequest | EventZapRequest): Eve
     if (isAddressableKind(event.kind)) {
       const d = getDTag(event.tags);
       if (!d) throw new EventValidationError("d tag not found or is empty");
+      const addr = eventAddress(event);
+      if (addr) tags.push(["a", addr]);
     }
-    const addr = eventAddress(event);
-    if (addr) tags.push(["a", addr]);
     tags.push(["k", event.kind.toString()]);
   }
 
@@ -145,9 +145,28 @@ function countTags(tags: readonly Tag[], name: string): number {
   return n;
 }
 
-function hasTagValue(tags: readonly Tag[], name: string, value: string): boolean {
+function hasHexTagValue(tags: readonly Tag[], name: string, value: string): boolean {
+  const needle = value.toLowerCase();
   for (const tag of tags) {
-    if (tag[0] === name && tag[1] === value) return true;
+    if (tag[0] === name && tag[1] !== undefined && tag[1].toLowerCase() === needle) return true;
+  }
+  return false;
+}
+
+function hasAddressTag(tags: readonly Tag[], value: string): boolean {
+  const want = parseEventAddress(value);
+  if (!want) return false;
+  for (const tag of tags) {
+    if (tag[0] !== "a" || tag[1] === undefined) continue;
+    const got = parseEventAddress(tag[1]);
+    if (
+      got &&
+      got.kind === want.kind &&
+      got.pubkey === want.pubkey &&
+      got.identifier === want.identifier
+    ) {
+      return true;
+    }
   }
   return false;
 }
@@ -223,7 +242,9 @@ export function validateZapReceipt(receipt: Event, ctx: ZapReceiptContext): ZapR
 
     for (const tag of request.tags) {
       if (tag[0] !== "a") continue;
-      if (tag[1] === undefined || !parseEventAddress(tag[1])) return fail("invalid a");
+      if (tag[1] === undefined) return fail("invalid a");
+      const parsed = parseEventAddress(tag[1]);
+      if (!parsed || !isAddressableKind(parsed.kind)) return fail("invalid a");
     }
 
     // Request P is the LNURL provider (receipt pubkey), not the zap sender.
@@ -242,9 +263,9 @@ export function validateZapReceipt(receipt: Event, ctx: ZapReceiptContext): ZapR
     if (!bolt11 || !bolt11.descriptionHash) return fail("invalid bolt11");
 
     const requestAmount = firstTagValue(request.tags, "amount");
-    if (requestAmount !== undefined && bolt11.amountMsats !== undefined) {
+    if (requestAmount !== undefined) {
       const msats = parseMsatsTag(requestAmount);
-      if (msats !== bolt11.amountMsats) return fail("amount mismatch");
+      if (msats === undefined || bolt11.amountMsats !== msats) return fail("amount mismatch");
     }
 
     // Hash the tag payload, not JSON.stringify(parsed) (key order may differ).
@@ -268,16 +289,16 @@ export function validateZapReceipt(receipt: Event, ctx: ZapReceiptContext): ZapR
     }
 
     const recipient = firstTagValue(request.tags, "p");
-    if (recipient === undefined || !hasTagValue(receipt.tags, "p", recipient)) {
+    if (recipient === undefined || !hasHexTagValue(receipt.tags, "p", recipient)) {
       return fail("missing p");
     }
     const requestE = firstTagValue(request.tags, "e");
-    if (requestE !== undefined && !hasTagValue(receipt.tags, "e", requestE)) {
+    if (requestE !== undefined && !hasHexTagValue(receipt.tags, "e", requestE)) {
       return fail("missing e");
     }
     for (const tag of request.tags) {
       if (tag[0] !== "a" || tag[1] === undefined) continue;
-      if (!hasTagValue(receipt.tags, "a", tag[1])) return fail("missing a");
+      if (!hasAddressTag(receipt.tags, tag[1])) return fail("missing a");
     }
 
     // Receipt P is the zap sender (request pubkey). Do not copy request tag P.

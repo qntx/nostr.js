@@ -214,8 +214,6 @@ export class IndexedDbEventStore implements EventStore {
     }
 
     if (isEphemeralKind(event.kind)) {
-      events.put(event);
-      writeTagRefs(tagRefs, event);
       await done;
       return "ephemeral";
     }

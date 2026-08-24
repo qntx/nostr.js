@@ -20,10 +20,47 @@ describe("NIP-45 COUNT codec", () => {
     const wire = encodeClientMessage(["COUNT", "c1", { kinds: [1] }]);
     expect(JSON.parse(wire)).toEqual(["COUNT", "c1", { kinds: [1] }]);
 
+    const hll = "ab" + "00".repeat(255);
     const msg = parseRelayMessage(
+      JSON.stringify(["COUNT", "c1", { count: 3, approximate: true, hll }]),
+    );
+    expect(msg).toEqual(["COUNT", "c1", { count: 3, approximate: true, hll }]);
+    if (msg[0] !== "COUNT") throw new Error("expected COUNT");
+    expect(msg[2].hll).toBe(hll);
+    expect(msg[2].hll).toHaveLength(512);
+  });
+
+  test("omits invalid hll and keeps count/approximate", () => {
+    const short = parseRelayMessage(
       JSON.stringify(["COUNT", "c1", { count: 3, approximate: true, hll: "abc" }]),
     );
-    expect(msg).toEqual(["COUNT", "c1", { count: 3, approximate: true, hll: "abc" }]);
+    expect(short).toEqual(["COUNT", "c1", { count: 3, approximate: true }]);
+    if (short[0] !== "COUNT") throw new Error("expected COUNT");
+    expect("hll" in short[2]).toBe(false);
+
+    const nonHex = parseRelayMessage(
+      JSON.stringify(["COUNT", "c1", { count: 1, hll: "g".repeat(512) }]),
+    );
+    expect(nonHex).toEqual(["COUNT", "c1", { count: 1 }]);
+    if (nonHex[0] !== "COUNT") throw new Error("expected COUNT");
+    expect("hll" in nonHex[2]).toBe(false);
+
+    const notString = parseRelayMessage(
+      JSON.stringify(["COUNT", "c1", { count: 2, approximate: false, hll: 1 }]),
+    );
+    expect(notString).toEqual(["COUNT", "c1", { count: 2, approximate: false }]);
+    if (notString[0] !== "COUNT") throw new Error("expected COUNT");
+    expect("hll" in notString[2]).toBe(false);
+  });
+
+  test("lowercases a valid 512-hex hll", () => {
+    const lower = "cd" + "00".repeat(255);
+    const msg = parseRelayMessage(
+      JSON.stringify(["COUNT", "c1", { count: 9, hll: lower.toUpperCase() }]),
+    );
+    expect(msg).toEqual(["COUNT", "c1", { count: 9, hll: lower }]);
+    if (msg[0] !== "COUNT") throw new Error("expected COUNT");
+    expect(msg[2].hll).toBe(lower);
   });
 });
 
@@ -91,6 +128,193 @@ describe("Relay.count", () => {
     await Promise.resolve();
     MockWebSocket.last().receive(JSON.stringify(["CLOSED", "count:closed", "unsupported: COUNT"]));
     await expect(countP).rejects.toThrow(/unsupported: COUNT/);
+    relay.close();
+  });
+
+  test("auth-required CLOSED without authSigner rejects", async () => {
+    const relay = await Relay.connect("wss://count.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const countP = relay.count([{ kinds: [1] }], { id: "count:noauth", timeoutMs: 2000 });
+    await Promise.resolve();
+    MockWebSocket.last().receive(
+      JSON.stringify(["CLOSED", "count:noauth", "auth-required: login"]),
+    );
+    await expect(countP).rejects.toThrow(/auth-required: login/);
+    relay.close();
+  });
+
+  test("second count after non-auth CLOSED still works", async () => {
+    const relay = await Relay.connect("wss://count.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const first = relay.count([{ kinds: [1] }], { id: "count:first", timeoutMs: 2000 });
+    await Promise.resolve();
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["CLOSED", "count:first", "unsupported: COUNT"]));
+    await expect(first).rejects.toThrow(/unsupported: COUNT/);
+
+    const second = relay.count([{ kinds: [0] }], { id: "count:second", timeoutMs: 2000 });
+    await Promise.resolve();
+    ws.receive(JSON.stringify(["COUNT", "count:second", { count: 4 }]));
+    await expect(second).resolves.toEqual({ count: 4 });
+    expect("hll" in (await second)).toBe(false);
+    relay.close();
+  });
+
+  test("CLOSED auth-required retries COUNT after AUTH", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://count-auth.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const filters = [{ kinds: [1], authors: [keys.publicKey] }];
+    const countP = relay.count(filters, { id: "count:auth", timeoutMs: 2000 });
+    await Promise.resolve();
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "count-challenge"]));
+    ws.receive(JSON.stringify(["CLOSED", "count:auth", "auth-required: login"]));
+    await new Promise((r) => setTimeout(r, 20));
+    const authFrame = ws.sent
+      .map((s) => JSON.parse(s) as unknown[])
+      .find((m) => m[0] === "AUTH") as [string, { id: string }] | undefined;
+    expect(authFrame?.[0]).toBe("AUTH");
+    ws.receive(JSON.stringify(["OK", authFrame![1].id, true, ""]));
+    await new Promise((r) => setTimeout(r, 20));
+    const counts = ws.sent.map((s) => JSON.parse(s) as unknown[]).filter((m) => m[0] === "COUNT");
+    expect(counts).toHaveLength(2);
+    expect(counts[1]).toEqual(["COUNT", "count:auth", filters[0]]);
+    ws.receive(JSON.stringify(["COUNT", "count:auth", { count: 11, approximate: true }]));
+    await expect(countP).resolves.toEqual({ count: 11, approximate: true });
+    relay.close();
+  });
+
+  test("timeout does not fire while AUTH is in flight", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://count-auth-timeout.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const countP = relay.count([{ kinds: [1] }], { id: "count:slow", timeoutMs: 40 });
+    await Promise.resolve();
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "slow-challenge"]));
+    ws.receive(JSON.stringify(["CLOSED", "count:slow", "auth-required: login"]));
+    await new Promise((r) => setTimeout(r, 20));
+    const authFrame = ws.sent
+      .map((s) => JSON.parse(s) as unknown[])
+      .find((m) => m[0] === "AUTH") as [string, { id: string }] | undefined;
+    expect(authFrame?.[0]).toBe("AUTH");
+    await new Promise((r) => setTimeout(r, 80));
+    ws.receive(JSON.stringify(["OK", authFrame![1].id, true, ""]));
+    await new Promise((r) => setTimeout(r, 20));
+    ws.receive(JSON.stringify(["COUNT", "count:slow", { count: 2 }]));
+    await expect(countP).resolves.toEqual({ count: 2 });
+    relay.close();
+  });
+
+  test("auth-required CLOSED with no challenge rejects and does not leak the waiter", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://count-no-challenge.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const first = relay.count([{ kinds: [1] }], { id: "count:nochal", timeoutMs: 2000 });
+    await Promise.resolve();
+    MockWebSocket.last().receive(
+      JSON.stringify(["CLOSED", "count:nochal", "auth-required: login"]),
+    );
+    await expect(first).rejects.toThrow(/auth-required: login/);
+
+    const second = relay.count([{ kinds: [1] }], { id: "count:nochal2", timeoutMs: 2000 });
+    await Promise.resolve();
+    MockWebSocket.last().receive(JSON.stringify(["COUNT", "count:nochal2", { count: 8 }]));
+    await expect(second).resolves.toEqual({ count: 8 });
+    relay.close();
+  });
+
+  test("AUTH failure rejects COUNT and a later count still works", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://count-auth-fail.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const first = relay.count([{ kinds: [1] }], { id: "count:fail", timeoutMs: 2000 });
+    await Promise.resolve();
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "fail-challenge"]));
+    ws.receive(JSON.stringify(["CLOSED", "count:fail", "auth-required: login"]));
+    await new Promise((r) => setTimeout(r, 20));
+    const authFrame = ws.sent
+      .map((s) => JSON.parse(s) as unknown[])
+      .find((m) => m[0] === "AUTH") as [string, { id: string }] | undefined;
+    expect(authFrame?.[0]).toBe("AUTH");
+    ws.receive(JSON.stringify(["OK", authFrame![1].id, false, "restricted: bad auth"]));
+    await expect(first).rejects.toThrow(/auth-required: login/);
+
+    const second = relay.count([{ kinds: [1] }], { id: "count:after-fail", timeoutMs: 2000 });
+    await Promise.resolve();
+    ws.receive(JSON.stringify(["COUNT", "count:after-fail", { count: 1 }]));
+    await expect(second).resolves.toEqual({ count: 1 });
+    relay.close();
+  });
+
+  test("second auth-required CLOSED does not retry COUNT", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://count-auth-twice.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const countP = relay.count([{ kinds: [1] }], { id: "count:twice", timeoutMs: 2000 });
+    await Promise.resolve();
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "twice-challenge"]));
+    ws.receive(JSON.stringify(["CLOSED", "count:twice", "auth-required: login"]));
+    await new Promise((r) => setTimeout(r, 20));
+    const authFrame = ws.sent
+      .map((s) => JSON.parse(s) as unknown[])
+      .find((m) => m[0] === "AUTH") as [string, { id: string }] | undefined;
+    expect(authFrame?.[0]).toBe("AUTH");
+    ws.receive(JSON.stringify(["OK", authFrame![1].id, true, ""]));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(
+      ws.sent.map((s) => JSON.parse(s) as unknown[]).filter((m) => m[0] === "COUNT"),
+    ).toHaveLength(2);
+    ws.receive(JSON.stringify(["CLOSED", "count:twice", "auth-required: login"]));
+    await expect(countP).rejects.toThrow(/auth-required: login/);
+    expect(
+      ws.sent.map((s) => JSON.parse(s) as unknown[]).filter((m) => m[0] === "COUNT"),
+    ).toHaveLength(2);
     relay.close();
   });
 

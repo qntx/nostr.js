@@ -25,6 +25,8 @@ export type BunkerResponderOptions = {
   requests?: Array<{ method: string; params: string[] }>;
   /** `switch_relays` result. Default `"null"`. */
   switchRelays?: string[] | null;
+  /** Override `connect` RPC result. Default `"ack"`. */
+  connectResult?: string;
 };
 
 /**
@@ -110,7 +112,7 @@ export function armBunkerResponder(opts: BunkerResponderOptions): () => void {
           let error: string | undefined;
           switch (req.method) {
             case "connect":
-              result = "ack";
+              result = opts.connectResult ?? "ack";
               break;
             case "get_public_key":
               result = userKeys.publicKey;

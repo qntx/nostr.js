@@ -101,6 +101,29 @@ describe("NIP-77 message codec", () => {
       "blocked: too big",
     ]);
   });
+
+  test("parses 3- or 4-element NEG-ERR and ignores the optional 4th", () => {
+    expect(parseRelayMessage(JSON.stringify(["NEG-ERR", "n1", "blocked: too big", 100]))).toEqual([
+      "NEG-ERR",
+      "n1",
+      "blocked: too big",
+    ]);
+    expect(parseRelayMessage(JSON.stringify(["NEG-ERR", "n1", "error: boom", "ignored"]))).toEqual([
+      "NEG-ERR",
+      "n1",
+      "error: boom",
+    ]);
+  });
+
+  test("rejects NEG-ERR arity other than 3 or 4", () => {
+    expect(() => parseRelayMessage(JSON.stringify(["NEG-ERR", "n1"]))).toThrow(MessageError);
+    expect(() =>
+      parseRelayMessage(JSON.stringify(["NEG-ERR", "n1", "blocked", 1, "extra"])),
+    ).toThrow(MessageError);
+    expect(() => parseRelayMessage(JSON.stringify(["NEG-ERR", 1, "blocked"]))).toThrow(
+      MessageError,
+    );
+  });
 });
 
 describe("Negentropy algorithm", () => {
