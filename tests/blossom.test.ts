@@ -5,6 +5,7 @@ import {
   EventValidationError,
   Kind,
   Keys,
+  blobExists,
   blossomServerListEventBuilder,
   checkUpload,
   createAuthTemplate,
@@ -12,12 +13,15 @@ import {
   deleteBlob,
   encodeAuthorizationHeader,
   finalizeEvent,
+  getBlob,
   getHashFromURL,
+  healBlobUrl,
   listBlobs,
   mirrorBlob,
   parseBlossomServerList,
   sha256Blob,
   upload,
+  uploadToServers,
   utf8Encoder,
   verifyBlob,
   type BlobDescriptor,
@@ -306,5 +310,362 @@ describe("kind 10063", () => {
     expect(() => parseBlossomServerList({ kind: Kind.TextNote, tags: event.tags })).toThrow(
       EventValidationError,
     );
+  });
+});
+
+function abortError(): Error {
+  const err = new Error("aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+describe("blobExists", () => {
+  test("HEAD 2xx is true; 404 is false", async () => {
+    const fetch200: BlossomFetch = async (input, init) => {
+      expect(String(input)).toBe(`https://cdn.example.com/${ABC_SHA256}`);
+      expect(init?.method).toBe("HEAD");
+      expect(init?.redirect).toBe("manual");
+      return new Response(null, { status: 200 });
+    };
+    expect(await blobExists("https://cdn.example.com/", ABC_SHA256, { fetch: fetch200 })).toBe(
+      true,
+    );
+
+    const fetch404: BlossomFetch = async () => new Response(null, { status: 404 });
+    expect(await blobExists("https://cdn.example.com", ABC_SHA256, { fetch: fetch404 })).toBe(
+      false,
+    );
+  });
+
+  test("HEAD 500 throws", async () => {
+    const fetchImpl: BlossomFetch = async () => new Response(null, { status: 500 });
+    await expect(
+      blobExists("https://cdn.example.com", ABC_SHA256, { fetch: fetchImpl }),
+    ).rejects.toMatchObject({ name: "BlossomError", status: 500 });
+  });
+
+  test("HEAD 405 throws and does not retry GET", async () => {
+    const methods: string[] = [];
+    const fetchImpl: BlossomFetch = async (_input, init) => {
+      methods.push(init?.method ?? "GET");
+      return new Response(null, { status: 405 });
+    };
+    await expect(
+      blobExists("https://cdn.example.com", ABC_SHA256, { fetch: fetchImpl }),
+    ).rejects.toThrow(BlossomError);
+    expect(methods).toEqual(["HEAD"]);
+  });
+
+  test("HEAD 3xx throws", async () => {
+    const fetchImpl: BlossomFetch = async () =>
+      new Response(null, { status: 302, headers: { Location: "https://other.example/x" } });
+    await expect(
+      blobExists("https://cdn.example.com", ABC_SHA256, { fetch: fetchImpl }),
+    ).rejects.toThrow(BlossomError);
+  });
+
+  test("network error throws BlossomError; AbortError propagates", async () => {
+    const net: BlossomFetch = async () => {
+      throw new TypeError("fetch failed");
+    };
+    await expect(blobExists("https://cdn.example.com", ABC_SHA256, { fetch: net })).rejects.toThrow(
+      BlossomError,
+    );
+
+    const aborted = abortError();
+    const abortFetch: BlossomFetch = async () => {
+      throw aborted;
+    };
+    await expect(
+      blobExists("https://cdn.example.com", ABC_SHA256, { fetch: abortFetch }),
+    ).rejects.toBe(aborted);
+  });
+});
+
+describe("getBlob", () => {
+  test("GET 2xx returns bytes when sha256 matches", async () => {
+    const body = new Uint8Array([0x61, 0x62, 0x63]);
+    const fetchImpl: BlossomFetch = async (input, init) => {
+      expect(String(input)).toBe(`https://cdn.example.com/${ABC_SHA256}`);
+      expect(init?.method).toBe("GET");
+      expect(init?.redirect).toBe("manual");
+      return new Response(body, { status: 200 });
+    };
+    expect(await getBlob("https://cdn.example.com", ABC_SHA256, { fetch: fetchImpl })).toEqual(
+      body,
+    );
+  });
+
+  test("sha256 mismatch throws", async () => {
+    const fetchImpl: BlossomFetch = async () =>
+      new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+    await expect(
+      getBlob("https://cdn.example.com", ABC_SHA256, { fetch: fetchImpl }),
+    ).rejects.toThrow(BlossomError);
+    await expect(
+      getBlob("https://cdn.example.com", ABC_SHA256, { fetch: fetchImpl }),
+    ).rejects.toThrow(/sha256 mismatch/);
+  });
+
+  test("non-2xx throws", async () => {
+    const fetchImpl: BlossomFetch = async () => new Response(null, { status: 404 });
+    await expect(
+      getBlob("https://cdn.example.com", ABC_SHA256, { fetch: fetchImpl }),
+    ).rejects.toThrow(BlossomError);
+  });
+
+  test("network error throws BlossomError; AbortError propagates", async () => {
+    const net: BlossomFetch = async () => {
+      throw new TypeError("fetch failed");
+    };
+    await expect(getBlob("https://cdn.example.com", ABC_SHA256, { fetch: net })).rejects.toThrow(
+      BlossomError,
+    );
+    const aborted = abortError();
+    const abortFetch: BlossomFetch = async () => {
+      throw aborted;
+    };
+    await expect(
+      getBlob("https://cdn.example.com", ABC_SHA256, { fetch: abortFetch }),
+    ).rejects.toBe(aborted);
+  });
+});
+
+describe("healBlobUrl", () => {
+  const originalPng = `https://broken.example/${HASH}.png`;
+  const originalBare = `https://broken.example/${HASH}`;
+
+  test("no hash returns the original URL without fetching", async () => {
+    const fetchImpl: BlossomFetch = async () => {
+      throw new Error("should not fetch");
+    };
+    expect(
+      await healBlobUrl("https://cdn.example.com/photo.png", ["https://server.example"], {
+        fetch: fetchImpl,
+      }),
+    ).toBe("https://cdn.example.com/photo.png");
+  });
+
+  test("original 302 stays original", async () => {
+    const seen: string[] = [];
+    const fetchImpl: BlossomFetch = async (input, init) => {
+      seen.push(String(input));
+      expect(init?.method).toBe("HEAD");
+      expect(init?.redirect).toBe("manual");
+      if (String(input) === originalPng) {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "https://other.example/x" },
+        });
+      }
+      throw new Error(`unexpected ${String(input)}`);
+    };
+    expect(await healBlobUrl(originalPng, ["https://server.example"], { fetch: fetchImpl })).toBe(
+      originalPng,
+    );
+    expect(seen).toEqual([originalPng]);
+  });
+
+  test("original 200 stays original; HEAD is the URL as given, not with a trailing slash", async () => {
+    const seen: string[] = [];
+    const fetchImpl: BlossomFetch = async (input) => {
+      seen.push(String(input));
+      return new Response(null, { status: 200 });
+    };
+    expect(await healBlobUrl(originalPng, ["https://server.example"], { fetch: fetchImpl })).toBe(
+      originalPng,
+    );
+    expect(seen).toEqual([originalPng]);
+    expect(seen[0]?.endsWith("/")).toBe(false);
+  });
+
+  test("original 404 + server 200 returns https://server/<hash>.ext", async () => {
+    const fetchImpl: BlossomFetch = async (input) => {
+      const url = String(input);
+      if (url === originalPng) return new Response(null, { status: 404 });
+      if (url === `https://server.example/${HASH}.png`) return new Response(null, { status: 200 });
+      throw new Error(`unexpected ${url}`);
+    };
+    expect(await healBlobUrl(originalPng, ["https://server.example"], { fetch: fetchImpl })).toBe(
+      `https://server.example/${HASH}.png`,
+    );
+  });
+
+  test("original 404 without extension returns https://server/<hash>", async () => {
+    const fetchImpl: BlossomFetch = async (input) => {
+      const url = String(input);
+      if (url === originalBare) return new Response(null, { status: 404 });
+      if (url === `https://server.example/${HASH}`) return new Response(null, { status: 200 });
+      throw new Error(`unexpected ${url}`);
+    };
+    expect(await healBlobUrl(originalBare, ["https://server.example"], { fetch: fetchImpl })).toBe(
+      `https://server.example/${HASH}`,
+    );
+  });
+
+  test("server 500 then next 200", async () => {
+    const fetchImpl: BlossomFetch = async (input) => {
+      const url = String(input);
+      if (url === originalPng) return new Response(null, { status: 404 });
+      if (url === `https://a.example/${HASH}.png`) return new Response(null, { status: 500 });
+      if (url === `https://b.example/${HASH}.png`) return new Response(null, { status: 200 });
+      throw new Error(`unexpected ${url}`);
+    };
+    expect(
+      await healBlobUrl(originalPng, ["https://a.example", "https://b.example"], {
+        fetch: fetchImpl,
+      }),
+    ).toBe(`https://b.example/${HASH}.png`);
+  });
+
+  test("candidate 3xx is skipped; nothing hit returns original", async () => {
+    const fetchImpl: BlossomFetch = async (input) => {
+      const url = String(input);
+      if (url === originalPng) return new Response(null, { status: 404 });
+      if (url === `https://a.example/${HASH}.png`) {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "https://other.example/x" },
+        });
+      }
+      if (url === `https://b.example/${HASH}.png`) return new Response(null, { status: 404 });
+      throw new Error(`unexpected ${url}`);
+    };
+    expect(
+      await healBlobUrl(originalPng, ["https://a.example", "https://b.example"], {
+        fetch: fetchImpl,
+      }),
+    ).toBe(originalPng);
+  });
+
+  test("original network error then server 200; invalid servers skipped", async () => {
+    const fetchImpl: BlossomFetch = async (input) => {
+      const url = String(input);
+      if (url === originalPng) throw new TypeError("fetch failed");
+      if (url === `https://cdn.example.com/v1/${HASH}.png`)
+        return new Response(null, { status: 200 });
+      throw new Error(`unexpected ${url}`);
+    };
+    expect(
+      await healBlobUrl(originalPng, ["wss://not-http.example", "https://cdn.example.com/v1/"], {
+        fetch: fetchImpl,
+      }),
+    ).toBe(`https://cdn.example.com/v1/${HASH}.png`);
+  });
+
+  test("AbortError on original HEAD propagates and does not probe servers", async () => {
+    const aborted = abortError();
+    const seen: string[] = [];
+    const fetchImpl: BlossomFetch = async (input) => {
+      seen.push(String(input));
+      throw aborted;
+    };
+    await expect(
+      healBlobUrl(originalPng, ["https://server.example"], { fetch: fetchImpl }),
+    ).rejects.toBe(aborted);
+    expect(seen).toEqual([originalPng]);
+  });
+
+  test("AbortError on a candidate HEAD aborts remaining servers", async () => {
+    const aborted = abortError();
+    const seen: string[] = [];
+    const fetchImpl: BlossomFetch = async (input) => {
+      const url = String(input);
+      seen.push(url);
+      if (url === originalPng) return new Response(null, { status: 404 });
+      throw aborted;
+    };
+    await expect(
+      healBlobUrl(originalPng, ["https://a.example", "https://b.example"], { fetch: fetchImpl }),
+    ).rejects.toBe(aborted);
+    expect(seen).toEqual([originalPng, `https://a.example/${HASH}.png`]);
+  });
+});
+
+describe("uploadToServers", () => {
+  test("empty servers throws", async () => {
+    const file = new Blob(["abc"]);
+    const auth = await createUploadAuth(async (t) => signAuth(t), file);
+    const fetchImpl: BlossomFetch = async () => {
+      throw new Error("should not fetch");
+    };
+    await expect(uploadToServers([], file, auth, { fetch: fetchImpl })).rejects.toThrow(
+      BlossomError,
+    );
+    await expect(uploadToServers([], file, auth, { fetch: fetchImpl })).rejects.toThrow(
+      /no servers/,
+    );
+  });
+
+  test("first success returns and does not PUT later servers", async () => {
+    const file = new Blob(["abc"]);
+    const auth = await createUploadAuth(async (t) => signAuth(t), file);
+    const desc: BlobDescriptor = {
+      url: `https://a.example/${ABC_SHA256}.txt`,
+      sha256: ABC_SHA256,
+      size: 3,
+    };
+    const seen: string[] = [];
+    const fetchImpl: BlossomFetch = async (input) => {
+      seen.push(String(input));
+      return jsonResponse(desc, 201);
+    };
+    expect(
+      await uploadToServers(["https://a.example", "https://b.example"], file, auth, {
+        fetch: fetchImpl,
+      }),
+    ).toEqual(desc);
+    expect(seen).toEqual(["https://a.example/upload"]);
+  });
+
+  test("first failure then next success", async () => {
+    const file = new Blob(["abc"]);
+    const auth = await createUploadAuth(async (t) => signAuth(t), file);
+    const desc: BlobDescriptor = {
+      url: `https://b.example/${ABC_SHA256}.txt`,
+      sha256: ABC_SHA256,
+      size: 3,
+    };
+    const seen: string[] = [];
+    const fetchImpl: BlossomFetch = async (input) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.startsWith("https://a.example")) return jsonResponse({}, 500);
+      return jsonResponse(desc, 201);
+    };
+    expect(
+      await uploadToServers(["https://a.example", "https://b.example"], file, auth, {
+        fetch: fetchImpl,
+      }),
+    ).toEqual(desc);
+    expect(seen).toEqual(["https://a.example/upload", "https://b.example/upload"]);
+  });
+
+  test("all fail throws last BlossomError", async () => {
+    const file = new Blob(["abc"]);
+    const auth = await createUploadAuth(async (t) => signAuth(t), file);
+    const fetchImpl: BlossomFetch = async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://a.example")) return jsonResponse({}, 500);
+      return jsonResponse({}, 503);
+    };
+    await expect(
+      uploadToServers(["https://a.example", "https://b.example"], file, auth, { fetch: fetchImpl }),
+    ).rejects.toMatchObject({ name: "BlossomError", status: 503 });
+  });
+
+  test("AbortError aborts the loop", async () => {
+    const file = new Blob(["abc"]);
+    const auth = await createUploadAuth(async (t) => signAuth(t), file);
+    const aborted = abortError();
+    const seen: string[] = [];
+    const fetchImpl: BlossomFetch = async (input) => {
+      seen.push(String(input));
+      throw aborted;
+    };
+    await expect(
+      uploadToServers(["https://a.example", "https://b.example"], file, auth, { fetch: fetchImpl }),
+    ).rejects.toBe(aborted);
+    expect(seen).toEqual(["https://a.example/upload"]);
   });
 });
