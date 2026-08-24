@@ -15,6 +15,8 @@ export class MemoryEventStore implements EventStore {
   #byId = new Map<string, Event>();
   #byPubkey = new Map<string, Set<string>>();
   #byKind = new Map<number, Set<string>>();
+  #byKindPubkey = new Map<string, Set<string>>(); // `${kind}:${pubkey}` → ids
+  #byEpTag = new Map<string, Set<string>>(); // `${"e"|"p"}:${value.toLowerCase()}` → ids
   #replaceable = new Map<string, string>(); // address -> event id
   #deletion = new DeletionState();
 
@@ -127,6 +129,8 @@ export class MemoryEventStore implements EventStore {
     this.#byId.clear();
     this.#byPubkey.clear();
     this.#byKind.clear();
+    this.#byKindPubkey.clear();
+    this.#byEpTag.clear();
     this.#replaceable.clear();
     this.#deletion.clear();
   }
@@ -137,8 +141,14 @@ export class MemoryEventStore implements EventStore {
 
   #indexInsert(event: Event): void {
     this.#byId.set(event.id, event);
-    addToSet(this.#byPubkey, event.pubkey.toLowerCase(), event.id);
+    const pubkey = event.pubkey.toLowerCase();
+    addToSet(this.#byPubkey, pubkey, event.id);
     addToSet(this.#byKind, event.kind, event.id);
+    addToSet(this.#byKindPubkey, `${event.kind}:${pubkey}`, event.id);
+    for (const tag of event.tags) {
+      if ((tag[0] !== "e" && tag[0] !== "p") || tag[1] === undefined) continue;
+      addToSet(this.#byEpTag, `${tag[0]}:${tag[1].toLowerCase()}`, event.id);
+    }
     const addr = eventAddress(event);
     if (addr) this.#replaceable.set(addr, event.id);
   }
@@ -148,8 +158,14 @@ export class MemoryEventStore implements EventStore {
     const event = this.#byId.get(key);
     if (!event) return false;
     this.#byId.delete(key);
-    removeFromSet(this.#byPubkey, event.pubkey.toLowerCase(), key);
+    const pubkey = event.pubkey.toLowerCase();
+    removeFromSet(this.#byPubkey, pubkey, key);
     removeFromSet(this.#byKind, event.kind, key);
+    removeFromSet(this.#byKindPubkey, `${event.kind}:${pubkey}`, key);
+    for (const tag of event.tags) {
+      if ((tag[0] !== "e" && tag[0] !== "p") || tag[1] === undefined) continue;
+      removeFromSet(this.#byEpTag, `${tag[0]}:${tag[1].toLowerCase()}`, key);
+    }
     const addr = eventAddress(event);
     if (addr && this.#replaceable.get(addr) === key) this.#replaceable.delete(addr);
     return true;
@@ -182,13 +198,12 @@ export class MemoryEventStore implements EventStore {
     if (filter.authors && filter.kinds) {
       const seen = new Set<string>();
       for (const pk of filter.authors) {
-        const byPk = this.#byPubkey.get(pk.toLowerCase());
-        if (!byPk) continue;
+        const pubkey = pk.toLowerCase();
         for (const kind of filter.kinds) {
-          const byKind = this.#byKind.get(kind);
-          if (!byKind) continue;
-          for (const id of byPk) {
-            if (!byKind.has(id) || seen.has(id)) continue;
+          const ids = this.#byKindPubkey.get(`${kind}:${pubkey}`);
+          if (!ids) continue;
+          for (const id of ids) {
+            if (seen.has(id)) continue;
             seen.add(id);
             const event = this.#byId.get(id);
             if (event) visit(event);
@@ -228,6 +243,17 @@ export class MemoryEventStore implements EventStore {
       return;
     }
 
+    const eTags = filter["#e"];
+    const pTags = filter["#p"];
+    if (eTags !== undefined || pTags !== undefined) {
+      const seen = new Set<string>();
+      visitEpTagIds(this.#byEpTag, this.#byId, "e", eTags, seen, visit);
+      visitEpTagIds(this.#byEpTag, this.#byId, "p", pTags, seen, visit);
+      return;
+    }
+
+    // #t/#d and other non-e/p tags are not indexed (e/p only). A generic tag
+    // store is extra put/remove amp; hashtag-only queries scan #byId.
     for (const event of this.#byId.values()) visit(event);
   }
 }
@@ -237,6 +263,27 @@ function normalizeEvent(event: Event): Event {
   const pubkey = event.pubkey.toLowerCase();
   if (id === event.id && pubkey === event.pubkey) return event;
   return { ...event, id, pubkey };
+}
+
+function visitEpTagIds(
+  byEpTag: Map<string, Set<string>>,
+  byId: Map<string, Event>,
+  name: "e" | "p",
+  values: readonly string[] | undefined,
+  seen: Set<string>,
+  visit: (event: Event) => void,
+): void {
+  if (values === undefined) return;
+  for (const value of values) {
+    const ids = byEpTag.get(`${name}:${value.toLowerCase()}`);
+    if (!ids) continue;
+    for (const id of ids) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const event = byId.get(id);
+      if (event) visit(event);
+    }
+  }
 }
 
 function addToSet<K>(map: Map<K, Set<string>>, key: K, id: string): void {
