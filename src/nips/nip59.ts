@@ -287,6 +287,9 @@ export async function unwrap(crypto: Nip44Decryptor, giftWrap: Event): Promise<R
   if (sealRaw.kind !== Kind.Seal) {
     throw new Nip59Error("expected seal");
   }
+  if (sealRaw.tags.length !== 0) {
+    throw new Nip59Error("seal tags must be empty");
+  }
   if (!verifyEvent(sealRaw)) {
     throw new Nip59Error("seal signature");
   }

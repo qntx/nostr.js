@@ -225,7 +225,8 @@ export function parseRelayMessage(raw: string): RelayMessage {
       const payload = data[2] as { count: number; approximate?: unknown; hll?: unknown };
       const result: CountResult = { count: payload.count };
       if (typeof payload.approximate === "boolean") result.approximate = payload.approximate;
-      if (typeof payload.hll === "string") result.hll = payload.hll;
+      const hll = parseCountHll(payload.hll);
+      if (hll !== undefined) result.hll = hll;
       return ["COUNT", data[1], result];
     }
     case "NEG-MSG": {
@@ -235,7 +236,11 @@ export function parseRelayMessage(raw: string): RelayMessage {
       return ["NEG-MSG", data[1], data[2].toLowerCase()];
     }
     case "NEG-ERR": {
-      if (data.length !== 3 || typeof data[1] !== "string" || typeof data[2] !== "string") {
+      if (
+        (data.length !== 3 && data.length !== 4) ||
+        typeof data[1] !== "string" ||
+        typeof data[2] !== "string"
+      ) {
         throw new MessageError("invalid NEG-ERR relay message");
       }
       return ["NEG-ERR", data[1], data[2]];
@@ -243,6 +248,13 @@ export function parseRelayMessage(raw: string): RelayMessage {
     default:
       throw new MessageError(`unknown relay message type: ${type}`);
   }
+}
+
+function parseCountHll(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length !== HLL_HEX_LEN || !HEX_RE.test(value)) {
+    return undefined;
+  }
+  return value.toLowerCase();
 }
 
 function isFilterObject(value: unknown): value is Filter {

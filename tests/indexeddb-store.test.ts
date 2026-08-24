@@ -451,6 +451,37 @@ describe("IndexedDbEventStore", () => {
     store.close();
   });
 
+  test("ephemeral kinds are not inserted", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "ephemeral-db" });
+    await store.open();
+    const auth = new EventBuilder(Kind.ClientAuth, "")
+      .tag(["relay", "wss://r.example"])
+      .createdAt(1)
+      .signWithKeys(keys);
+    const wrap = new EventBuilder(Kind.GiftWrapEphemeral, "x")
+      .tag(["p", keys.publicKey])
+      .tag(["e", EID])
+      .createdAt(2)
+      .signWithKeys(keys);
+    expect(await store.put(auth)).toBe("ephemeral");
+    expect(await store.put(wrap)).toBe("ephemeral");
+    expect(await store.get(auth.id)).toBeUndefined();
+    expect(await store.get(wrap.id)).toBeUndefined();
+    expect(await store.query([{ kinds: [Kind.ClientAuth] }])).toEqual([]);
+    expect(await store.query([{ kinds: [Kind.GiftWrapEphemeral] }])).toEqual([]);
+    expect(await store.query([{ "#p": [keys.publicKey] }])).toEqual([]);
+    expect(await store.query([{ "#e": [EID] }])).toEqual([]);
+    expect(await store.count([{ kinds: [Kind.ClientAuth, Kind.GiftWrapEphemeral] }])).toBe(0);
+    expect(await store.negentropyItems({ kinds: [Kind.ClientAuth] })).toEqual([]);
+
+    const note = EventBuilder.textNote("keep").tag(["e", EID]).createdAt(3).signWithKeys(keys);
+    expect(await store.put(note)).toBe("accepted");
+    expect((await store.get(note.id))?.id).toBe(note.id);
+    expect((await store.query([{ "#e": [EID] }])).map((e) => e.id)).toEqual([note.id]);
+    store.close();
+  });
+
   test("negentropyItems same created_at sorts by id lexicographically", async () => {
     const keys = Keys.fromSecretKey(SK);
     const store = new IndexedDbEventStore({ dbName: "same-ts" });

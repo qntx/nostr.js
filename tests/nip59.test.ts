@@ -210,6 +210,27 @@ describe("nip59", () => {
     ]);
   });
 
+  test("unwrap rejects a signed seal with non-empty tags", async () => {
+    const { alice, bob, aliceKeys, bobKeys } = pair();
+    const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "leaky" });
+    const seal = await createSeal(alice, bobKeys.publicKey, rumor);
+    expect(seal.tags).toEqual([]);
+    const taggedSeal = finalizeEvent(
+      {
+        kind: Kind.Seal,
+        content: seal.content,
+        created_at: seal.created_at,
+        tags: [["p", bobKeys.publicKey]],
+      },
+      aliceKeys.secretKey,
+    );
+    expect(taggedSeal.tags).toEqual([["p", bobKeys.publicKey]]);
+    expect(verifyEvent(taggedSeal)).toBe(true);
+    const wrap = createGiftWrap(taggedSeal, bobKeys.publicKey);
+    await expect(unwrapGift(bob, wrap)).rejects.toThrow(Nip59Error);
+    await expect(unwrapGift(bob, wrap)).rejects.toThrow(/seal tags must be empty/);
+  });
+
   test("wrap extraTags land only on the wrap; seal tags stay empty", async () => {
     const { alice, bob, aliceKeys, bobKeys } = pair();
     const malloryKeys = Keys.fromSecretKey(MALLORY_SK);

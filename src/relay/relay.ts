@@ -53,7 +53,7 @@ export type RelayOptions = {
   enablePing?: boolean;
   pingIntervalMs?: number;
   pingTimeoutMs?: number;
-  /** When set, CLOSED/OK `auth-required:` triggers AUTH then retries the REQ/EVENT. */
+  /** When set, CLOSED/OK `auth-required:` triggers AUTH then retries the REQ/EVENT/COUNT. */
   authSigner?: (template: EventTemplate) => Promise<Event>;
 };
 
@@ -75,7 +75,10 @@ type PublishWaiter = {
 type CountWaiter = {
   resolve: (result: CountResult) => void;
   reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | undefined;
+  filters: Filter[];
+  authRetried: boolean;
+  timeoutMs: number;
 };
 
 type NegSession = {
@@ -134,6 +137,7 @@ export class Relay {
   #neg = new Map<SubscriptionId, NegSession>();
   #WS: WebSocketConstructor;
   #verify: (event: Event) => boolean;
+  #verifyDead = false;
   #publishTimeoutMs: number;
   #connectTimeoutMs: number;
   #enableReconnect: boolean;
@@ -574,7 +578,18 @@ export class Relay {
         sub.handlers.receivedEvent?.(event.id);
         if (sub.idsAtWatermark.has(event.id)) return;
         if (sub.handlers.alreadyHaveEvent?.(event.id)) return;
-        if (!this.#verify(event)) return;
+        if (this.#verifyDead) return;
+        try {
+          if (!this.#verify(event)) return;
+        } catch (e) {
+          const name = e instanceof Error ? e.name : "";
+          if (name === "WasmVerifyPoisonedError" || e instanceof WebAssembly.RuntimeError) {
+            this.#verifyDead = true;
+            this.onnotice?.("verify-poisoned: wasm instance aborted");
+            return;
+          }
+          throw e;
+        }
         sub.noteVerified(event);
         sub.handlers.onevent?.(event);
         break;
@@ -594,6 +609,11 @@ export class Relay {
         if (this.#finishDummyPing(subId)) return;
         const countWaiter = this.#counts.get(subId);
         if (countWaiter) {
+          if (isAuthRequired(reason) && this.#authSigner && !countWaiter.authRetried) {
+            countWaiter.authRetried = true;
+            void this.#authThenRecount(subId, countWaiter, reason);
+            return;
+          }
           countWaiter.reject(new RelayClosedError(reason || "COUNT closed", this.url));
           return;
         }
@@ -631,8 +651,6 @@ export class Relay {
         const [, countId, payload] = msg;
         const waiter = this.#counts.get(countId);
         if (!waiter) return;
-        clearTimeout(waiter.timer);
-        this.#counts.delete(countId);
         waiter.resolve(payload);
         break;
       }
@@ -832,40 +850,38 @@ export class Relay {
       const cleanup = () => {
         opts?.signal?.removeEventListener("abort", onAbort);
       };
-      const fail = (err: Error) => {
-        clearTimeout(timer);
-        this.#counts.delete(id);
-        cleanup();
-        reject(err);
-      };
-      const onAbort = () => fail(new RelayConnectionError("count aborted", this.url));
-
-      const timer = setTimeout(() => {
-        fail(new RelayPublishError("count timed out", this.url));
-      }, timeoutMs);
-
-      this.#counts.set(id, {
+      const waiter: CountWaiter = {
         resolve: (result) => {
-          clearTimeout(timer);
+          if (waiter.timer !== undefined) clearTimeout(waiter.timer);
+          waiter.timer = undefined;
           this.#counts.delete(id);
           cleanup();
           resolve(result);
         },
         reject: (err) => {
-          clearTimeout(timer);
+          if (waiter.timer !== undefined) clearTimeout(waiter.timer);
+          waiter.timer = undefined;
           this.#counts.delete(id);
           cleanup();
           reject(err);
         },
-        timer,
-      });
+        timer: undefined,
+        filters: [...filters],
+        authRetried: false,
+        timeoutMs,
+      };
+      const onAbort = () => waiter.reject(new RelayConnectionError("count aborted", this.url));
+      waiter.timer = setTimeout(() => {
+        waiter.reject(new RelayPublishError("count timed out", this.url));
+      }, timeoutMs);
+      this.#counts.set(id, waiter);
 
       opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
       try {
         this.#send(["COUNT", id, ...filters]);
       } catch (err) {
-        fail(err instanceof Error ? err : new RelayPublishError("count failed", this.url));
+        waiter.reject(err instanceof Error ? err : new RelayPublishError("count failed", this.url));
       }
     });
   }
@@ -941,6 +957,45 @@ export class Relay {
       this.#send(["REQ", sub.id, ...sub.replayFilters()]);
     } catch {
       this.#dropSubscription(sub, reason);
+    }
+  }
+
+  async #authThenRecount(id: string, waiter: CountWaiter, reason: string): Promise<void> {
+    if (waiter.timer !== undefined) {
+      clearTimeout(waiter.timer);
+      waiter.timer = undefined;
+    }
+    const fail = () => {
+      waiter.reject(new RelayClosedError(reason || "COUNT closed", this.url));
+    };
+    try {
+      const signer = this.#authSigner;
+      if (!signer || !this.#challenge) {
+        fail();
+        return;
+      }
+      if (this.#authedChallenge !== this.#challenge) {
+        const result = await this.auth(signer);
+        if (!this.#counts.has(id)) return;
+        if (!result.ok) {
+          fail();
+          return;
+        }
+      }
+      if (!this.#counts.has(id)) return;
+      if (!this.#connected) {
+        fail();
+        return;
+      }
+      waiter.timer = setTimeout(() => {
+        waiter.reject(new RelayPublishError("count timed out", this.url));
+      }, waiter.timeoutMs);
+      this.#send(["COUNT", id, ...waiter.filters]);
+    } catch (err) {
+      if (!this.#counts.has(id)) return;
+      waiter.reject(
+        err instanceof Error ? err : new RelayClosedError(reason || "COUNT closed", this.url),
+      );
     }
   }
 

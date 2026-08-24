@@ -7,6 +7,7 @@ import {
   MemoryEventStore,
   Relay,
   isAuthRequired,
+  isEphemeralKind,
   makeAuthEvent,
   parseRelayList,
   readRelays,
@@ -351,6 +352,42 @@ describe("MemoryEventStore", () => {
     const expected = events.map((e) => ({ id: e.id, created_at: e.created_at })).sort(itemCompare);
     expect(items).toEqual(expected);
     expect(await store.count([filter])).toBe((await store.query([filter])).length);
+  });
+
+  test("ephemeral kinds are not inserted", async () => {
+    const store = new MemoryEventStore();
+    const keys = Keys.fromSecretKey(SK);
+    const auth = new EventBuilder(Kind.ClientAuth, "")
+      .tag(["relay", "wss://r.example"])
+      .createdAt(1)
+      .signWithKeys(keys);
+    const wrap = new EventBuilder(Kind.GiftWrapEphemeral, "x")
+      .tag(["p", keys.publicKey])
+      .createdAt(2)
+      .signWithKeys(keys);
+    const lo = new EventBuilder(20_000, "lo").createdAt(3).signWithKeys(keys);
+    const hi = new EventBuilder(29_999, "hi").createdAt(4).signWithKeys(keys);
+    expect(isEphemeralKind(auth.kind)).toBe(true);
+    expect(await store.put(auth)).toBe("ephemeral");
+    expect(await store.put(wrap)).toBe("ephemeral");
+    expect(await store.put(lo)).toBe("ephemeral");
+    expect(await store.put(hi)).toBe("ephemeral");
+    expect(store.size).toBe(0);
+    expect(await store.get(auth.id)).toBeUndefined();
+    expect(await store.get(wrap.id)).toBeUndefined();
+    expect(await store.query([{ kinds: [Kind.ClientAuth] }])).toEqual([]);
+    expect(await store.query([{ kinds: [Kind.GiftWrapEphemeral] }])).toEqual([]);
+    expect(await store.query([{ "#p": [keys.publicKey] }])).toEqual([]);
+    expect(await store.count([{ kinds: [Kind.ClientAuth] }])).toBe(0);
+    expect(await store.negentropyItems({ kinds: [Kind.ClientAuth] })).toEqual([]);
+
+    const below = new EventBuilder(19_999, "below").createdAt(5).signWithKeys(keys);
+    const note = EventBuilder.textNote("keep").createdAt(6).signWithKeys(keys);
+    expect(await store.put(below)).toBe("accepted");
+    expect(await store.put(note)).toBe("accepted");
+    expect(store.size).toBe(2);
+    expect((await store.get(note.id))?.id).toBe(note.id);
+    expect((await store.query([{ kinds: [1] }])).map((e) => e.id)).toEqual([note.id]);
   });
 
   test("negentropyItems same created_at sorts by id lexicographically", async () => {

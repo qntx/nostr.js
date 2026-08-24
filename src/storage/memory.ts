@@ -49,7 +49,6 @@ export class MemoryEventStore implements EventStore {
     }
 
     if (isEphemeralKind(event.kind)) {
-      this.#indexInsert(event);
       return "ephemeral";
     }
 

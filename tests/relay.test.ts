@@ -238,6 +238,72 @@ describe("Relay", () => {
     relay.close();
   });
 
+  test("wasm poison by name drops EVENTs and notices once", async () => {
+    let verifies = 0;
+    const notices: string[] = [];
+    const relay = await Relay.connect("wss://poison-name.example", {
+      verifyEvent: () => {
+        verifies += 1;
+        const err = new Error("wasm verify aborted");
+        err.name = "WasmVerifyPoisonedError";
+        throw err;
+      },
+    });
+    relay.onnotice = (msg) => notices.push(msg);
+    const keys = Keys.fromSecretKey(SK);
+    const first = EventBuilder.textNote("a").createdAt(1).signWithKeys(keys);
+    const second = EventBuilder.textNote("b").createdAt(2).signWithKeys(keys);
+    const events: string[] = [];
+    const sub = relay.subscribe([{ kinds: [1] }], {
+      onevent: (e) => events.push(e.id),
+    });
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["EVENT", sub.id, first]));
+    expect(verifies).toBe(1);
+    expect(events).toEqual([]);
+    expect(notices).toEqual(["verify-poisoned: wasm instance aborted"]);
+    expect(sub.lastCreatedAt).toBeUndefined();
+    expect(sub.idsAtWatermark.size).toBe(0);
+
+    ws.receive(JSON.stringify(["EVENT", sub.id, second]));
+    expect(verifies).toBe(1);
+    expect(events).toEqual([]);
+    expect(notices).toEqual(["verify-poisoned: wasm instance aborted"]);
+    expect(sub.idsAtWatermark.size).toBe(0);
+    relay.close();
+  });
+
+  test("wasm RuntimeError poisons verify and does not map to false", async () => {
+    let verifies = 0;
+    const notices: string[] = [];
+    const relay = await Relay.connect("wss://poison-runtime.example", {
+      verifyEvent: () => {
+        verifies += 1;
+        throw new WebAssembly.RuntimeError("unreachable");
+      },
+    });
+    relay.onnotice = (msg) => notices.push(msg);
+    const keys = Keys.fromSecretKey(SK);
+    const first = EventBuilder.textNote("a").createdAt(1).signWithKeys(keys);
+    const second = EventBuilder.textNote("b").createdAt(2).signWithKeys(keys);
+    const events: string[] = [];
+    const sub = relay.subscribe([{ kinds: [1] }], {
+      onevent: (e) => events.push(e.id),
+    });
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["EVENT", sub.id, first]));
+    expect(verifies).toBe(1);
+    expect(events).toEqual([]);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toBe("verify-poisoned: wasm instance aborted");
+
+    ws.receive(JSON.stringify(["EVENT", sub.id, second]));
+    expect(verifies).toBe(1);
+    expect(events).toEqual([]);
+    expect(notices).toHaveLength(1);
+    relay.close();
+  });
+
   test("rejects invalid signatures", async () => {
     const relay = await Relay.connect("wss://relay.example.com");
     const keys = Keys.fromSecretKey(SK);
