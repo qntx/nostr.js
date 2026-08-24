@@ -96,7 +96,7 @@ describe("nip44", () => {
       expect(spy.mock.calls.length).toBe(2);
     });
 
-    test("low-level nip44.encrypt ciphertext decrypts via KeysSigner", async () => {
+    test("low-level nip44.encrypt ciphertext decrypts via KeysSigner cache hit", async () => {
       const signer = new KeysSigner(
         "0000000000000000000000000000000000000000000000000000000000000001",
       );
@@ -109,7 +109,15 @@ describe("nip44", () => {
         plaintext,
         nip44.getConversationKey(signer.keys.secretKey.bytes, peer),
       );
+      const spy = vi.spyOn(nip44, "getConversationKey");
+      expect(typeof signer.nip44Encrypt).toBe("function");
+      expect(typeof signer.nip44Decrypt).toBe("function");
+      const warm = await signer.nip44Encrypt(peer, "warm");
+      expect(spy.mock.calls.length).toBe(1);
+      expect(spy.mock.calls[0]).toEqual([signer.keys.secretKey.bytes, peer]);
+      expect(await signer.nip44Decrypt(peer, warm)).toBe("warm");
       expect(await signer.nip44Decrypt(peer, payload)).toBe(plaintext);
+      expect(spy.mock.calls.length).toBe(1);
     });
 
     test("mixed-case peer hits the same cache entry", async () => {
@@ -166,13 +174,16 @@ describe("nip44", () => {
       expect(await c.nip44Decrypt(await b.getPublicKey(), fromB)).toBe("from b");
     });
 
-    test("encryptToPubkey still derives per call", async () => {
+    test("encryptToPubkey / decryptFromPubkey spy-count 0 on getConversationKey export", async () => {
       const a = new KeysSigner("0000000000000000000000000000000000000000000000000000000000000001");
       const b = new KeysSigner("0000000000000000000000000000000000000000000000000000000000000002");
       const peer = await b.getPublicKey();
       const spy = vi.spyOn(nip44, "getConversationKey");
-      const payload = nip44.encryptToPubkey("gift wrap", a.keys.secretKey.bytes, peer);
-      expect(nip44.decryptFromPubkey(payload, a.keys.secretKey.bytes, peer)).toBe("gift wrap");
+      const first = nip44.encryptToPubkey("gift wrap", a.keys.secretKey.bytes, peer);
+      const second = nip44.encryptToPubkey("gift wrap 2", a.keys.secretKey.bytes, peer);
+      expect(first).not.toBe(second);
+      expect(nip44.decryptFromPubkey(first, a.keys.secretKey.bytes, peer)).toBe("gift wrap");
+      expect(nip44.decryptFromPubkey(second, a.keys.secretKey.bytes, peer)).toBe("gift wrap 2");
       expect(spy.mock.calls.length).toBe(0);
     });
   });
