@@ -181,17 +181,21 @@ export {
 } from "./nips/nip65.ts";
 export {
   bookmarkListEventBuilder,
+  decryptPrivateTags,
+  encryptPrivateTags,
   muteListEventBuilder,
   parseBookmarkList,
   parseEmojiSet,
   parseFavoriteRelays,
   parseFollowPack,
   parseMuteList,
+  parseMuteListPrivate,
   parsePinList,
   parseRelaySet,
   parseUserEmojiList,
   pinListEventBuilder,
   type MuteItem,
+  type Nip51Crypto,
 } from "./nips/nip51.ts";
 export {
   Nip59Error,

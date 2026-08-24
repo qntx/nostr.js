@@ -158,7 +158,7 @@ Implemented modules under `@qntx/nostr/nips/*`. Official NIPs are not a checklis
 | 44  | `nips/nip44`   | v2 only.                                                                       |
 | 46  | `nips/nip46`   | `bunker://` / pointer. NIP-05 identifiers are not bunker pointers.             |
 | 49  | `nips/nip49`   | `ncryptsec`.                                                                   |
-| 51  | `nips/nip51`   | Public list tags.                                                              |
+| 51  | `nips/nip51`   | Public list tags plus NIP-44 private `.content` helpers. No NIP-04 sniff.      |
 | 57  | `nips/nip57`   | Zap request + receipt validation. No LNURL HTTP.                               |
 | 59  | `nips/nip59`   | Gift wrap. Empty seals.                                                        |
 | 65  | `nips/nip65`   | Kind 10002 relay lists.                                                        |
