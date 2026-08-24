@@ -5,6 +5,7 @@ import {
   Kind,
   Keys,
   KeysSigner,
+  MemoryEventStore,
   Nip17Error,
   createGiftWrap,
   createRumor,
@@ -17,7 +18,9 @@ import {
   useWebSocketImplementation,
   wrapGift,
   type Event,
+  type EventStore,
   type Filter,
+  type PutResult,
 } from "../src/index.ts";
 import { FakeRelayBus } from "./helpers/fake-relay.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
@@ -85,6 +88,55 @@ async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 2000
     await new Promise((r) => setTimeout(r, 10));
   }
   throw new Error("timed out");
+}
+
+async function waitQuiet(check: () => boolean | Promise<boolean>, timeoutMs = 300): Promise<void> {
+  try {
+    await waitFor(check, timeoutMs);
+  } catch {
+    // condition never held
+  }
+}
+
+function wsFor(url: string): MockWebSocket {
+  const key = normalizeURL(url);
+  const ws = MockWebSocket.instances.find((w) => normalizeURL(w.url) === key);
+  if (!ws) throw new Error(`no websocket for ${url}`);
+  return ws;
+}
+
+function lastReqId(url: string): string {
+  let id: string | undefined;
+  for (const msg of clientFrames(url)) {
+    if (msg[0] === "REQ" && typeof msg[1] === "string") id = msg[1];
+  }
+  if (id === undefined) throw new Error(`no REQ on ${url}`);
+  return id;
+}
+
+function trackingStore(inner = new MemoryEventStore()): {
+  store: EventStore;
+  persistIds: string[];
+} {
+  const persistIds: string[] = [];
+  const store: EventStore = {
+    put: (event) => inner.put(event),
+    putMany: async (events) => {
+      for (const event of events) persistIds.push(event.id);
+      const out: PutResult[] = [];
+      for (const event of events) out.push(await inner.put(event));
+      return out;
+    },
+    get: (id) => inner.get(id),
+    query: (filters) => inner.query(filters),
+    count: (filters) => inner.count(filters),
+    negentropyItems: (filter) => inner.negentropyItems(filter),
+    remove: (ids) => inner.remove(ids),
+    clear: () => inner.clear(),
+    getOutboxBound: (pubkey, kind) => inner.getOutboxBound(pubkey, kind),
+    setOutboxBound: (pubkey, kind, bound) => inner.setOutboxBound(pubkey, kind, bound),
+  };
+  return { store, persistIds };
 }
 
 async function wrapKind21059(
@@ -433,6 +485,220 @@ describe("Client NIP-17", () => {
 
     sub.close();
     await alice.shutdown();
+    await bob.shutdown();
+  });
+
+  test("subscribePrivateMessages close same turn as deliver skips persist and onevent", async () => {
+    const aliceKeys = Keys.fromSecretKey(ALICE_SK);
+    const bobKeys = Keys.fromSecretKey(BOB_SK);
+    seedLists(bus, aliceKeys, bobKeys);
+    const wrap = await wrapGift(
+      new KeysSigner(aliceKeys),
+      bobKeys.publicKey,
+      createRumor(aliceKeys.publicKey, {
+        kind: Kind.PrivateDirectMessage,
+        content: "same-turn",
+        tags: [["p", bobKeys.publicKey]],
+        created_at: 10,
+      }),
+    );
+    const { store, persistIds } = trackingStore();
+    const signer = new KeysSigner(bobKeys);
+    let decrypts = 0;
+    const origDecrypt = signer.nip44Decrypt.bind(signer);
+    signer.nip44Decrypt = async (peer, payload) => {
+      decrypts += 1;
+      return origDecrypt(peer, payload);
+    };
+    const bob = Client.builder()
+      .signer(signer)
+      .storage(store)
+      .relays([IDX])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    await bob.connect();
+    const got: string[] = [];
+    const sub = await bob.subscribePrivateMessages({
+      onevent: (msg) => {
+        got.push(msg.rumor.content);
+      },
+    });
+    await waitFor(() => reqFilters(BOB_DM).some((f) => Array.isArray(f["#p"])));
+    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), wrap]));
+    sub.close();
+    await waitQuiet(() => got.length > 0 || persistIds.includes(wrap.id) || decrypts > 0);
+    expect(got).toEqual([]);
+    expect(persistIds.includes(wrap.id)).toBe(false);
+    expect(decrypts).toBe(0);
+    expect(await store.get(wrap.id)).toBeUndefined();
+    await bob.shutdown();
+  });
+
+  test("subscribePrivateMessages close during decrypt skips persist and onevent", async () => {
+    const aliceKeys = Keys.fromSecretKey(ALICE_SK);
+    const bobKeys = Keys.fromSecretKey(BOB_SK);
+    seedLists(bus, aliceKeys, bobKeys);
+    const wrap = await wrapGift(
+      new KeysSigner(aliceKeys),
+      bobKeys.publicKey,
+      createRumor(aliceKeys.publicKey, {
+        kind: Kind.PrivateDirectMessage,
+        content: "during-decrypt",
+        tags: [["p", bobKeys.publicKey]],
+        created_at: 10,
+      }),
+    );
+    const { store, persistIds } = trackingStore();
+    const signer = new KeysSigner(bobKeys);
+    const origDecrypt = signer.nip44Decrypt.bind(signer);
+    let decryptEntered = 0;
+    let decryptFinished = 0;
+    let decryptErrors = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    signer.nip44Decrypt = async (peer, payload) => {
+      decryptEntered += 1;
+      if (decryptEntered === 1) await held;
+      try {
+        return await origDecrypt(peer, payload);
+      } catch (error) {
+        decryptErrors += 1;
+        throw error;
+      } finally {
+        decryptFinished += 1;
+      }
+    };
+    const bob = Client.builder()
+      .signer(signer)
+      .storage(store)
+      .relays([IDX])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    await bob.connect();
+    const got: string[] = [];
+    const sub = await bob.subscribePrivateMessages({
+      onevent: (msg) => {
+        got.push(msg.rumor.content);
+      },
+    });
+    await waitFor(() => reqFilters(BOB_DM).some((f) => Array.isArray(f["#p"])));
+    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), wrap]));
+    await waitFor(() => decryptEntered === 1);
+    sub.close();
+    release();
+    await waitFor(() => decryptFinished === 2);
+    expect(decryptErrors).toBe(0);
+    expect(got).toEqual([]);
+    expect(persistIds.includes(wrap.id)).toBe(false);
+    expect(await store.get(wrap.id)).toBeUndefined();
+    await bob.shutdown();
+  });
+
+  test("subscribePrivateMessages abort during decrypt skips persist and onevent", async () => {
+    const aliceKeys = Keys.fromSecretKey(ALICE_SK);
+    const bobKeys = Keys.fromSecretKey(BOB_SK);
+    seedLists(bus, aliceKeys, bobKeys);
+    const wrap = await wrapGift(
+      new KeysSigner(aliceKeys),
+      bobKeys.publicKey,
+      createRumor(aliceKeys.publicKey, {
+        kind: Kind.PrivateDirectMessage,
+        content: "abort-decrypt",
+        tags: [["p", bobKeys.publicKey]],
+        created_at: 10,
+      }),
+    );
+    const { store, persistIds } = trackingStore();
+    const signer = new KeysSigner(bobKeys);
+    const origDecrypt = signer.nip44Decrypt.bind(signer);
+    let decryptEntered = 0;
+    let decryptFinished = 0;
+    let decryptErrors = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    signer.nip44Decrypt = async (peer, payload) => {
+      decryptEntered += 1;
+      if (decryptEntered === 1) await held;
+      try {
+        return await origDecrypt(peer, payload);
+      } catch (error) {
+        decryptErrors += 1;
+        throw error;
+      } finally {
+        decryptFinished += 1;
+      }
+    };
+    const bob = Client.builder()
+      .signer(signer)
+      .storage(store)
+      .relays([IDX])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    await bob.connect();
+    const got: string[] = [];
+    const ac = new AbortController();
+    const sub = await bob.subscribePrivateMessages({
+      signal: ac.signal,
+      onevent: (msg) => {
+        got.push(msg.rumor.content);
+      },
+    });
+    await waitFor(() => reqFilters(BOB_DM).some((f) => Array.isArray(f["#p"])));
+    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), wrap]));
+    await waitFor(() => decryptEntered === 1);
+    ac.abort();
+    release();
+    await waitFor(() => decryptFinished === 2);
+    expect(decryptErrors).toBe(0);
+    expect(got).toEqual([]);
+    expect(persistIds.includes(wrap.id)).toBe(false);
+    expect(await store.get(wrap.id)).toBeUndefined();
+    sub.close();
+    await bob.shutdown();
+  });
+
+  test("subscribePrivateMessages junk wrap is not stored", async () => {
+    const aliceKeys = Keys.fromSecretKey(ALICE_SK);
+    const bobKeys = Keys.fromSecretKey(BOB_SK);
+    seedLists(bus, aliceKeys, bobKeys);
+    const junk = finalizeEvent(
+      {
+        kind: Kind.GiftWrap,
+        content: "not-valid-nip44",
+        created_at: 11,
+        tags: [["p", bobKeys.publicKey]],
+      },
+      Keys.generate().secretKey,
+    );
+    const { store, persistIds } = trackingStore();
+    const bob = Client.builder()
+      .signer(new KeysSigner(bobKeys))
+      .storage(store)
+      .relays([IDX])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    await bob.connect();
+    const got: string[] = [];
+    const sub = await bob.subscribePrivateMessages({
+      onevent: (msg) => {
+        got.push(msg.rumor.content);
+      },
+    });
+    await waitFor(() => reqFilters(BOB_DM).some((f) => Array.isArray(f["#p"])));
+    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), junk]));
+    await waitQuiet(() => got.length > 0 || persistIds.includes(junk.id));
+    expect(got).toEqual([]);
+    expect(persistIds.includes(junk.id)).toBe(false);
+    expect(await store.get(junk.id)).toBeUndefined();
+    sub.close();
     await bob.shutdown();
   });
 

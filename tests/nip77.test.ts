@@ -526,8 +526,59 @@ describe("Relay.negReconcile + Client.sync", () => {
     await client.shutdown();
   });
 
-  test("Client.sync down does not list received when store.putMany throws", async () => {
+  test("Client.sync down observe false never putMany and still lists received", async () => {
     const remote = note(SK_B, "unsaved", 23);
+    bus.seed("wss://neg.example", [remote]);
+    let method = "";
+    const store: EventStore = {
+      async put(_event: Event): Promise<PutResult> {
+        method = "put";
+        throw new Error("disk full");
+      },
+      async putMany(_events: readonly Event[]): Promise<PutResult[]> {
+        method = "putMany";
+        throw new Error("disk full");
+      },
+      async get() {
+        return undefined;
+      },
+      async query(_filters: Filter[]) {
+        return [];
+      },
+      async count() {
+        return 0;
+      },
+      async negentropyItems() {
+        return [];
+      },
+      async remove() {
+        return 0;
+      },
+      async clear() {},
+      getOutboxBound: async () => undefined,
+      setOutboxBound: async () => {},
+    };
+    const client = Client.builder()
+      .storage(store)
+      .relays(["wss://neg.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .persistEvents(true)
+      .build();
+    await client.connect();
+    const summary = await client.sync(
+      { kinds: [1] },
+      { direction: SyncDirection.Down, timeoutMs: 2000, observe: false },
+    );
+    expect(summary.remote).toEqual([remote.id]);
+    expect(summary.received).toEqual([remote.id]);
+    expect(method).toBe("");
+    expect(await store.get(remote.id)).toBeUndefined();
+    await client.shutdown();
+  });
+
+  test("Client.sync down does not list received when store.putMany throws", async () => {
+    const remote = note(SK_B, "unsaved-default", 23);
     bus.seed("wss://neg.example", [remote]);
     let method = "";
     const store: EventStore = {
@@ -568,7 +619,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     await client.connect();
     const summary = await client.sync(
       { kinds: [1] },
-      { direction: SyncDirection.Down, timeoutMs: 2000, observe: false },
+      { direction: SyncDirection.Down, timeoutMs: 2000 },
     );
     expect(summary.remote).toEqual([remote.id]);
     expect(summary.received).toEqual([]);
@@ -629,7 +680,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     await client.shutdown();
   });
 
-  test("Client.sync down observe false still putMany and skips ingestMeta", async () => {
+  test("Client.sync down observe false skips putMany and ingestMeta", async () => {
     const remote = note(SK_B, "no-meta", 25);
     bus.seed("wss://neg.example", [remote]);
     const inner = new MemoryEventStore();
@@ -675,9 +726,9 @@ describe("Relay.negReconcile + Client.sync", () => {
       { direction: SyncDirection.Down, timeoutMs: 2000, observe: false },
     );
     expect(summary.received).toEqual([remote.id]);
-    expect(persistCalls).toEqual([`putMany:1`]);
+    expect(persistCalls).toEqual([]);
     expect(ingested).toBe(0);
-    expect(await inner.get(remote.id)).toBeDefined();
+    expect(await inner.get(remote.id)).toBeUndefined();
     await client.shutdown();
   });
 

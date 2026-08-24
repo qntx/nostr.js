@@ -1,7 +1,7 @@
 import type { Event, EventTemplate, UnsignedEvent } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { sortedEvents } from "../core/event.ts";
-import { CryptoError } from "../core/error.ts";
+import { NostrError } from "../core/error.ts";
 import { Kind } from "../core/kind.ts";
 import { normalizeURL } from "../core/util.ts";
 import { EventBuilder } from "../core/builder.ts";
@@ -204,6 +204,9 @@ export type SubscribePrivateMessagesOptions = {
   readonly observe?: boolean;
 };
 
+/** Client lifecycle, configuration, or abort failure (not cryptographic). */
+export class ClientError extends NostrError {}
+
 /**
  * Layer-5 facade: signer + default relays + pool + loaders + gossip + event store.
  */
@@ -303,12 +306,12 @@ export class Client {
   }
 
   #assertAlive(): void {
-    if (this.#shutdown) throw new CryptoError("client is shut down");
+    if (this.#shutdown) throw new ClientError("client is shut down");
   }
 
   #defaultRelays(urls?: string[]): string[] {
     const list = urls ?? this.#relays;
-    if (list.length === 0) throw new CryptoError("no relays configured");
+    if (list.length === 0) throw new ClientError("no relays configured");
     return list;
   }
 
@@ -396,7 +399,8 @@ export class Client {
 
   /**
    * Create an outbox-model feed for the given authors (NIP-65 write relays).
-   * Live events go through {@link observe}; sync persists via putMany then ingestMeta.
+   * Live events go through {@link observe}; sync persists via putMany then ingestMeta
+   * unless `observe: false` (received ids are still listed; `persistEvents` is not consulted).
    */
   outbox(opts: {
     authors: readonly string[];
@@ -421,22 +425,22 @@ export class Client {
   }
 
   async getPublicKey(): Promise<string> {
-    if (!this.#signer) throw new CryptoError("no signer configured");
+    if (!this.#signer) throw new ClientError("no signer configured");
     return this.#signer.getPublicKey();
   }
 
   async signEvent(unsigned: UnsignedEvent): Promise<Event> {
-    if (!this.#signer) throw new CryptoError("no signer configured");
+    if (!this.#signer) throw new ClientError("no signer configured");
     return this.#signer.signEvent(unsigned);
   }
 
   async signEventBuilder(builder: EventBuilder): Promise<Event> {
-    if (!this.#signer) throw new CryptoError("no signer configured");
+    if (!this.#signer) throw new ClientError("no signer configured");
     return builder.sign(this.#signer);
   }
 
   async signTemplate(template: EventTemplate): Promise<Event> {
-    if (!this.#signer) throw new CryptoError("no signer configured");
+    if (!this.#signer) throw new ClientError("no signer configured");
     const pubkey = await this.#signer.getPublicKey();
     return this.#signer.signEvent({ ...template, pubkey });
   }
@@ -711,14 +715,14 @@ export class Client {
   }
 
   #requireNip59Crypto(): Nip59Crypto {
-    if (!this.#signer) throw new CryptoError("no signer configured");
+    if (!this.#signer) throw new ClientError("no signer configured");
     return requireNip59Crypto(this.#signer);
   }
 
   #throwIfAborted(signal?: AbortSignal): void {
     if (!signal?.aborted) return;
     if (signal.reason instanceof Error) throw signal.reason;
-    throw new CryptoError("aborted");
+    throw new ClientError("aborted");
   }
 
   #giftWrapRelays(event: Event): string[] {
@@ -844,26 +848,39 @@ export class Client {
 
     const seen = new Set<string>();
     let tail = Promise.resolve();
-    return this.pool.subscribe(
+    let closed = false;
+    const markClosed = (): void => {
+      closed = true;
+    };
+    if (opts?.signal?.aborted) markClosed();
+    else opts?.signal?.addEventListener("abort", markClosed, { once: true });
+
+    const inner = this.pool.subscribe(
       relays,
       // 21059 is ephemeral (relays MUST NOT store); live inbox has to REQ it.
       [{ kinds: [Kind.GiftWrap, Kind.GiftWrapEphemeral], "#p": [self], since: opts?.since }],
       {
         signal: opts?.signal,
         oneose: opts?.oneose,
-        onclose: opts?.onclose,
+        onclose: (reason) => {
+          markClosed();
+          opts?.onclose?.(reason);
+        },
         eoseTimeoutMs: opts?.eoseTimeoutMs,
         onevent: (wrap) => {
+          if (closed) return;
           tail = tail
             .then(async () => {
-              if (opts?.observe !== false) this.observe(wrap);
+              if (closed) return;
               try {
                 const rumor = await unwrap(crypto, wrap);
+                if (closed) return;
                 if (seen.has(rumor.id)) return;
                 seen.add(rumor.id);
+                if (opts?.observe !== false) this.observe(wrap);
                 opts?.onevent?.({ wrap, rumor });
               } catch {
-                // drop
+                // junk / forgery — not stored
               }
             })
             .catch(() => {
@@ -872,6 +889,13 @@ export class Client {
         },
       },
     );
+
+    return {
+      close: (reason?: string) => {
+        markClosed();
+        inner.close(reason);
+      },
+    };
   }
 
   /**
@@ -938,7 +962,7 @@ export class Client {
     }
 
     if ((direction === SyncDirection.Down || direction === SyncDirection.Both) && need.length > 0) {
-      const shouldObserve = opts?.observe !== false;
+      const skipPersist = opts?.observe === false;
       for (let i = 0; i < need.length; i += SYNC_ID_BATCH) {
         const batch = need.slice(i, i + SYNC_ID_BATCH);
         this.#throwIfAborted(opts?.signal);
@@ -946,6 +970,10 @@ export class Client {
           timeoutMs: opts?.timeoutMs,
           signal: opts?.signal,
         });
+        if (skipPersist) {
+          for (const event of events) summary.received.push(event.id);
+          continue;
+        }
         let results;
         try {
           results = await this.storage.putMany(events);
@@ -955,7 +983,7 @@ export class Client {
         for (let j = 0; j < events.length; j++) {
           const event = events[j]!;
           if (results[j] === "rejected") continue;
-          if (shouldObserve) this.#ingestMeta(event);
+          this.#ingestMeta(event);
           summary.received.push(event.id);
         }
       }
