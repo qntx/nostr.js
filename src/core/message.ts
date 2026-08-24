@@ -3,6 +3,7 @@ import type { Event } from "./event.ts";
 import { validateSignedEvent } from "./event.ts";
 import type { Filter } from "./filter.ts";
 import { SUBSCRIPTION_ID_MAX_CHARS } from "./limits.ts";
+import { bytesToHex, hexToBytes } from "./util.ts";
 
 export type SubscriptionId = string;
 
@@ -41,13 +42,39 @@ export type RelayMessage =
   | ["NEG-MSG", SubscriptionId, string]
   | ["NEG-ERR", SubscriptionId, string];
 
-/** NIP-45 COUNT reply payload (HLL is opaque; not computed by this package). */
+/** NIP-45 COUNT reply payload. */
 export type CountResult = {
   count: number;
   approximate?: boolean;
-  /** Optional HyperLogLog sketch from the relay (opaque base64/hex string). */
+  /**
+   * Optional 512-char hex HyperLogLog sketch (256 registers).
+   * Merge sketches with `mergeCountHll`. Estimation is unspecified by NIP-45 and not provided.
+   */
   hll?: string;
 };
+
+const HLL_BYTES = 256; // 512 hex chars (NIP-45; hex only, not base64)
+const HLL_HEX_LEN = HLL_BYTES * 2;
+const HEX_RE = /^[0-9a-fA-F]+$/;
+
+/**
+ * Register-wise max of NIP-45 HyperLogLog sketches.
+ * Output is always lowercase 512 hex. Empty input is the zero sketch (identity).
+ */
+export function mergeCountHll(hexes: readonly string[]): string {
+  const merged = new Uint8Array(HLL_BYTES);
+  for (const hex of hexes) {
+    if (hex.length !== HLL_HEX_LEN || !HEX_RE.test(hex)) {
+      throw new MessageError("invalid NIP-45 HLL sketch: expected 512-char hex");
+    }
+    const bytes = hexToBytes(hex);
+    for (let i = 0; i < HLL_BYTES; i++) {
+      const b = bytes[i]!;
+      if (b > merged[i]!) merged[i] = b;
+    }
+  }
+  return bytesToHex(merged);
+}
 
 export function encodeClientMessage(message: ClientMessage): string {
   return JSON.stringify(message);
@@ -227,5 +254,3 @@ function isNegHex(value: unknown): value is string {
     typeof value === "string" && value.length > 0 && value.length % 2 === 0 && HEX_RE.test(value)
   );
 }
-
-const HEX_RE = /^[0-9a-fA-F]+$/;

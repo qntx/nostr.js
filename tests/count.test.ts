@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   EventBuilder,
   Keys,
+  MessageError,
   Pool,
   Relay,
   encodeClientMessage,
+  mergeCountHll,
   parseRelayMessage,
   useWebSocketImplementation,
 } from "../src/index.ts";
@@ -22,6 +24,31 @@ describe("NIP-45 COUNT codec", () => {
       JSON.stringify(["COUNT", "c1", { count: 3, approximate: true, hll: "abc" }]),
     );
     expect(msg).toEqual(["COUNT", "c1", { count: 3, approximate: true, hll: "abc" }]);
+  });
+});
+
+describe("mergeCountHll", () => {
+  test("empty input is the 512-zero identity sketch", () => {
+    expect(mergeCountHll([])).toBe("0".repeat(512));
+  });
+
+  test("one element is a lowercase clone", () => {
+    const sketch = "AB" + "00".repeat(255);
+    expect(mergeCountHll([sketch])).toBe("ab" + "00".repeat(255));
+  });
+
+  test("register-wise max of 0x01 and 0x02", () => {
+    const a = "01" + "02" + "00".repeat(254);
+    const b = "02" + "01" + "00".repeat(254);
+    expect(mergeCountHll([a, b])).toBe("02" + "02" + "00".repeat(254));
+  });
+
+  test("rejects length 511", () => {
+    expect(() => mergeCountHll(["0".repeat(511)])).toThrow(MessageError);
+  });
+
+  test("rejects non-hex gg", () => {
+    expect(() => mergeCountHll(["gg" + "00".repeat(255)])).toThrow(MessageError);
   });
 });
 
