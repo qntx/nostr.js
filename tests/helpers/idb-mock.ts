@@ -414,6 +414,53 @@ export function seedIdbV1(dbName: string, events: Array<Record<string, unknown>>
   });
 }
 
+export function seedIdbV2(
+  dbName: string,
+  data: {
+    events: Array<Record<string, unknown>>;
+    addresses: Array<Record<string, unknown>>;
+    tagRefs: Array<Record<string, unknown>>;
+  },
+): Promise<void> {
+  const factory = (
+    globalThis as unknown as { indexedDB: { open(name: string, version?: number): MockOpenReq } }
+  ).indexedDB;
+  return new Promise((resolve, reject) => {
+    const req = factory.open(dbName, 2);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      const events = db.createObjectStore("events", { keyPath: "id" });
+      events.createIndex("created_at", "created_at");
+      events.createIndex("kind_created_at", ["kind", "created_at"]);
+      events.createIndex("pubkey_created_at", ["pubkey", "created_at"]);
+      events.createIndex("kind_pubkey_created_at", ["kind", "pubkey", "created_at"]);
+      db.createObjectStore("tag_refs", { keyPath: "key" }).createIndex("name_value_created", [
+        "name",
+        "value",
+        "created_at",
+      ]);
+      db.createObjectStore("addresses", { keyPath: "address" });
+      db.createObjectStore("tombstones", { keyPath: "key" });
+    };
+    req.onerror = () => reject(req.error ?? new Error("seed v2 open failed"));
+    req.onsuccess = () => {
+      const db = req.result;
+      const tx = db.transaction(["events", "addresses", "tag_refs"], "readwrite");
+      const eventsStore = tx.objectStore("events");
+      for (const event of data.events) eventsStore.put(event);
+      const addressesStore = tx.objectStore("addresses");
+      for (const row of data.addresses) addressesStore.put(row);
+      const tagStore = tx.objectStore("tag_refs");
+      for (const row of data.tagRefs) tagStore.put(row);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => reject(tx.error ?? new Error("seed v2 put failed"));
+    };
+  });
+}
+
 export function seedIdbV3(dbName: string): Promise<void> {
   const factory = (
     globalThis as unknown as { indexedDB: { open(name: string, version?: number): MockOpenReq } }

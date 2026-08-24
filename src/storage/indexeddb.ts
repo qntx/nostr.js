@@ -497,6 +497,10 @@ export class IndexedDbEventStore implements EventStore {
   }
 
   async setOutboxBound(pubkey: string, kind: number, bound: OutboxBound): Promise<void> {
+    return this.#enqueueWrite(() => this.#setOutboxBoundLocked(pubkey, kind, bound));
+  }
+
+  async #setOutboxBoundLocked(pubkey: string, kind: number, bound: OutboxBound): Promise<void> {
     try {
       const db = await this.#ensure();
       const tx = db.transaction(OUTBOX_BOUNDS, "readwrite");

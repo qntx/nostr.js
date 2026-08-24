@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { itemCompare } from "../src/core/index.ts";
 import { EventBuilder, IndexedDbEventStore, Keys, Kind, StorageError } from "../src/index.ts";
-import { installIdbMock, seedIdbV1, seedIdbV3, type IdbMock } from "./helpers/idb-mock.ts";
+import {
+  installIdbMock,
+  seedIdbV1,
+  seedIdbV2,
+  seedIdbV3,
+  type IdbMock,
+} from "./helpers/idb-mock.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
 const EID = "aa".repeat(32);
@@ -553,6 +559,62 @@ describe("IndexedDbEventStore", () => {
     store.close();
   });
 
+  test("v2 leftover kind 0 is compacted on open", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const loser = EventBuilder.metadata({ name: "v1" })
+      .tag(["e", EID])
+      .tag(["p", keys.publicKey])
+      .createdAt(10)
+      .signWithKeys(keys);
+    const winner = EventBuilder.metadata({ name: "v2" })
+      .tag(["e", EID])
+      .createdAt(20)
+      .signWithKeys(keys);
+    const eVal = EID.toLowerCase();
+    const pVal = keys.publicKey.toLowerCase();
+    await seedIdbV2("v2-compact", {
+      events: [loser, winner],
+      addresses: [
+        { address: `0:${keys.publicKey}:`, id: winner.id, created_at: winner.created_at },
+      ],
+      tagRefs: [
+        {
+          key: `e:${eVal}:${loser.id.toLowerCase()}`,
+          name: "e",
+          value: eVal,
+          id: loser.id.toLowerCase(),
+          created_at: loser.created_at,
+        },
+        {
+          key: `p:${pVal}:${loser.id.toLowerCase()}`,
+          name: "p",
+          value: pVal,
+          id: loser.id.toLowerCase(),
+          created_at: loser.created_at,
+        },
+        {
+          key: `e:${eVal}:${winner.id.toLowerCase()}`,
+          name: "e",
+          value: eVal,
+          id: winner.id.toLowerCase(),
+          created_at: winner.created_at,
+        },
+      ],
+    });
+    const store = new IndexedDbEventStore({ dbName: "v2-compact" });
+    await store.open();
+    const found = await store.query([{ kinds: [0] }]);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.id).toBe(winner.id);
+    expect(await store.get(loser.id)).toBeUndefined();
+    expect((await store.query([{ "#e": [EID] }])).map((e) => e.id)).toEqual([winner.id]);
+    expect(await store.query([{ "#p": [keys.publicKey] }])).toEqual([]);
+    mock.resetStats();
+    await store.query([{ kinds: [0] }]);
+    expect(mock.eventsGetAllCount()).toBe(0);
+    store.close();
+  });
+
   test("#e and #p k-way merge is AND and respects limit", async () => {
     const keys = Keys.fromSecretKey(SK);
     const store = new IndexedDbEventStore({ dbName: "ep-and" });
@@ -803,6 +865,65 @@ describe("IndexedDbEventStore", () => {
     expect(await second).toEqual(["accepted", "accepted"]);
     expect(mock.readwriteTransactions()).toHaveLength(2);
     expect((await store.query([{ kinds: [1] }])).map((e) => e.id)).toEqual([c.id, b.id, a.id]);
+    store.close();
+  });
+
+  test("setOutboxBound waits behind an in-flight putMany", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "bound-behind-put" });
+    await store.open();
+    const note = EventBuilder.textNote("n").createdAt(50).signWithKeys(keys);
+    mock.resetStats();
+    const gate = mock.gateGetOnCall(1);
+    const put = store.putMany([note]);
+    await tickUntil(() => mock.readwriteTransactions().length === 1);
+    const boundP = store.setOutboxBound(keys.publicKey, 1, { oldest: 1, newest: 2 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mock.readwriteTransactions()).not.toContainEqual(["outbox_bounds"]);
+    gate.release();
+    expect(await put).toEqual(["accepted"]);
+    await boundP;
+    expect(mock.readwriteTransactions()).toContainEqual(["outbox_bounds"]);
+    expect(await store.getOutboxBound(keys.publicKey, 1)).toEqual({ oldest: 1, newest: 2 });
+    store.close();
+  });
+
+  test("clear then setOutboxBound keeps the bound; reverse drops it", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "bound-vs-clear" });
+    await store.open();
+    const note = EventBuilder.textNote("n").createdAt(50).signWithKeys(keys);
+    mock.resetStats();
+    const gate1 = mock.gateGetOnCall(1);
+    const put1 = store.putMany([note]);
+    await tickUntil(() => mock.readwriteTransactions().length === 1);
+    const clear1 = store.clear();
+    const bound1 = store.setOutboxBound(keys.publicKey, 1, { oldest: 1, newest: 2 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mock.readwriteTransactions()).not.toContainEqual(["outbox_bounds"]);
+    gate1.release();
+    await put1;
+    await clear1;
+    await bound1;
+    expect(await store.getOutboxBound(keys.publicKey, 1)).toEqual({ oldest: 1, newest: 2 });
+
+    const later = EventBuilder.textNote("m").createdAt(51).signWithKeys(keys);
+    mock.resetStats();
+    const gate2 = mock.gateGetOnCall(1);
+    const put2 = store.putMany([later]);
+    await tickUntil(() => mock.readwriteTransactions().length === 1);
+    const bound2 = store.setOutboxBound(keys.publicKey, 1, { oldest: 3, newest: 4 });
+    const clear2 = store.clear();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mock.readwriteTransactions()).not.toContainEqual(["outbox_bounds"]);
+    gate2.release();
+    await put2;
+    await bound2;
+    await clear2;
+    expect(await store.getOutboxBound(keys.publicKey, 1)).toBeUndefined();
     store.close();
   });
 
