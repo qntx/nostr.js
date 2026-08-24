@@ -58,7 +58,7 @@ async function readWasmUrl(url: URL): Promise<Uint8Array> {
   }
   const res = await fetch(url);
   if (!res.ok) {
-    throw new Error(`failed to fetch wasm: ${res.status} ${url.href}`);
+    throw new CryptoError(`failed to fetch wasm: ${res.status} ${url.href}`);
   }
   return new Uint8Array(await res.arrayBuffer());
 }

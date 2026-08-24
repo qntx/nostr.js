@@ -5,7 +5,7 @@ import { createListLoaders } from "./lists.ts";
 import { createProfileLoader } from "./profile.ts";
 import type { ReplaceableCache } from "./cache.ts";
 
-export { DataLoader } from "./dataloader.ts";
+export { DataLoader, LoaderError } from "./dataloader.ts";
 export { ReplaceableCache } from "./cache.ts";
 export { LoaderContext, type LoaderContextOptions } from "./context.ts";
 export {
@@ -22,6 +22,7 @@ export {
 } from "./profile.ts";
 export { createEventLoader, type EventLoader, type EventRef } from "./event.ts";
 export {
+  OutboxError,
   OutboxFeed,
   createOutboxFeed,
   groupAuthorsByOutboxRelay,

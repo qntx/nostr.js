@@ -1,6 +1,7 @@
 import type { Event } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { createSubscriptionId } from "../core/message.ts";
+import { RelayClosedError } from "./error.ts";
 
 export type SubscriptionHandlers = {
   onevent?: (event: Event) => void;
@@ -128,7 +129,7 @@ export function subscriptionToAsyncIterable(
     },
     onclose(reason) {
       if (reason && reason !== "eose" && reason !== "closed by client" && reason !== "aborted") {
-        error = new Error(reason);
+        error = new RelayClosedError(reason);
       }
       done = true;
       notify();

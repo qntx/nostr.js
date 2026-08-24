@@ -1,4 +1,5 @@
 import type { Event } from "../core/event.ts";
+import { NostrError } from "../core/error.ts";
 import type { Filter } from "../core/filter.ts";
 import { sortedEvents } from "../core/event.ts";
 import { Kind } from "../core/kind.ts";
@@ -9,6 +10,8 @@ import { toStorageError, type StorageError } from "../storage/error.ts";
 import type { EventStore, OutboxBound, PutResult } from "../storage/types.ts";
 
 export type { OutboxBound } from "../storage/types.ts";
+
+export class OutboxError extends NostrError {}
 
 export type OutboxFeedOptions = {
   pool: Pool;
@@ -302,7 +305,7 @@ export class OutboxFeed {
   }
 
   #assertOpen(): void {
-    if (this.#closed) throw new Error("OutboxFeed is closed");
+    if (this.#closed) throw new OutboxError("OutboxFeed is closed");
   }
 
   async #hydrateBoundsFromStore(): Promise<void> {

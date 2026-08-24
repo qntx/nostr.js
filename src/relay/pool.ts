@@ -2,7 +2,7 @@ import type { Event, EventTemplate } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import type { CountResult } from "../core/message.ts";
 import { normalizeURL } from "../core/util.ts";
-import { RelayClosedError, RelayConnectionError } from "./error.ts";
+import { RelayClosedError, RelayConnectionError, RelayPublishError } from "./error.ts";
 import { Relay, type PublishResult, type RelayOptions, type SubscribeOptions } from "./relay.ts";
 import { isInsecureRelayUrl } from "./url.ts";
 import type { WebSocketConstructor } from "./websocket.ts";
@@ -432,7 +432,7 @@ export class Pool {
         });
         this.#touch(relay.url);
         const result = await relay.publish(event, { timeoutMs: opts?.timeoutMs });
-        if (!result.ok) throw new Error(result.message || "rejected");
+        if (!result.ok) throw new RelayPublishError(result.message || "rejected", relay.url);
         return { url: relay.url, result };
       }),
     );

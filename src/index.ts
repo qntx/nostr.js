@@ -365,10 +365,12 @@ export {
 export {
   createLoaders,
   createOutboxFeed,
+  OutboxError,
   OutboxFeed,
   groupAuthorsByOutboxRelay,
   bareNostrUser,
   DataLoader,
+  LoaderError,
   LoaderContext,
   ReplaceableCache,
   type Loaders,

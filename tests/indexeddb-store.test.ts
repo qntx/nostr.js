@@ -986,4 +986,34 @@ describe("IndexedDbEventStore", () => {
     });
     store.close();
   });
+
+  test("open with null req.error throws StorageError fallback", async () => {
+    mock.failOpen(null);
+    const store = new IndexedDbEventStore({ dbName: "open-null-err" });
+    const err = await store.open().then(
+      () => {
+        throw new Error("expected reject");
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(StorageError);
+    expect((err as StorageError).message).toBe("IndexedDB open failed");
+    expect((err as StorageError).cause).toBeUndefined();
+  });
+
+  test("get with null req.error throws StorageError fallback", async () => {
+    const store = new IndexedDbEventStore({ dbName: "get-null-err" });
+    await store.open();
+    mock.failGetOnCall(1, null);
+    const err = await store.get(EID).then(
+      () => {
+        throw new Error("expected reject");
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(StorageError);
+    expect((err as StorageError).message).toBe("IndexedDB request failed");
+    expect((err as StorageError).cause).toBeUndefined();
+    store.close();
+  });
 });

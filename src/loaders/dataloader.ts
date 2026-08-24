@@ -1,7 +1,8 @@
-/**
- * Minimal request coalescer (DataLoader-style).
- * Batches keys within a microtask; no global state.
- */
+import { NostrError } from "../core/error.ts";
+
+export class LoaderError extends NostrError {}
+
+/** Minimal request coalescer. Batches keys within a microtask; no global state. */
 export type BatchLoadFn<K, V> = (keys: readonly K[]) => Promise<readonly (V | Error)[]>;
 
 export type DataLoaderOptions<K, C = K> = {
@@ -77,7 +78,7 @@ export class DataLoader<K, V, C = K> {
     void this.#batchLoadFn(keys)
       .then((values) => {
         if (values.length !== keys.length) {
-          const err = new Error(
+          const err = new LoaderError(
             `DataLoader batch function must return array of length ${keys.length}, got ${values.length}`,
           );
           for (const item of batch) item.reject(err);

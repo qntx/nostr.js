@@ -10,7 +10,9 @@ export type IdbMock = {
   readwriteTransactions(): string[][];
   resetStats(): void;
   /** Fail the next Nth `get` after this call (1-based). Restores tx snapshot on abort. */
-  failGetOnCall(n: number): void;
+  failGetOnCall(n: number, error?: Error | null): void;
+  /** Fail the next `indexedDB.open` with this `req.error` (null exercises the fallback). */
+  failOpen(error: Error | null): void;
   /** Park the Nth `get` (1-based, after this call) until `release()`. */
   gateGetOnCall(n: number): { release(): void };
 };
@@ -34,6 +36,8 @@ export function installIdbMock(): IdbMock {
     readwrite: [] as string[][],
     getCalls: 0,
     failGetOn: undefined as number | undefined,
+    failGetError: undefined as Error | null | undefined,
+    failOpenError: undefined as Error | null | undefined,
     gateOn: undefined as number | undefined,
     getGate: undefined as Promise<void> | undefined,
   };
@@ -218,7 +222,10 @@ export function installIdbMock(): IdbMock {
           return;
         }
         if (fail) {
-          req.error = new Error("IndexedDB request failed");
+          req.error =
+            stats.failGetError !== undefined
+              ? stats.failGetError
+              : new Error("IndexedDB request failed");
           req.onerror?.({});
           this.tx.abort();
           this.tx.end();
@@ -307,6 +314,15 @@ export function installIdbMock(): IdbMock {
   const indexedDB = {
     open(name: string, version = 1) {
       const req = new MockRequest<MockDb>();
+      if (stats.failOpenError !== undefined) {
+        const err = stats.failOpenError;
+        stats.failOpenError = undefined;
+        queueMicrotask(() => {
+          req.error = err;
+          req.onerror?.({});
+        });
+        return req;
+      }
       let rec = dbs.get(name);
       if (!rec) {
         rec = { version: 0, stores: new Map() };
@@ -362,12 +378,18 @@ export function installIdbMock(): IdbMock {
       stats.readwrite = [];
       stats.getCalls = 0;
       stats.failGetOn = undefined;
+      stats.failGetError = undefined;
+      stats.failOpenError = undefined;
       stats.gateOn = undefined;
       stats.getGate = undefined;
     },
-    failGetOnCall(n: number) {
+    failGetOnCall(n: number, error?: Error | null) {
       stats.getCalls = 0;
       stats.failGetOn = n;
+      stats.failGetError = error !== undefined ? error : new Error("IndexedDB request failed");
+    },
+    failOpen(error: Error | null) {
+      stats.failOpenError = error;
     },
     gateGetOnCall(n: number) {
       stats.getCalls = 0;
