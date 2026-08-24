@@ -305,7 +305,7 @@ export class Relay {
         release();
         return;
       }
-      if (!isReconnect) this.#skipReconnect = true;
+      if (!isReconnect && !this.#enableReconnect) this.#skipReconnect = true;
       release();
       finish(new RelayConnectionError("connection timed out", this.url));
       if (gen === this.#gen) {
@@ -319,7 +319,7 @@ export class Relay {
     try {
       ws = new this.#WS(this.url);
     } catch (err) {
-      if (!isReconnect) this.#skipReconnect = true;
+      if (!isReconnect && !this.#enableReconnect) this.#skipReconnect = true;
       finish(err);
       if (gen === this.#gen) {
         this.#handleSocketDeath("connection failed", { fromConnectAttempt: true, gen });
@@ -353,7 +353,7 @@ export class Relay {
       }
       this.#connected = false;
       const fromConnectAttempt = !settled;
-      if (!settled && !isReconnect) this.#skipReconnect = true;
+      if (!settled && !isReconnect && !this.#enableReconnect) this.#skipReconnect = true;
       release();
       finish(new RelayConnectionError("connection failed", this.url));
       if (gen === this.#gen) {
@@ -367,7 +367,7 @@ export class Relay {
       }
       this.#connected = false;
       const fromConnectAttempt = !settled;
-      if (!settled && !isReconnect) this.#skipReconnect = true;
+      if (!settled && !isReconnect && !this.#enableReconnect) this.#skipReconnect = true;
       release();
       if (fromConnectAttempt) {
         finish(new RelayConnectionError("websocket closed", this.url));

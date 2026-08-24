@@ -264,6 +264,42 @@ export class Pool {
     let pending = 0;
     const attempted = new Set<string>();
 
+    const attach = (relay: Relay): void => {
+      if (closed) return;
+      this.#touch(relay.url);
+      const sub = relay.subscribe(filters, {
+        id: opts.id,
+        alreadyHaveEvent: (id) => Boolean(opts.alreadyHaveEvent?.(id) || seen.has(id)),
+        receivedEvent: (id) => {
+          opts.receivedEvent?.(id);
+          if (this.trackRelays) {
+            let set = this.seenOn.get(id);
+            if (!set) {
+              set = new Set();
+              this.seenOn.set(id, set);
+            }
+            set.add(relay.url);
+          }
+        },
+        onevent: (event) => {
+          seen.add(event.id);
+          opts.onevent?.(event);
+        },
+        oneose: () => markEose(relay.url),
+        onclose: (reason) => {
+          closeReasons.push({ url: relay.url, reason });
+          markEose(relay.url);
+          pending -= 1;
+          if (pending <= 0 && !closed) {
+            settleClose();
+            // Aggregate close: tools passes per-relay reasons; we pass last reason for simplicity.
+            opts.onclose?.(reason);
+          }
+        },
+      });
+      closers.push(sub);
+    };
+
     for (const url of relays) {
       if (!this.#allowed(url, "read")) continue;
       let key: string;
@@ -281,42 +317,13 @@ export class Pool {
         signal: opts.signal,
         timeoutMs: opts.connectionTimeoutMs ?? this.#opts.maxWaitForConnectionMs,
       })
-        .then((relay) => {
-          if (closed) return;
-          this.#touch(relay.url);
-          const sub = relay.subscribe(filters, {
-            id: opts.id,
-            alreadyHaveEvent: (id) => Boolean(opts.alreadyHaveEvent?.(id) || seen.has(id)),
-            receivedEvent: (id) => {
-              opts.receivedEvent?.(id);
-              if (this.trackRelays) {
-                let set = this.seenOn.get(id);
-                if (!set) {
-                  set = new Set();
-                  this.seenOn.set(id, set);
-                }
-                set.add(relay.url);
-              }
-            },
-            onevent: (event) => {
-              seen.add(event.id);
-              opts.onevent?.(event);
-            },
-            oneose: () => markEose(relay.url),
-            onclose: (reason) => {
-              closeReasons.push({ url: relay.url, reason });
-              markEose(relay.url);
-              pending -= 1;
-              if (pending <= 0 && !closed) {
-                settleClose();
-                // Aggregate close: tools passes per-relay reasons; we pass last reason for simplicity.
-                opts.onclose?.(reason);
-              }
-            },
-          });
-          closers.push(sub);
-        })
+        .then(attach)
         .catch(() => {
+          const relay = this.#relays.get(key);
+          if (this.#opts.enableReconnect && relay) {
+            attach(relay);
+            return;
+          }
           markEose(key);
           pending -= 1;
           if (pending <= 0 && closers.length === 0 && !closed) {
