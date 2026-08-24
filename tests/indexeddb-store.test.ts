@@ -6,6 +6,14 @@ import { installIdbMock, seedIdbV1, seedIdbV3, type IdbMock } from "./helpers/id
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
 const EID = "aa".repeat(32);
 
+async function tickUntil(pred: () => boolean): Promise<void> {
+  for (let i = 0; i < 50; i++) {
+    if (pred()) return;
+    await Promise.resolve();
+  }
+  throw new Error("timed out waiting for IndexedDB mock");
+}
+
 describe("IndexedDbEventStore", () => {
   let mock: IdbMock;
 
@@ -772,6 +780,29 @@ describe("IndexedDbEventStore", () => {
     expect(await store.get(a.id)).toBeUndefined();
     expect(await store.get(b.id)).toBeUndefined();
     expect(await store.query([{ kinds: [1] }])).toEqual([]);
+    store.close();
+  });
+
+  test("overlapping putMany waits for the in-flight write", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const store = new IndexedDbEventStore({ dbName: "putmany-serial" });
+    await store.open();
+    const a = EventBuilder.textNote("a").createdAt(1).signWithKeys(keys);
+    const b = EventBuilder.textNote("b").createdAt(2).signWithKeys(keys);
+    const c = EventBuilder.textNote("c").createdAt(3).signWithKeys(keys);
+    mock.resetStats();
+    const gate = mock.gateGetOnCall(1);
+    const first = store.putMany([a]);
+    await tickUntil(() => mock.readwriteTransactions().length === 1);
+    const second = store.putMany([b, c]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mock.readwriteTransactions()).toHaveLength(1);
+    gate.release();
+    expect(await first).toEqual(["accepted"]);
+    expect(await second).toEqual(["accepted", "accepted"]);
+    expect(mock.readwriteTransactions()).toHaveLength(2);
+    expect((await store.query([{ kinds: [1] }])).map((e) => e.id)).toEqual([c.id, b.id, a.id]);
     store.close();
   });
 

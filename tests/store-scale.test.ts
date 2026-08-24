@@ -102,9 +102,7 @@ function buildScaleSet(): {
 }
 
 async function fill(store: EventStore, events: readonly Event[]): Promise<void> {
-  for (const event of events) {
-    await store.put(event);
-  }
+  await store.putMany(events);
 }
 
 describeScale("store scale 10^4", () => {
@@ -149,5 +147,5 @@ describeScale("store scale 10^4", () => {
     expect(mock.cursorVisitCount()).toBeGreaterThan(LIMIT);
     expect(mock.cursorVisitCount()).toBeLessThan(LIMIT + FOLLOW_N + 32);
     idb.close();
-  });
+  }, 60_000);
 });

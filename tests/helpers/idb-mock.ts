@@ -11,6 +11,8 @@ export type IdbMock = {
   resetStats(): void;
   /** Fail the next Nth `get` after this call (1-based). Restores tx snapshot on abort. */
   failGetOnCall(n: number): void;
+  /** Park the Nth `get` (1-based, after this call) until `release()`. */
+  gateGetOnCall(n: number): { release(): void };
 };
 
 type Row = Record<string, unknown>;
@@ -32,6 +34,8 @@ export function installIdbMock(): IdbMock {
     readwrite: [] as string[][],
     getCalls: 0,
     failGetOn: undefined as number | undefined,
+    gateOn: undefined as number | undefined,
+    getGate: undefined as Promise<void> | undefined,
   };
 
   class MockKeyRange {
@@ -207,7 +211,8 @@ export function installIdbMock(): IdbMock {
       this.tx.begin();
       stats.getCalls += 1;
       const fail = stats.failGetOn !== undefined && stats.getCalls === stats.failGetOn;
-      queueMicrotask(() => {
+      const gated = stats.gateOn === stats.getCalls && stats.getGate !== undefined;
+      const finish = () => {
         if (this.tx.aborted || this.tx.completed) {
           this.tx.end();
           return;
@@ -223,7 +228,12 @@ export function installIdbMock(): IdbMock {
         req.result = row ? structuredClone(row) : undefined;
         req.onsuccess?.({});
         this.tx.end();
-      });
+      };
+      if (gated) {
+        void stats.getGate!.then(() => queueMicrotask(finish));
+      } else {
+        queueMicrotask(finish);
+      }
       return req;
     }
 
@@ -352,10 +362,27 @@ export function installIdbMock(): IdbMock {
       stats.readwrite = [];
       stats.getCalls = 0;
       stats.failGetOn = undefined;
+      stats.gateOn = undefined;
+      stats.getGate = undefined;
     },
     failGetOnCall(n: number) {
       stats.getCalls = 0;
       stats.failGetOn = n;
+    },
+    gateGetOnCall(n: number) {
+      stats.getCalls = 0;
+      let releaseGate!: () => void;
+      stats.getGate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+      stats.gateOn = n;
+      return {
+        release() {
+          stats.gateOn = undefined;
+          stats.getGate = undefined;
+          releaseGate();
+        },
+      };
     },
   };
 }
