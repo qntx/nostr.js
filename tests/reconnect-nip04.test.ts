@@ -318,6 +318,49 @@ describe("Relay reconnect", () => {
     relay.close();
   });
 
+  test("extra live REQ while offline does not reset reconnect backoff", async () => {
+    const relay = new Relay("wss://extra-live.example", {
+      enableReconnect: true,
+      reconnectBackoffMs: [40, 5000],
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const sub1 = relay.subscribe([{ kinds: [1] }]);
+    const sub2 = relay.subscribe([{ kinds: [2] }]);
+    expect(sub1.closed).toBe(false);
+    expect(sub2.closed).toBe(false);
+    expect(sub1.id).not.toBe(sub2.id);
+    expect(MockWebSocket.instances).toHaveLength(0);
+
+    await waitUntil(() => MockWebSocket.instances.length >= 1, 200);
+    await waitUntil(() => relay.connected && reqFilters(MockWebSocket.last()).length >= 2);
+    const reqs = reqFilters(MockWebSocket.last());
+    expect(reqs.map((m) => m[1])).toEqual(expect.arrayContaining([sub1.id, sub2.id]));
+    expect(reqs.map((m) => m[2]!.kinds)).toEqual(expect.arrayContaining([[1], [2]]));
+    expect(MockWebSocket.instances).toHaveLength(1);
+    relay.close();
+  });
+
+  test("closeOnEose subscribe while offline does not reset reconnect backoff", async () => {
+    const relay = new Relay("wss://extra-eose.example", {
+      enableReconnect: true,
+      reconnectBackoffMs: [40, 5000],
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const live = relay.subscribe([{ kinds: [1] }]);
+    const once = relay.subscribe([{ kinds: [2] }], { closeOnEose: true });
+    expect(live.closed).toBe(false);
+    expect(once.closed).toBe(false);
+    expect(live.id).not.toBe(once.id);
+    expect(MockWebSocket.instances).toHaveLength(0);
+
+    await waitUntil(() => MockWebSocket.instances.length >= 1, 200);
+    await waitUntil(() => relay.connected && reqFilters(MockWebSocket.last()).length >= 2);
+    const reqs = reqFilters(MockWebSocket.last());
+    expect(reqs.map((m) => m[1])).toEqual(expect.arrayContaining([live.id, once.id]));
+    expect(MockWebSocket.instances).toHaveLength(1);
+    relay.close();
+  });
+
   test("reconnect CLOSED auth-required retries AUTH; post-AUTH REQ keeps inclusive since", async () => {
     const keys = Keys.fromSecretKey(SK);
     const relay = new Relay("wss://auth-wm.example", {

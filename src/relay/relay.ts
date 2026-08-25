@@ -558,7 +558,8 @@ export class Relay {
   }
 
   #scheduleReconnect(): void {
-    this.#clearReconnectTimer();
+    if (this.#reconnectTimer !== undefined) return;
+    if (this.#connected) return;
     const delay =
       this.#backoff[Math.min(this.#reconnectAttempts, this.#backoff.length - 1)] ?? 60_000;
     this.#reconnectAttempts += 1;
