@@ -218,6 +218,116 @@ describe("Relay", () => {
     relay.close();
   });
 
+  test("timeout does not fire while AUTH is in flight", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://pub-auth-timeout.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const note = EventBuilder.textNote("slow-auth").createdAt(2).signWithKeys(keys);
+    const publishP = relay.publish(note, { timeoutMs: 40 });
+    let settled = false;
+    void publishP.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "slow-challenge"]));
+    ws.receive(JSON.stringify(["OK", note.id, false, "auth-required: login"]));
+    await waitUntil(() => sentMessages(ws).some((m) => m[0] === "AUTH"));
+    const authFrame = sentMessages(ws).find((m) => m[0] === "AUTH") as [string, { id: string }];
+    expect(authFrame[0]).toBe("AUTH");
+    await sleep(80);
+    expect(settled).toBe(false);
+    ws.receive(JSON.stringify(["OK", authFrame[1].id, true, ""]));
+    await waitUntil(() => sentMessages(ws).filter((m) => m[0] === "EVENT").length >= 2);
+    ws.receive(JSON.stringify(["OK", note.id, true, ""]));
+    await expect(publishP).resolves.toEqual({ ok: true, message: "" });
+    relay.close();
+  });
+
+  test("publish times out after AUTH retry, not during AUTH", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://pub-auth-post-timeout.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const note = EventBuilder.textNote("post-auth-timeout").createdAt(2).signWithKeys(keys);
+    const publishP = relay.publish(note, { timeoutMs: 40 });
+    let settled = false;
+    void publishP.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "post-timeout-challenge"]));
+    ws.receive(JSON.stringify(["OK", note.id, false, "auth-required: login"]));
+    await waitUntil(() => sentMessages(ws).some((m) => m[0] === "AUTH"));
+    const authFrame = sentMessages(ws).find((m) => m[0] === "AUTH") as [string, { id: string }];
+    expect(authFrame[0]).toBe("AUTH");
+    await sleep(80);
+    expect(settled).toBe(false);
+    ws.receive(JSON.stringify(["OK", authFrame[1].id, true, ""]));
+    await expect(publishP).rejects.toThrow(/publish timed out/);
+    relay.close();
+  });
+
+  test("AUTH failure resolves publish as { ok: false }", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://pub-auth-fail.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const note = EventBuilder.textNote("auth-fail").createdAt(2).signWithKeys(keys);
+    const publishP = relay.publish(note, { timeoutMs: 40 });
+    let settled = false;
+    void publishP.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "fail-challenge"]));
+    ws.receive(JSON.stringify(["OK", note.id, false, "auth-required: login"]));
+    await waitUntil(() => sentMessages(ws).some((m) => m[0] === "AUTH"));
+    const authFrame = sentMessages(ws).find((m) => m[0] === "AUTH") as [string, { id: string }];
+    expect(authFrame[0]).toBe("AUTH");
+    await sleep(80);
+    expect(settled).toBe(false);
+    ws.receive(JSON.stringify(["OK", authFrame[1].id, false, "restricted: bad auth"]));
+    await expect(publishP).resolves.toEqual({ ok: false, message: "auth-required: login" });
+    relay.close();
+  });
+
   test("fetch collects until eose", async () => {
     const relay = await Relay.connect("wss://relay.example.com");
     const keys = Keys.fromSecretKey(SK);

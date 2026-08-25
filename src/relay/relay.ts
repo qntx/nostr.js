@@ -67,9 +67,10 @@ export type { CountResult };
 type PublishWaiter = {
   resolve: (result: PublishResult) => void;
   reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | undefined;
   event?: Event;
   authRetried?: boolean;
+  timeoutMs: number;
 };
 
 type CountWaiter = {
@@ -1026,7 +1027,7 @@ export class Relay {
         this.#publishes.delete(event.id);
         reject(new RelayPublishError("publish timed out", this.url));
       }, timeoutMs);
-      this.#publishes.set(event.id, { resolve, reject, timer, event });
+      this.#publishes.set(event.id, { resolve, reject, timer, event, timeoutMs });
       try {
         this.#send(["EVENT", event]);
       } catch (err) {
@@ -1119,7 +1120,7 @@ export class Relay {
           this.#publishes.delete(event.id);
           reject(new RelayPublishError("auth timed out", this.url));
         }, timeoutMs);
-        this.#publishes.set(event.id, { resolve, reject, timer });
+        this.#publishes.set(event.id, { resolve, reject, timer, timeoutMs });
         try {
           this.#send(["AUTH", event]);
         } catch (err) {
@@ -1219,8 +1220,12 @@ export class Relay {
   }
 
   async #authThenRepublish(waiter: PublishWaiter, eventId: string, message: string): Promise<void> {
-    const finish = (result: PublishResult) => {
+    if (waiter.timer !== undefined) {
       clearTimeout(waiter.timer);
+      waiter.timer = undefined;
+    }
+    const finish = (result: PublishResult) => {
+      if (waiter.timer !== undefined) clearTimeout(waiter.timer);
       this.#publishes.delete(eventId);
       waiter.resolve(result);
     };
@@ -1233,17 +1238,24 @@ export class Relay {
       }
       if (this.#authedChallenge !== this.#challenge) {
         const result = await this.auth(signer);
+        if (!this.#publishes.has(eventId)) return;
         if (!result.ok) {
           finish({ ok: false, message });
           return;
         }
       }
+      if (!this.#publishes.has(eventId)) return;
       if (!this.#connected) {
         finish({ ok: false, message });
         return;
       }
+      waiter.timer = setTimeout(() => {
+        this.#publishes.delete(eventId);
+        waiter.reject(new RelayPublishError("publish timed out", this.url));
+      }, waiter.timeoutMs);
       this.#send(["EVENT", event]);
     } catch {
+      if (!this.#publishes.has(eventId)) return;
       finish({ ok: false, message });
     }
   }
