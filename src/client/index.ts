@@ -1,5 +1,6 @@
 export {
   Client,
+  ClientError,
   type ClientOptions,
   type FetchEventsOptions,
   type SubscribeOptions,

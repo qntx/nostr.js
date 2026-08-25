@@ -346,6 +346,7 @@ export {
 export {
   Client,
   ClientBuilder,
+  ClientError,
   type ClientOptions,
   type SendPrivateMessageOptions,
   type PrivateMessageSendResult,

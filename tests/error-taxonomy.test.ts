@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
+  Client,
+  ClientError,
   CryptoError,
   DataLoader,
   EventBuilder,
   Gossip,
   Keys,
+  KeysSigner,
   LoaderError,
   MemoryEventStore,
   Nip19Error,
@@ -251,5 +254,96 @@ describe("WasmVerifyPoisonedError", () => {
     const sticky = syncThrow(() => fn({ ...event }));
     expect(sticky).toBe(poison.error);
     expect(calls).toBe(1);
+  });
+});
+
+describe("ClientError", () => {
+  const unsigned = {
+    kind: 1,
+    content: "x",
+    created_at: 1,
+    tags: [] as const,
+    pubkey: "0".repeat(64),
+  };
+
+  function pinClientError(err: unknown, message: string): void {
+    expect(err).toBeInstanceOf(ClientError);
+    expect(err).not.toBeInstanceOf(CryptoError);
+    expect(err).toBeInstanceOf(NostrError);
+    expect((err as ClientError).name).toBe("ClientError");
+    expect((err as ClientError).message).toBe(message);
+  }
+
+  test("getPublicKey/signEvent/signEventBuilder/signTemplate without signer", async () => {
+    const client = new Client();
+    pinClientError(await captureError(client.getPublicKey()), "no signer configured");
+    pinClientError(await captureError(client.signEvent(unsigned)), "no signer configured");
+    pinClientError(
+      await captureError(client.signEventBuilder(EventBuilder.textNote("x"))),
+      "no signer configured",
+    );
+    pinClientError(
+      await captureError(client.signTemplate({ kind: 1, content: "x", created_at: 1, tags: [] })),
+      "no signer configured",
+    );
+  });
+
+  test("requireNip59Crypto methods without signer", async () => {
+    const client = new Client({ relays: ["wss://a.example"] });
+    pinClientError(
+      await captureError(client.sendPrivateMessage("0".repeat(64), "hi")),
+      "no signer configured",
+    );
+    pinClientError(await captureError(client.fetchPrivateMessages()), "no signer configured");
+    pinClientError(await captureError(client.subscribePrivateMessages()), "no signer configured");
+  });
+
+  test("assertAlive after shutdown", async () => {
+    const client = new Client({ relays: ["wss://a.example"] });
+    await client.shutdown();
+    pinClientError(await captureError(client.connect()), "client is shut down");
+    pinClientError(
+      syncThrow(() => client.subscribe({ kinds: [1] })),
+      "client is shut down",
+    );
+  });
+
+  test("defaultRelays with no relays configured", () => {
+    const client = new Client();
+    pinClientError(
+      syncThrow(() => client.subscribe({ kinds: [1] })),
+      "no relays configured",
+    );
+  });
+
+  test("throwIfAborted with non-Error reason is ClientError", async () => {
+    const client = new Client({
+      signer: new KeysSigner(SK),
+      storage: new MemoryEventStore(),
+    });
+    const ac = new AbortController();
+    ac.abort("stop");
+    pinClientError(
+      await captureError(
+        client.syncToRelay("wss://a.example", { kinds: [1] }, { signal: ac.signal }),
+      ),
+      "aborted",
+    );
+  });
+
+  test("throwIfAborted with Error reason rethrows that Error", async () => {
+    const client = new Client({
+      signer: new KeysSigner(SK),
+      storage: new MemoryEventStore(),
+    });
+    const ac = new AbortController();
+    const reason = new Error("custom-abort");
+    ac.abort(reason);
+    const err = await captureError(
+      client.syncToRelay("wss://a.example", { kinds: [1] }, { signal: ac.signal }),
+    );
+    expect(err).toBe(reason);
+    expect(err).not.toBeInstanceOf(ClientError);
+    expect(err).not.toBeInstanceOf(CryptoError);
   });
 });
