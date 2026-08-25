@@ -236,7 +236,6 @@ export class Client {
       pingTimeoutMs: opts.pingTimeoutMs,
       connectTimeoutMs: opts.connectTimeoutMs,
       publishTimeoutMs: opts.publishTimeoutMs,
-      maxWaitForConnectionMs: opts.connectTimeoutMs ?? 3000,
       enableReconnect: opts.enableReconnect ?? true,
       automaticallyAuth: autoAuth
         ? () => {
