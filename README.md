@@ -209,7 +209,7 @@ NIP-50 `search` is relay-side. Local `matchFilter` and `EventStore.query` ignore
 
 ## Gossip and outbox
 
-NIP-65 routing is explicit. `Client.hydrateGossip` loads kind 10002 and kind 10050 for the given pubkeys and does not background-fetch unknown authors on subscribe.
+NIP-65 routing is explicit. `Client.hydrateGossip` loads kind 10002 and kind 10050 for the given pubkeys and does not background-fetch unknown authors on subscribe. With `gossip: true`, routed authors/`#p` REQ their NIP-65 outbox/inbox and unrouted keys query `Client.relays` as one Pool; `Gossip` does not take Client URLs.
 
 ```ts
 await client.hydrateGossip([pubkey]);

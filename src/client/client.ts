@@ -534,22 +534,33 @@ export class Client {
       return sortedEvents([...byId.values()]);
     }
 
-    for (const f of filters) {
-      const broken = this.gossip.breakDownFilter(f);
+    const brokenList = filters.map((f) => this.gossip.breakDownFilter(f));
+    const needsDefaults = brokenList.some(
+      (b) => b.type !== "per-relay" || b.fallback !== undefined,
+    );
+    if (needsDefaults) this.#defaultRelays();
+
+    for (let i = 0; i < filters.length; i++) {
+      const f = filters[i]!;
+      const broken = brokenList[i]!;
       if (broken.type === "per-relay") {
-        await Promise.all(
-          [...broken.filters.entries()].map(async ([url, subFilter]) => {
-            try {
-              const batch = await this.pool.fetch([url], [subFilter], {
+        const fetchInto = async (urls: string[], subFilters: Filter[]) => {
+          try {
+            ingest(
+              await this.pool.fetch(urls, subFilters, {
                 timeoutMs: opts?.timeoutMs,
                 signal: opts?.signal,
-              });
-              ingest(batch);
-            } catch {
-              // skip failed relay
-            }
-          }),
+              }),
+            );
+          } catch {
+            // skip failed relay
+          }
+        };
+        const jobs: Promise<void>[] = [...broken.filters.entries()].map(([url, subFilter]) =>
+          fetchInto([url], [subFilter]),
         );
+        if (broken.fallback) jobs.push(fetchInto(this.#defaultRelays(), [broken.fallback]));
+        await Promise.all(jobs);
       } else {
         const batch = await this.pool.fetch(this.#defaultRelays(), [f], {
           timeoutMs: opts?.timeoutMs,
@@ -594,10 +605,18 @@ export class Client {
       });
     }
 
+    const brokenList = filters.map((f) => this.gossip.breakDownFilter(f));
+    const needsDefaults = brokenList.some(
+      (b) => b.type !== "per-relay" || b.fallback !== undefined,
+    );
+    if (needsDefaults) this.#defaultRelays();
+
     const seen = new Set<string>();
     const closers: Array<{ close: (reason?: string) => void }> = [];
     let pendingEose = 0;
+    let pendingClose = 0;
     let eoseFired = false;
+    let closeFired = false;
     let closed = false;
     let eoseTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -616,6 +635,17 @@ export class Client {
       if (pendingEose <= 0) fireEose();
     };
 
+    const fireClose = (reason: string) => {
+      if (closeFired) return;
+      closeFired = true;
+      opts?.onclose?.(reason);
+    };
+
+    const maybeClose = (reason: string) => {
+      pendingClose -= 1;
+      if (pendingClose <= 0) fireClose(reason);
+    };
+
     const close = (reason?: string) => {
       if (closed) return;
       closed = true;
@@ -623,45 +653,47 @@ export class Client {
         clearTimeout(eoseTimer);
         eoseTimer = undefined;
       }
-      for (const c of closers) c.close(reason);
+      const closeReason = reason ?? "closed by client";
+      const shouldNotify = !closeFired;
+      closeFired = true;
+      try {
+        for (const c of closers) c.close(reason);
+      } finally {
+        if (shouldNotify) opts?.onclose?.(closeReason);
+      }
     };
 
     if (opts.signal?.aborted) closed = true;
     else opts.signal?.addEventListener("abort", () => close("aborted"), { once: true });
 
-    for (const f of filters) {
-      const broken = this.gossip.breakDownFilter(f);
+    const attach = (urls: string[], subFilters: Filter[], id?: string) => {
+      pendingEose += 1;
+      pendingClose += 1;
+      closers.push(
+        this.pool.subscribe(urls, subFilters, {
+          signal: opts.signal,
+          id,
+          onevent: (event) => {
+            if (seen.has(event.id)) return;
+            seen.add(event.id);
+            wrapEvent(event);
+          },
+          oneose: maybeEose,
+          onclose: maybeClose,
+        }),
+      );
+    };
+
+    for (let i = 0; i < filters.length; i++) {
+      const f = filters[i]!;
+      const broken = brokenList[i]!;
       if (broken.type === "per-relay") {
         for (const [url, subFilter] of broken.filters) {
-          pendingEose += 1;
-          closers.push(
-            this.pool.subscribe([url], [subFilter], {
-              signal: opts.signal,
-              onevent: (event) => {
-                if (seen.has(event.id)) return;
-                seen.add(event.id);
-                wrapEvent(event);
-              },
-              oneose: maybeEose,
-              onclose: opts.onclose,
-            }),
-          );
+          attach([url], [subFilter]);
         }
+        if (broken.fallback) attach(this.#defaultRelays(), [broken.fallback]);
       } else {
-        pendingEose += 1;
-        closers.push(
-          this.pool.subscribe(this.#defaultRelays(), [f], {
-            signal: opts.signal,
-            id: opts.id,
-            onevent: (event) => {
-              if (seen.has(event.id)) return;
-              seen.add(event.id);
-              wrapEvent(event);
-            },
-            oneose: maybeEose,
-            onclose: opts.onclose,
-          }),
-        );
+        attach(this.#defaultRelays(), [f], opts.id);
       }
     }
 

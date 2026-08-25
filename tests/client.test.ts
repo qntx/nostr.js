@@ -36,6 +36,33 @@ function lastReqId(ws: MockWebSocket): string {
   return last[1];
 }
 
+function findWs(part: string): MockWebSocket | undefined {
+  return MockWebSocket.instances.find((ws) => ws.url.includes(part));
+}
+
+function reqReady(part: string): boolean {
+  const ws = findWs(part);
+  return Boolean(ws && sentMessages(ws).some((m) => m[0] === "REQ"));
+}
+
+function reqAuthors(ws: MockWebSocket): string[] {
+  return sentMessages(ws)
+    .filter((m) => m[0] === "REQ")
+    .flatMap((m) => m.slice(2) as Array<{ authors?: string[] }>)
+    .flatMap((f) => f.authors ?? []);
+}
+
+function reqPTags(ws: MockWebSocket): string[] {
+  return sentMessages(ws)
+    .filter((m) => m[0] === "REQ")
+    .flatMap((m) => m.slice(2) as Array<{ "#p"?: string[] }>)
+    .flatMap((f) => f["#p"] ?? []);
+}
+
+function hasClose(ws: MockWebSocket): boolean {
+  return sentMessages(ws).some((m) => m[0] === "CLOSE");
+}
+
 function dummyPingReqs(ws: MockWebSocket): unknown[][] {
   return ws.sent
     .map((s) => JSON.parse(s) as unknown[])
@@ -244,6 +271,476 @@ describe("Client", () => {
     expect(eose).toBe(1);
     expect(sentMessages(silent).some((m) => m[0] === "CLOSE")).toBe(false);
     closer.close();
+    await client.shutdown();
+  });
+
+  test("gossip subscribe leftover authors REQ default relays", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.fromSecretKey(SK2);
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+
+    const closer = client.subscribe(
+      { kinds: [1], authors: [a.publicKey, b.publicKey] },
+      { gossip: true },
+    );
+    await waitUntil(() => reqReady("out-a.example") && reqReady("default.example"));
+
+    const outA = findWs("out-a.example")!;
+    const def = findWs("default.example")!;
+    expect(reqAuthors(outA)).toEqual([a.publicKey]);
+    expect(reqAuthors(def)).toEqual([b.publicKey]);
+    closer.close();
+    await client.shutdown();
+  });
+
+  test("gossip fetchEvents leftover authors read notes from default relays", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.fromSecretKey(SK2);
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+
+    const noteA = EventBuilder.textNote("from-a").createdAt(1).signWithKeys(a);
+    const noteB = EventBuilder.textNote("from-b").createdAt(2).signWithKeys(b);
+
+    const fetchP = client.fetchEvents(
+      { kinds: [1], authors: [a.publicKey, b.publicKey] },
+      { gossip: true, timeoutMs: 2000 },
+    );
+    await waitUntil(() => reqReady("out-a.example") && reqReady("default.example"));
+
+    const outA = findWs("out-a.example")!;
+    const def = findWs("default.example")!;
+    expect(reqAuthors(outA)).toEqual([a.publicKey]);
+    expect(reqAuthors(def)).toEqual([b.publicKey]);
+    const reply = (ws: MockWebSocket, note: typeof noteA) => {
+      for (const msg of sentMessages(ws)) {
+        if (msg[0] !== "REQ") continue;
+        const subId = msg[1] as string;
+        const filter = msg[2] as { authors?: string[] };
+        if (filter.authors?.includes(note.pubkey)) {
+          ws.receive(JSON.stringify(["EVENT", subId, note]));
+        }
+        ws.receive(JSON.stringify(["EOSE", subId]));
+      }
+    };
+    reply(outA, noteA);
+    reply(def, noteB);
+
+    const notes = await fetchP;
+    expect(notes.map((n) => n.id).sort()).toEqual([noteA.id, noteB.id].sort());
+    expect(notes.find((n) => n.id === noteB.id)?.content).toBe("from-b");
+    await client.shutdown();
+  });
+
+  test("gossip leftover with empty Client.relays throws before attach", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.fromSecretKey(SK2);
+    const client = Client.builder()
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+
+    const leftover = { kinds: [1], authors: [a.publicKey, b.publicKey] };
+    expect(() => client.subscribe(leftover, { gossip: true })).toThrow(/no relays configured/);
+    await expect(client.fetchEvents(leftover, { gossip: true })).rejects.toThrow(
+      /no relays configured/,
+    );
+    expect(() =>
+      client.subscribe([{ kinds: [1], authors: [a.publicKey] }, leftover], { gossip: true }),
+    ).toThrow(/no relays configured/);
+    await expect(
+      client.fetchEvents([{ kinds: [1], authors: [a.publicKey] }, leftover], { gossip: true }),
+    ).rejects.toThrow(/no relays configured/);
+
+    const start = Date.now();
+    while (Date.now() - start < 50) {
+      const reqOnOutA = MockWebSocket.instances.some(
+        (ws) => ws.url.includes("out-a.example") && sentMessages(ws).some((m) => m[0] === "REQ"),
+      );
+      expect(reqOnOutA).toBe(false);
+      await sleep(5);
+    }
+
+    await client.shutdown();
+  });
+
+  test("gossip all-routed authors skip empty Client.relays", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const client = Client.builder()
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+
+    const closer = client.subscribe({ kinds: [1], authors: [a.publicKey] }, { gossip: true });
+    await waitUntil(() => reqReady("out-a.example"));
+    const outA = findWs("out-a.example")!;
+    expect(reqAuthors(outA)).toEqual([a.publicKey]);
+    closer.close();
+    await client.shutdown();
+  });
+
+  test("gossip fetchEvents all-routed authors skip empty Client.relays", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const client = Client.builder()
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+
+    const noteA = EventBuilder.textNote("routed-a").createdAt(1).signWithKeys(a);
+    const fetchP = client.fetchEvents(
+      { kinds: [1], authors: [a.publicKey] },
+      { gossip: true, timeoutMs: 2000 },
+    );
+    await waitUntil(() => reqReady("out-a.example"));
+    expect(MockWebSocket.instances.every((ws) => ws.url.includes("out-a.example"))).toBe(true);
+    const outA = findWs("out-a.example")!;
+    expect(reqAuthors(outA)).toEqual([a.publicKey]);
+    outA.receive(JSON.stringify(["EVENT", lastReqId(outA), noteA]));
+    outA.receive(JSON.stringify(["EOSE", lastReqId(outA)]));
+    const notes = await fetchP;
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.id).toBe(noteA.id);
+    await client.shutdown();
+  });
+
+  test("gossip subscribe leftover #p REQ default relays", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.fromSecretKey(SK2);
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://in-a.example", read: true, write: false }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+
+    const closer = client.subscribe(
+      { kinds: [1], "#p": [a.publicKey, b.publicKey] },
+      { gossip: true },
+    );
+    await waitUntil(() => reqReady("in-a.example") && reqReady("default.example"));
+    expect(reqPTags(findWs("in-a.example")!)).toEqual([a.publicKey]);
+    expect(reqPTags(findWs("default.example")!)).toEqual([b.publicKey]);
+    closer.close();
+    await client.shutdown();
+  });
+
+  test("gossip subscribe leftover authors+#p REQ original filter on defaults", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.fromSecretKey(SK2);
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+
+    const filter = {
+      kinds: [1],
+      authors: [a.publicKey, b.publicKey],
+      "#p": [a.publicKey],
+    };
+    const closer = client.subscribe(filter, { gossip: true });
+    await waitUntil(() => reqReady("out-a.example") && reqReady("default.example"));
+    const outA = findWs("out-a.example")!;
+    const def = findWs("default.example")!;
+    expect(reqAuthors(outA)).toEqual([a.publicKey, b.publicKey]);
+    expect(reqPTags(outA)).toEqual([a.publicKey]);
+    expect(reqAuthors(def)).toEqual([a.publicKey, b.publicKey]);
+    expect(reqPTags(def)).toEqual([a.publicKey]);
+    closer.close();
+    await client.shutdown();
+  });
+
+  test("gossip subscribe close fires onclose once across two outboxes", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.fromSecretKey(SK2);
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-b.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(b),
+    );
+
+    let closes = 0;
+    const closer = client.subscribe(
+      { kinds: [1], authors: [a.publicKey, b.publicKey] },
+      {
+        gossip: true,
+        onclose: () => {
+          closes += 1;
+        },
+      },
+    );
+    await waitUntil(() => reqReady("out-a.example") && reqReady("out-b.example"));
+    const outA = findWs("out-a.example")!;
+    const outB = findWs("out-b.example")!;
+    closer.close();
+    expect(closes).toBe(1);
+    expect(hasClose(outA)).toBe(true);
+    expect(hasClose(outB)).toBe(true);
+    await client.shutdown();
+  });
+
+  test("gossip subscribe CLOSED waits for every outbox before onclose", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.fromSecretKey(SK2);
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-b.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(b),
+    );
+
+    let closes = 0;
+    client.subscribe(
+      { kinds: [1], authors: [a.publicKey, b.publicKey] },
+      {
+        gossip: true,
+        onclose: () => {
+          closes += 1;
+        },
+      },
+    );
+    await waitUntil(() => {
+      const targets = MockWebSocket.instances.filter(
+        (ws) => ws.url.includes("out-a.example") || ws.url.includes("out-b.example"),
+      );
+      return (
+        targets.length === 2 && targets.every((ws) => sentMessages(ws).some((m) => m[0] === "REQ"))
+      );
+    });
+    const outA = MockWebSocket.instances.find((ws) => ws.url.includes("out-a.example"))!;
+    const outB = MockWebSocket.instances.find((ws) => ws.url.includes("out-b.example"))!;
+    outA.receive(JSON.stringify(["CLOSED", lastReqId(outA), "bye-a"]));
+    expect(closes).toBe(0);
+    outB.receive(JSON.stringify(["CLOSED", lastReqId(outB), "bye-b"]));
+    expect(closes).toBe(1);
+    await client.shutdown();
+  });
+
+  test("gossip leftover plus two outboxes close fires onclose once", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.fromSecretKey(SK2);
+    const c = Keys.fromSecretKey(
+      "0000000000000000000000000000000000000000000000000000000000000002",
+    );
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-b.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(b),
+    );
+
+    let closes = 0;
+    const closer = client.subscribe(
+      { kinds: [1], authors: [a.publicKey, b.publicKey, c.publicKey] },
+      {
+        gossip: true,
+        onclose: () => {
+          closes += 1;
+        },
+      },
+    );
+    await waitUntil(
+      () => reqReady("out-a.example") && reqReady("out-b.example") && reqReady("default.example"),
+    );
+    const outA = findWs("out-a.example")!;
+    const outB = findWs("out-b.example")!;
+    const def = findWs("default.example")!;
+    closer.close();
+    expect(closes).toBe(1);
+    expect(hasClose(outA)).toBe(true);
+    expect(hasClose(outB)).toBe(true);
+    expect(hasClose(def)).toBe(true);
+    await client.shutdown();
+  });
+
+  test("gossip leftover CLOSED waits for fallback pool before onclose", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.fromSecretKey(SK2);
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+
+    let closes = 0;
+    client.subscribe(
+      { kinds: [1], authors: [a.publicKey, b.publicKey] },
+      {
+        gossip: true,
+        onclose: () => {
+          closes += 1;
+        },
+      },
+    );
+    await waitUntil(() => reqReady("out-a.example") && reqReady("default.example"));
+    const outA = findWs("out-a.example")!;
+    const def = findWs("default.example")!;
+    outA.receive(JSON.stringify(["CLOSED", lastReqId(outA), "bye-a"]));
+    expect(closes).toBe(0);
+    def.receive(JSON.stringify(["CLOSED", lastReqId(def), "bye-default"]));
+    expect(closes).toBe(1);
+    await client.shutdown();
+  });
+
+  test("gossip leftover two default relays stay one fallback pool", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.fromSecretKey(SK2);
+    const client = Client.builder()
+      .relays(["wss://default-a.example", "wss://default-b.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+
+    let closes = 0;
+    client.subscribe(
+      { kinds: [1], authors: [a.publicKey, b.publicKey] },
+      {
+        gossip: true,
+        onclose: () => {
+          closes += 1;
+        },
+      },
+    );
+    await waitUntil(
+      () =>
+        reqReady("out-a.example") && reqReady("default-a.example") && reqReady("default-b.example"),
+    );
+    const outA = findWs("out-a.example")!;
+    const defA = findWs("default-a.example")!;
+    const defB = findWs("default-b.example")!;
+    expect(reqAuthors(outA)).toEqual([a.publicKey]);
+    expect(reqAuthors(defA)).toEqual([b.publicKey]);
+    expect(reqAuthors(defB)).toEqual([b.publicKey]);
+
+    outA.receive(JSON.stringify(["CLOSED", lastReqId(outA), "bye-out"]));
+    expect(closes).toBe(0);
+    defA.receive(JSON.stringify(["CLOSED", lastReqId(defA), "bye-a"]));
+    expect(closes).toBe(0);
+    defB.receive(JSON.stringify(["CLOSED", lastReqId(defB), "bye-b"]));
+    expect(closes).toBe(1);
+    await client.shutdown();
+  });
+
+  test("gossip close still CLOSEs inners when onclose throws", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.fromSecretKey(SK2);
+    const c = Keys.fromSecretKey(
+      "0000000000000000000000000000000000000000000000000000000000000002",
+    );
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+    client.gossip.ingest(
+      EventBuilder.relayList([{ url: "wss://out-b.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(b),
+    );
+
+    const closer = client.subscribe(
+      { kinds: [1], authors: [a.publicKey, b.publicKey, c.publicKey] },
+      {
+        gossip: true,
+        onclose: () => {
+          throw new Error("boom");
+        },
+      },
+    );
+    await waitUntil(
+      () => reqReady("out-a.example") && reqReady("out-b.example") && reqReady("default.example"),
+    );
+    const outA = findWs("out-a.example")!;
+    const outB = findWs("out-b.example")!;
+    const def = findWs("default.example")!;
+    expect(() => closer.close()).toThrow(/boom/);
+    expect(hasClose(outA)).toBe(true);
+    expect(hasClose(outB)).toBe(true);
+    expect(hasClose(def)).toBe(true);
     await client.shutdown();
   });
 
