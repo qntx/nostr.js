@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   EventBuilder,
   Keys,
+  MessageError,
   Pool,
   Relay,
   RelayClosedError,
@@ -464,6 +465,33 @@ describe("Relay", () => {
     expect(sub.idsAtWatermark.size).toBe(1);
     relay.close();
   });
+
+  test("subscribe rejects empty and oversize custom ids at the call", async () => {
+    const relay = await Relay.connect("wss://sub-id.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    expect(() => relay.subscribe([{ kinds: [1] }], { id: "" })).toThrow(MessageError);
+    expect(() => relay.subscribe([{ kinds: [1] }], { id: "a".repeat(65) })).toThrow(MessageError);
+    expect(() => relay.subscribe([{ kinds: [1] }], { id: "", closeOnEose: true })).toThrow(
+      MessageError,
+    );
+    expect(sentMessages(MockWebSocket.last()).filter((m) => m[0] === "REQ")).toHaveLength(0);
+    relay.close();
+  });
+
+  test("subscribe uses a 64-char custom id on the REQ", async () => {
+    const relay = await Relay.connect("wss://sub-id-ok.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const id = "a".repeat(64);
+    const sub = relay.subscribe([{ kinds: [1] }], { id });
+    expect(sub.id).toBe(id);
+    const req = MockWebSocket.last().lastSent() as [string, string, ...unknown[]];
+    expect(req[0]).toBe("REQ");
+    expect(req[1]).toBe(id);
+    sub.close();
+    relay.close();
+  });
 });
 
 describe("Pool", () => {
@@ -532,6 +560,32 @@ describe("Pool", () => {
     } finally {
       pool.close();
     }
+  });
+
+  test("subscribe rejects empty custom id before opening a socket", async () => {
+    const pool = new Pool({
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: true,
+    });
+    expect(() => pool.subscribe(["wss://x"], [{ kinds: [1] }], { id: "" })).toThrow(MessageError);
+    expect(MockWebSocket.instances.length).toBe(0);
+    await Promise.resolve();
+    expect(MockWebSocket.instances.length).toBe(0);
+    pool.close();
+  });
+
+  test("subscribe rejects oversize custom id before opening a socket", async () => {
+    const pool = new Pool({
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: true,
+    });
+    expect(() => pool.subscribe(["wss://x"], [{ kinds: [1] }], { id: "a".repeat(65) })).toThrow(
+      MessageError,
+    );
+    expect(MockWebSocket.instances.length).toBe(0);
+    await Promise.resolve();
+    expect(MockWebSocket.instances.length).toBe(0);
+    pool.close();
   });
 });
 

@@ -1,6 +1,6 @@
 import type { Event, EventTemplate } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
-import type { CountResult } from "../core/message.ts";
+import { createSubscriptionId, type CountResult } from "../core/message.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayClosedError, RelayConnectionError, RelayPublishError } from "./error.ts";
 import { Relay, type PublishResult, type RelayOptions, type SubscribeOptions } from "./relay.ts";
@@ -212,6 +212,7 @@ export class Pool {
     filters: Filter[],
     opts: PoolSubscribeOptions = {},
   ): { close: (reason?: string) => void } {
+    if (opts.id !== undefined) createSubscriptionId(opts.id);
     const seen = new Set<string>();
     const closers: Array<{ close: (reason?: string) => void }> = [];
     let closed = false;

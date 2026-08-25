@@ -2,6 +2,7 @@ import type { Event, EventTemplate } from "../core/event.ts";
 import { verifyEvent } from "../core/key.ts";
 import { filterFingerprint, type Filter } from "../core/filter.ts";
 import {
+  createSubscriptionId,
   encodeClientMessage,
   parseRelayMessage,
   type ClientMessage,
@@ -1055,7 +1056,7 @@ export class Relay {
       throw new RelayConnectionError("count aborted", this.url);
     }
 
-    const id = opts?.id ?? this.nextSubId("count");
+    const id = opts?.id !== undefined ? createSubscriptionId(opts.id) : this.nextSubId("count");
     const timeoutMs = opts?.timeoutMs ?? this.#publishTimeoutMs;
 
     return await new Promise<CountResult>((resolve, reject) => {
