@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vite-plus/test";
 import {
   EventBuilder,
+  EventValidationError,
   Keys,
+  Kind,
   buildReplyTags,
   eTag,
   isNostrURI,
@@ -173,7 +175,7 @@ describe("nip10", () => {
     const tags = buildReplyTags({
       parent,
       relayHint: "wss://parent.example",
-      quoteIds: ["66".repeat(32)],
+      quotes: ["66".repeat(32)],
     });
     const eTags = tags.filter((t) => t[0] === "e");
     const qTags = tags.filter((t) => t[0] === "q");
@@ -188,6 +190,155 @@ describe("nip10", () => {
     ]);
     expect(eTags.some((t) => t[3] === "mention")).toBe(false);
     expect(qTags).toEqual([["q", "66".repeat(32)]]);
+  });
+
+  test("replyTo requires kind 1 when parent kind is present", () => {
+    const parent = signedNote(keysA, "hi");
+    const kind6 = { ...parent, kind: Kind.Repost };
+    expect(kind6.kind).toBe(Kind.Repost);
+    expect(() => replyTo(kind6, "nope")).toThrow(EventValidationError);
+    expect(() => replyTo(kind6, "nope")).toThrow(/kind 1/);
+    expect(() => buildReplyTags({ parent: kind6 })).toThrow(EventValidationError);
+    expect(() => buildReplyTags({ parent: kind6 })).toThrow(/kind 1/);
+
+    const { id, pubkey, tags } = parent;
+    const stripped = { id, pubkey, tags };
+    expect("kind" in stripped).toBe(false);
+    const builder = replyTo(stripped, "hello back");
+    expect(builder.currentKind).toBe(Kind.TextNote);
+    expect(builder.currentTags.some((t) => t[0] === "e" && t[1] === id && t[3] === "root")).toBe(
+      true,
+    );
+
+    const kind1 = replyTo({ id, pubkey, tags, kind: Kind.TextNote }, "also");
+    expect(kind1.currentKind).toBe(Kind.TextNote);
+    expect(kind1.currentTags.some((t) => t[0] === "e" && t[1] === id && t[3] === "root")).toBe(
+      true,
+    );
+  });
+
+  test("parseThreadTags hex q author is lowercased", () => {
+    const quoteId = "55".repeat(32);
+    const author = keysA.publicKey;
+    const event = signedNote(keysB, "q author", [
+      ["q", quoteId, "wss://quote.example", author.toUpperCase()],
+    ]);
+
+    const thread = parseThreadTags(event);
+    const quote = thread.quotes[0];
+    expect(thread.quotes).toHaveLength(1);
+    expect(quote).toEqual({
+      id: quoteId,
+      relays: ["wss://quote.example"],
+      author,
+    });
+    expect(quote && "id" in quote ? quote.author : undefined).toBe(author);
+  });
+
+  test("parseThreadTags address q becomes AddressPointer", () => {
+    const pk = keysA.publicKey;
+    const ident = "hello";
+    const relay = "wss://addr.example";
+    const other = keysB.publicKey;
+    const event = signedNote(keysB, "q addr", [
+      ["q", `30023:${pk.toUpperCase()}:${ident}`, relay, other],
+    ]);
+
+    const thread = parseThreadTags(event);
+    expect(thread.quotes).toHaveLength(1);
+    expect(thread.quotes[0]).toEqual({
+      identifier: ident,
+      pubkey: pk,
+      kind: 30023,
+      relays: [relay],
+    });
+    expect("id" in thread.quotes[0]!).toBe(false);
+    expect(thread.quotes[0]).not.toHaveProperty("author");
+    expect(thread.quotes[0]).not.toMatchObject({ pubkey: other });
+  });
+
+  test("parseThreadTags skips invalid q tags", () => {
+    const event = signedNote(keysA, "bad q", [
+      ["q"],
+      ["q", "not-a-quote"],
+      ["q", "30023:short:d"],
+      ["q", "1:2"],
+      ["q", "55".repeat(32), "wss://ok.example", "not-a-pubkey"],
+    ]);
+
+    const thread = parseThreadTags(event);
+    expect(thread.quotes).toEqual([{ id: "55".repeat(32), relays: ["wss://ok.example"] }]);
+    expect(thread.quotes[0]).not.toHaveProperty("author");
+  });
+
+  test("buildReplyTags EventPointer quote emits q and p", () => {
+    const parent = signedNote(keysA, "root note");
+    const quoteId = "66".repeat(32);
+    const quoteAuthor = "cc".repeat(32);
+    const quoteRelay = "wss://quote.example";
+    const tags = buildReplyTags({
+      parent,
+      quotes: [
+        {
+          id: quoteId,
+          relays: [quoteRelay],
+          author: quoteAuthor.toUpperCase(),
+        },
+      ],
+    });
+
+    expect(tags.filter((t) => t[0] === "q")).toEqual([["q", quoteId, quoteRelay, quoteAuthor]]);
+    expect(tags).toContainEqual(["p", quoteAuthor, quoteRelay]);
+
+    const viaReplyTo = replyTo(parent, "quoted", {
+      quotes: [{ id: quoteId, relays: [quoteRelay], author: quoteAuthor }],
+    });
+    expect(viaReplyTo.currentKind).toBe(Kind.TextNote);
+    expect(viaReplyTo.currentTags.filter((t) => t[0] === "q")).toEqual([
+      ["q", quoteId, quoteRelay, quoteAuthor],
+    ]);
+    expect(viaReplyTo.currentTags).toContainEqual(["p", quoteAuthor, quoteRelay]);
+  });
+
+  test("buildReplyTags quote strings, addresses, empty relay, skip garbage", () => {
+    const parent = signedNote(keysA, "root note");
+    const hexId = "11".repeat(32);
+    const emptyRelayId = "22".repeat(32);
+    const emptyRelayAuthor = "dd".repeat(32);
+    const addrPk = "bb".repeat(32);
+    const addrRelay = "wss://addr.example";
+    const coordPk = "ee".repeat(32);
+    const tags = buildReplyTags({
+      parent,
+      quotes: [
+        hexId.toUpperCase(),
+        { id: emptyRelayId, author: emptyRelayAuthor.toUpperCase() },
+        {
+          identifier: "post",
+          pubkey: addrPk.toUpperCase(),
+          kind: 30023,
+          relays: [addrRelay],
+        },
+        `30023:${coordPk.toUpperCase()}:slug`,
+        "garbage",
+        "30023:short:d",
+        { id: "33".repeat(32), author: "not-hex" },
+      ],
+    });
+
+    const qTags = tags.filter((t) => t[0] === "q");
+    expect(qTags).toEqual([
+      ["q", hexId],
+      ["q", emptyRelayId, "", emptyRelayAuthor],
+      ["q", `30023:${addrPk}:post`, addrRelay],
+      ["q", `30023:${coordPk}:slug`],
+      ["q", "33".repeat(32)],
+    ]);
+    expect(qTags).not.toContainEqual(["q", "garbage"]);
+    expect(tags).toContainEqual(["p", emptyRelayAuthor]);
+    expect(tags).toContainEqual(["p", addrPk, addrRelay]);
+    expect(tags.some((t) => t[0] === "p" && t[1] === coordPk)).toBe(false);
+    expect(tags.some((t) => t[0] === "p" && t[1] === hexId)).toBe(false);
   });
 
   test("eTag and replyTo builder", () => {
