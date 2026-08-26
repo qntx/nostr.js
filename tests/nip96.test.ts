@@ -30,8 +30,22 @@ function jsonResponse(status: number, body: unknown): Awaited<ReturnType<Nip96Fe
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: { get: () => null },
     json: async () => body,
+    arrayBuffer: async () => new ArrayBuffer(0),
   };
+}
+
+function abortError(): Error {
+  const err = new Error("aborted");
+  err.name = "AbortError";
+  return err;
+}
+
+function redirectOf(init: unknown): string | undefined {
+  if (!init || typeof init !== "object" || !("redirect" in init)) return undefined;
+  const value = (init as { redirect?: unknown }).redirect;
+  return typeof value === "string" ? value : undefined;
 }
 
 describe("nip96 server info", () => {
@@ -56,7 +70,33 @@ describe("nip96 server info", () => {
       delegated_to_url: "https://other.example",
       content_types: ["image/jpeg", "video/webm"],
     });
-    expect(calls).toEqual([{ url: INFO_URL, init: { signal: undefined, redirect: "manual" } }]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(INFO_URL);
+    expect(calls[0]?.init?.signal).toBeUndefined();
+    expect(redirectOf(calls[0]?.init)).toBe("manual");
+  });
+
+  test("network TypeError wraps Nip96Error", async () => {
+    const net = new TypeError("fetch failed");
+    const fetchImpl: Nip96Fetch = async () => {
+      throw net;
+    };
+    try {
+      await fetchNip96Info(SERVICE, { fetch: fetchImpl });
+      throw new Error("expected reject");
+    } catch (err) {
+      expect(err).toBeInstanceOf(Nip96Error);
+      expect((err as Nip96Error).cause).toBe(net);
+      expect(err).not.toBe(net);
+    }
+  });
+
+  test("AbortError is not wrapped into Nip96Error", async () => {
+    const aborted = abortError();
+    const fetchImpl: Nip96Fetch = async () => {
+      throw aborted;
+    };
+    await expect(fetchNip96Info(SERVICE, { fetch: fetchImpl })).rejects.toBe(aborted);
   });
 
   test("missing api_url throws", async () => {
@@ -131,7 +171,7 @@ describe("nip96 upload parse", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe(API_URL);
     expect(calls[0]?.init?.method).toBe("POST");
-    expect(calls[0]?.init?.redirect).toBe("manual");
+    expect(redirectOf(calls[0]?.init)).toBe("manual");
     expect(calls[0]?.init?.headers).toEqual({ Authorization: "Nostr tok" });
     expect(calls[0]?.init?.body).toBeInstanceOf(FormData);
     const body = calls[0]?.init?.body as FormData;
@@ -154,6 +194,31 @@ describe("nip96 upload parse", () => {
     await expect(
       uploadNip96(API_URL, new Blob(["x"]), "Nostr tok", { fetch: fetchImpl }),
     ).rejects.toThrow(/^NIP-96 upload HTTP 403: User is not allowed to upload$/);
+  });
+
+  test("upload network TypeError wraps Nip96Error", async () => {
+    const net = new TypeError("fetch failed");
+    const fetchImpl: Nip96Fetch = async () => {
+      throw net;
+    };
+    try {
+      await uploadNip96(API_URL, new Blob(["x"]), "Nostr tok", { fetch: fetchImpl });
+      throw new Error("expected reject");
+    } catch (err) {
+      expect(err).toBeInstanceOf(Nip96Error);
+      expect((err as Nip96Error).cause).toBe(net);
+      expect(err).not.toBe(net);
+    }
+  });
+
+  test("upload AbortError is not wrapped into Nip96Error", async () => {
+    const aborted = abortError();
+    const fetchImpl: Nip96Fetch = async () => {
+      throw aborted;
+    };
+    await expect(
+      uploadNip96(API_URL, new Blob(["x"]), "Nostr tok", { fetch: fetchImpl }),
+    ).rejects.toBe(aborted);
   });
 
   test("non-OK upload without message falls back to status", async () => {

@@ -13,6 +13,7 @@ import type { Event, EventTemplate } from "../core/event.ts";
 import { Kind } from "../core/kind.ts";
 import type { Tag } from "../core/tag.ts";
 import { assertHex32, bytesToHex, utf8Encoder } from "../core/util.ts";
+import { fetchManual, requireGlobalFetch, sendManual, type ManualFetch } from "./http.ts";
 
 export type BlobDescriptor = {
   url: string;
@@ -22,7 +23,7 @@ export type BlobDescriptor = {
   uploaded?: number;
 };
 
-export type BlossomFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
+export type BlossomFetch = ManualFetch;
 
 /** Signs a kind 24242 auth template (draft; pubkey is filled by the signer). */
 export type BlossomSign = (template: EventTemplate) => Promise<Event>;
@@ -226,7 +227,7 @@ export async function blobExists(
 ): Promise<boolean> {
   const hash = assertHex32(sha256Hex, "blob sha256");
   const url = blossomUrl(server, `/${hash}`);
-  const res = await fetchRedirectManual(opts?.fetch, url, { method: "HEAD", signal: opts?.signal });
+  const res = await blossomFetch(opts?.fetch, url, { method: "HEAD", signal: opts?.signal });
   if (res.status === 404) return false;
   if (res.ok) return true;
   throw blossomHttpError("HEAD", url, res);
@@ -240,7 +241,7 @@ export async function getBlob(
 ): Promise<Uint8Array> {
   const hash = assertHex32(sha256Hex, "blob sha256");
   const url = blossomUrl(server, `/${hash}`);
-  const res = await fetchRedirectManual(opts?.fetch, url, { method: "GET", signal: opts?.signal });
+  const res = await blossomFetch(opts?.fetch, url, { method: "GET", signal: opts?.signal });
   if (!res.ok) throw blossomHttpError("GET", url, res);
   const bytes = new Uint8Array(await res.arrayBuffer());
   if (!(await verifyBlob(bytes, hash))) {
@@ -263,7 +264,7 @@ export async function healBlobUrl(
   if (!hash) return url;
 
   const ext = extensionFromHashUrl(url, hash);
-  const fetchImpl = opts?.fetch ?? defaultFetch();
+  const fetchImpl = opts?.fetch ?? requireGlobalFetch(missingBlossomFetch);
 
   const originalStatus = await headStatus(fetchImpl, url, opts?.signal);
   // 2xx/3xx: still available. NIP-B7 only heals URLs that are not.
@@ -357,13 +358,6 @@ function blossomUrl(server: string, path: string): string {
   return `${base}${suffix}`;
 }
 
-function defaultFetch(): BlossomFetch {
-  if (typeof globalThis.fetch !== "function") {
-    throw new BlossomError("no fetch implementation available; pass opts.fetch");
-  }
-  return globalThis.fetch.bind(globalThis);
-}
-
 function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
@@ -382,7 +376,13 @@ function extensionFromHashUrl(url: string, hash: string): string {
   return m?.[0] ?? "";
 }
 
-function blossomHttpError(method: string, url: string, res: Response): BlossomError {
+function missingBlossomFetch(): BlossomError {
+  return new BlossomError("no fetch implementation available; pass opts.fetch");
+}
+
+type ManualResponse = Awaited<ReturnType<ManualFetch>>;
+
+function blossomHttpError(method: string, url: string, res: ManualResponse): BlossomError {
   let reason: string | undefined;
   try {
     reason = res.headers.get("x-reason") ?? undefined;
@@ -394,29 +394,35 @@ function blossomHttpError(method: string, url: string, res: Response): BlossomEr
   });
 }
 
-async function fetchRedirectManual(
+async function blossomFetch(
   fetchImpl: BlossomFetch | undefined,
   url: string,
-  init: { method: string; signal?: AbortSignal },
-): Promise<Response> {
-  try {
-    return await (fetchImpl ?? defaultFetch())(url, { ...init, redirect: "manual" });
-  } catch (err) {
-    if (isAbortError(err)) throw err;
-    throw new BlossomError(`blossom ${init.method} ${url} failed`, {
-      cause: err instanceof Error ? err : undefined,
-    });
-  }
+  init: {
+    method: string;
+    headers?: Record<string, string>;
+    body?: Blob | string | null;
+    signal?: AbortSignal;
+  },
+): Promise<ManualResponse> {
+  return fetchManual(
+    fetchImpl ?? requireGlobalFetch(missingBlossomFetch),
+    url,
+    init,
+    (err) =>
+      new BlossomError(`blossom ${init.method} ${url} failed`, {
+        cause: err instanceof Error ? err : undefined,
+      }),
+  );
 }
 
 /** HEAD with redirect:manual. Network → undefined. AbortError propagates. Never throws on HTTP status. */
 async function headStatus(
-  fetchImpl: BlossomFetch,
+  fetchImpl: ManualFetch,
   url: string,
   signal?: AbortSignal,
 ): Promise<number | undefined> {
   try {
-    const res = await fetchImpl(url, { method: "HEAD", redirect: "manual", signal });
+    const res = await sendManual(fetchImpl, url, { method: "HEAD", signal });
     return res.status;
   } catch (err) {
     if (isAbortError(err)) throw err;
@@ -433,13 +439,13 @@ async function blossomRequest(
     body?: Blob | string | null;
     signal?: AbortSignal;
   },
-): Promise<Response> {
-  const res = await (fetchImpl ?? defaultFetch())(url, { ...init, redirect: "manual" });
+): Promise<ManualResponse> {
+  const res = await blossomFetch(fetchImpl, url, init);
   if (res.ok) return res;
   throw blossomHttpError(init.method, url, res);
 }
 
-async function readJson(res: Response): Promise<unknown> {
+async function readJson(res: ManualResponse): Promise<unknown> {
   try {
     return await res.json();
   } catch (cause) {

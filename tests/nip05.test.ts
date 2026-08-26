@@ -10,6 +10,7 @@ import {
   wellKnownUrl,
   type Nip05Fetch,
 } from "../src/index.ts";
+import { queryNip05Document } from "../src/nips/nip05.ts";
 
 const PK = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
 const PK2 = "2c7cc62a697ea3a7826521f3fd34f0cb273693cbe5e9310f35449f43622a5cdc";
@@ -139,12 +140,29 @@ describe("nip05 parse", () => {
 });
 
 describe("nip05 query", () => {
-  function mockFetch(map: Record<string, { status: number; body: unknown }>): Nip05Fetch {
-    return async (url) => {
-      const entry = map[url];
-      if (!entry) return { status: 404, json: async () => ({}) };
-      return { status: entry.status, json: async () => entry.body };
+  function jsonResponse(status: number, body: unknown): Awaited<ReturnType<Nip05Fetch>> {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: () => null },
+      json: async () => body,
+      arrayBuffer: async () => new ArrayBuffer(0),
     };
+  }
+
+  function mockFetch(map: Record<string, { status: number; body: unknown }>): Nip05Fetch {
+    return async (url, init) => {
+      expect((init as { redirect?: string } | undefined)?.redirect).toBe("manual");
+      const entry = map[url];
+      if (!entry) return jsonResponse(404, {});
+      return jsonResponse(entry.status, entry.body);
+    };
+  }
+
+  function abortError(): Error {
+    const err = new Error("aborted");
+    err.name = "AbortError";
+    return err;
   }
 
   test("queryProfile resolves names and relays", async () => {
@@ -197,6 +215,31 @@ describe("nip05 query", () => {
     expect(await queryProfile("redir.example", { fetch: fetchImpl })).toBeNull();
     expect(await queryProfile("bob@empty.example", { fetch: fetchImpl })).toBeNull();
     expect(await queryProfile("%%%", { fetch: fetchImpl })).toBeNull();
+  });
+
+  test("aborted signal throws AbortError, not null", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = abortError();
+    const fetchImpl: Nip05Fetch = async (_url, init) => {
+      expect(init?.signal).toBe(controller.signal);
+      expect(init?.signal?.aborted).toBe(true);
+      throw aborted;
+    };
+    await expect(
+      queryNip05Document("bob@example.com", { fetch: fetchImpl, signal: controller.signal }),
+    ).rejects.toBe(aborted);
+  });
+
+  test("network and parse failures return null, not Nip05Error", async () => {
+    const net: Nip05Fetch = async () => {
+      throw new TypeError("fetch failed");
+    };
+    expect(await queryNip05Document("bob@example.com", { fetch: net })).toBeNull();
+    expect(await queryProfile("bob@example.com", { fetch: net })).toBeNull();
+
+    const badDoc: Nip05Fetch = async () => jsonResponse(200, { names: "nope" });
+    expect(await queryNip05Document("bob@example.com", { fetch: badDoc })).toBeNull();
   });
 
   test("verifyNip05", async () => {
