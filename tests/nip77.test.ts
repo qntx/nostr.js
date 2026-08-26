@@ -38,11 +38,11 @@ function note(sk: string, content: string, createdAt: number) {
 
 function wrapEventStore(
   inner: EventStore,
-  overrides: Partial<Pick<EventStore, "get" | "query">> = {},
+  overrides: Partial<Pick<EventStore, "get" | "query" | "putMany">> = {},
 ): EventStore {
   return {
     put: (event) => inner.put(event),
-    putMany: (events) => inner.putMany(events),
+    putMany: overrides.putMany ?? ((events) => inner.putMany(events)),
     get: overrides.get ?? ((id) => inner.get(id)),
     query: overrides.query ?? ((filters) => inner.query(filters)),
     count: (filters) => inner.count(filters),
@@ -294,6 +294,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     );
     expect(summary.remote).toEqual([remote.id]);
     expect(summary.received).toEqual([remote.id]);
+    expect(summary.persistFailures).toEqual({});
     expect(await store.get(remote.id)).toBeDefined();
     await client.shutdown();
   });
@@ -315,6 +316,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     );
     expect(summary.local).toEqual([local.id]);
     expect(summary.sent).toEqual([local.id]);
+    expect(summary.persistFailures).toEqual({});
     expect(bus.eventsOn("wss://neg.example").some((e) => e.id === local.id)).toBe(true);
     await client.shutdown();
   });
@@ -358,6 +360,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     expect(queried![0]!.kinds).toBeUndefined();
     expect(new Set(queried![0]!.ids)).toEqual(new Set(events.map((event) => event.id)));
     expect(new Set(summary.sent)).toEqual(new Set(events.map((event) => event.id)));
+    expect(summary.persistFailures).toEqual({});
     await client.shutdown();
   });
 
@@ -393,6 +396,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     );
     expect(summary.local).toEqual([]);
     expect(summary.sent).toEqual([]);
+    expect(summary.persistFailures).toEqual({});
     expect(queryCount).toBe(0);
     expect(getCount).toBe(0);
     await client.shutdown();
@@ -434,6 +438,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     expect(maxInflight).toBeGreaterThan(1);
     expect(maxInflight).toBe(8);
     expect(new Set(summary.sent)).toEqual(new Set(events.map((event) => event.id)));
+    expect(summary.persistFailures).toEqual({});
     await client.shutdown();
   });
 
@@ -479,6 +484,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     expect(new Set(queried![0]!.ids)).toEqual(new Set(events.map((event) => event.id)));
     expect(summary.sendFailures[missing.id]).toBe("event not found in local store");
     expect(Object.keys(summary.sendFailures)).toEqual([missing.id]);
+    expect(summary.persistFailures).toEqual({});
     expect(new Set(summary.sent)).toEqual(
       new Set(events.filter((event) => event.id !== missing.id).map((event) => event.id)),
     );
@@ -509,6 +515,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     );
     expect(summary.sendFailures[boom.id]).toBe("boom");
     expect(Object.keys(summary.sendFailures)).toEqual([boom.id]);
+    expect(summary.persistFailures).toEqual({});
     expect(new Set(summary.sent)).toEqual(
       new Set(events.filter((event) => event.id !== boom.id).map((event) => event.id)),
     );
@@ -532,6 +539,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     );
     expect(summary.remote).toEqual([remote.id]);
     expect(summary.received).toEqual([]);
+    expect(summary.persistFailures).toEqual({});
     expect(await store.get(remote.id)).toBeUndefined();
     await client.shutdown();
   });
@@ -577,6 +585,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     expect(summary.remote).toEqual([remote.id]);
     expect(summary.sent).toEqual([]);
     expect(summary.received).toEqual([]);
+    expect(summary.persistFailures).toEqual({});
     await client.shutdown();
   });
 
@@ -626,6 +635,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     );
     expect(summary.remote).toEqual([remote.id]);
     expect(summary.received).toEqual([remote.id]);
+    expect(summary.persistFailures).toEqual({});
     expect(method).toBe("");
     expect(await store.get(remote.id)).toBeUndefined();
     await client.shutdown();
@@ -677,8 +687,92 @@ describe("Relay.negReconcile + Client.sync", () => {
     );
     expect(summary.remote).toEqual([remote.id]);
     expect(summary.received).toEqual([]);
+    expect(summary.persistFailures[remote.id]).toBe("disk full");
+    expect(Object.keys(summary.persistFailures)).toEqual([remote.id]);
     expect(method).toBe("putMany");
     expect(await store.get(remote.id)).toBeUndefined();
+    await client.shutdown();
+  });
+
+  test("Client.sync down putMany throw does not fetch remaining need batches", async () => {
+    const remotes: Event[] = [];
+    for (let i = 0; i < 200; i++) remotes.push(note(SK_B, `batch-${i}`, 1000 + i));
+    bus.seed("wss://neg.example", remotes);
+    const inner = new MemoryEventStore();
+    let putManyCalls = 0;
+    const store = wrapEventStore(inner, {
+      putMany: async () => {
+        putManyCalls += 1;
+        throw new Error("disk full");
+      },
+    });
+    const client = Client.builder()
+      .storage(store)
+      .relays(["wss://neg.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .persistEvents(true)
+      .build();
+    await client.connect();
+    let fetchCalls = 0;
+    const fetchedIds: string[] = [];
+    const origFetch = client.pool.fetch.bind(client.pool);
+    client.pool.fetch = async (relays, filters, opts) => {
+      fetchCalls += 1;
+      const events = await origFetch(relays, filters, opts);
+      fetchedIds.push(...events.map((event) => event.id));
+      return events;
+    };
+    const summary = await client.sync(
+      { kinds: [1] },
+      { direction: SyncDirection.Down, timeoutMs: 5000 },
+    );
+    expect(fetchCalls).toBe(1);
+    expect(putManyCalls).toBe(1);
+    expect(fetchedIds).toHaveLength(100);
+    expect(summary.received).toEqual([]);
+    expect(summary.remote).toHaveLength(200);
+    expect(new Set(summary.remote)).toEqual(new Set(remotes.map((event) => event.id)));
+    expect(Object.keys(summary.persistFailures).sort()).toEqual([...fetchedIds].sort());
+    for (const id of fetchedIds) {
+      expect(summary.persistFailures[id]).toBe("disk full");
+    }
+    const unfetched = summary.remote.filter((id) => !Object.hasOwn(summary.persistFailures, id));
+    expect(unfetched).toHaveLength(100);
+    expect(new Set([...fetchedIds, ...unfetched])).toEqual(new Set(summary.remote));
+    await client.shutdown();
+  });
+
+  test("Client.sync merges persistFailures from a throwing relay with received from a successful relay", async () => {
+    const failRemote = note(SK_B, "fail-persist", 40);
+    const okRemote = note(SK_A, "ok-persist", 41);
+    bus.seed("wss://neg-fail.example", [failRemote]);
+    bus.seed("wss://neg-ok.example", [okRemote]);
+    const inner = new MemoryEventStore();
+    const store = wrapEventStore(inner, {
+      putMany: async (events) => {
+        if (events.some((event) => event.id === failRemote.id)) throw new Error("disk full");
+        return inner.putMany(events);
+      },
+    });
+    const client = Client.builder()
+      .storage(store)
+      .relays(["wss://neg-fail.example", "wss://neg-ok.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .persistEvents(true)
+      .build();
+    await client.connect();
+    const summary = await client.sync(
+      { kinds: [1] },
+      { direction: SyncDirection.Down, timeoutMs: 2000 },
+    );
+    expect(summary.persistFailures[failRemote.id]).toBe("disk full");
+    expect(Object.keys(summary.persistFailures)).toEqual([failRemote.id]);
+    expect(summary.received).toEqual([okRemote.id]);
+    expect(new Set(summary.remote)).toEqual(new Set([failRemote.id, okRemote.id]));
+    expect(await inner.get(okRemote.id)).toBeDefined();
+    expect(await inner.get(failRemote.id)).toBeUndefined();
     await client.shutdown();
   });
 
@@ -728,6 +822,7 @@ describe("Relay.negReconcile + Client.sync", () => {
       { direction: SyncDirection.Down, timeoutMs: 2000 },
     );
     expect(summary.received).toEqual([remote.id]);
+    expect(summary.persistFailures).toEqual({});
     expect(persistCalls).toEqual([]);
     expect(ingested).toBe(1);
     expect(await inner.get(remote.id)).toBeUndefined();
@@ -780,6 +875,7 @@ describe("Relay.negReconcile + Client.sync", () => {
       { direction: SyncDirection.Down, timeoutMs: 2000 },
     );
     expect(summary.received).toEqual([remote.id]);
+    expect(summary.persistFailures).toEqual({});
     expect(persistCalls).toEqual([`putMany:1`]);
     expect(ingested).toBe(1);
     expect(await inner.get(remote.id)).toBeDefined();
@@ -832,6 +928,7 @@ describe("Relay.negReconcile + Client.sync", () => {
       { direction: SyncDirection.Down, timeoutMs: 2000, observe: false },
     );
     expect(summary.received).toEqual([remote.id]);
+    expect(summary.persistFailures).toEqual({});
     expect(persistCalls).toEqual([]);
     expect(ingested).toBe(0);
     expect(await inner.get(remote.id)).toBeUndefined();
@@ -888,6 +985,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     );
     expect(summary.remote).toEqual([remote.id]);
     expect(summary.received).toEqual([]);
+    expect(summary.persistFailures).toEqual({});
     expect(ingested).toBe(0);
     await client.shutdown();
   });
@@ -917,6 +1015,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     );
     expect(summary.remote).toEqual([remote.id]);
     expect(summary.received).toEqual([remote.id]);
+    expect(summary.persistFailures).toEqual({});
     expect(await store.get(remote.id)).toBeDefined();
     await client.shutdown();
   });

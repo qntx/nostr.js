@@ -1,7 +1,7 @@
 import type { Event } from "../core/event.ts";
 import { canonicalizeFilter, type Filter } from "../core/filter.ts";
 import type { Pool } from "../relay/pool.ts";
-import type { EventStore } from "../storage/types.ts";
+import type { EventStore, PutResult } from "../storage/types.ts";
 import { storageFromItems, type NegentropyStorageVector } from "../nips/nip77.ts";
 import { SyncDirection, type SyncOptions, type SyncSummary } from "./types.ts";
 
@@ -24,17 +24,26 @@ function uniqueIds(ids: readonly string[]): string[] {
 }
 
 function emptySummary(): SyncSummary {
-  return { local: [], remote: [], sent: [], received: [], sendFailures: {} };
+  return {
+    local: [],
+    remote: [],
+    sent: [],
+    received: [],
+    sendFailures: {},
+    persistFailures: {},
+  };
 }
 
 function mergeSyncSummary(into: SyncSummary, other: SyncSummary): SyncSummary {
   const sendFailures = { ...into.sendFailures, ...other.sendFailures };
+  const persistFailures = { ...into.persistFailures, ...other.persistFailures };
   return {
     local: uniqueIds([...into.local, ...other.local]),
     remote: uniqueIds([...into.remote, ...other.remote]),
     sent: uniqueIds([...into.sent, ...other.sent]),
     received: uniqueIds([...into.received, ...other.received]),
     sendFailures,
+    persistFailures,
   };
 }
 
@@ -68,6 +77,7 @@ export async function syncToRelay(
     sent: [],
     received: [],
     sendFailures: {},
+    persistFailures: {},
   };
 
   if (opts?.dryRun) return summary;
@@ -125,11 +135,13 @@ export async function syncToRelay(
         }
         continue;
       }
-      let results;
+      let results: PutResult[];
       try {
         results = await deps.storage.putMany(events);
-      } catch {
-        continue;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        for (const event of events) summary.persistFailures[event.id] = message;
+        break;
       }
       for (let j = 0; j < events.length; j++) {
         const event = events[j]!;

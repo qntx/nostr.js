@@ -368,8 +368,8 @@ export class Client {
       try {
         const local = await this.storage.query(filters);
         for (const e of local) byId.set(e.id, e);
-      } catch {
-        // ignore local failures
+      } catch (err) {
+        this.onstorageerror?.(toStorageError(err));
       }
     }
 

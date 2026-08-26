@@ -103,6 +103,58 @@ describe("Client storage + observe", () => {
     await client.shutdown();
   });
 
+  test("fetchEvents localFirst query throw reports onstorageerror and still returns network events", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("from net").createdAt(5).signWithKeys(keys);
+    const inner = new MemoryEventStore();
+    let queryCalls = 0;
+    const seen: StorageError[] = [];
+    const store: EventStore = {
+      put: (event) => inner.put(event),
+      putMany: (events) => inner.putMany(events),
+      get: (id) => inner.get(id),
+      query: async () => {
+        queryCalls += 1;
+        throw new Error("query boom");
+      },
+      count: (filters) => inner.count(filters),
+      negentropyItems: (filter) => inner.negentropyItems(filter),
+      remove: (ids) => inner.remove(ids),
+      clear: () => inner.clear(),
+      getOutboxBound: (pubkey, kind) => inner.getOutboxBound(pubkey, kind),
+      setOutboxBound: (pubkey, kind, bound) => inner.setOutboxBound(pubkey, kind, bound),
+    };
+    const client = Client.builder()
+      .storage(store)
+      .onstorageerror((err) => {
+        seen.push(err);
+      })
+      .relays(["wss://a.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+
+    await client.connect();
+    const fetchP = client.fetchEvents(
+      { kinds: [1], authors: [keys.publicKey] },
+      { timeoutMs: 2000, localFirst: true },
+    );
+    await new Promise((r) => setTimeout(r, 10));
+    const ws = MockWebSocket.last();
+    const req = ws.sent.map((s) => JSON.parse(s)).find((m) => m[0] === "REQ") as [string, string];
+    ws.receive(JSON.stringify(["EVENT", req[1], note]));
+    ws.receive(JSON.stringify(["EOSE", req[1]]));
+    const events = await fetchP;
+    expect(queryCalls).toBe(1);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeInstanceOf(StorageError);
+    expect(seen[0]!.message).toBe("query boom");
+    expect(seen[0]!.cause).toBeInstanceOf(Error);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.id).toBe(note.id);
+    await client.shutdown();
+  });
+
   test("subscribe observes events", async () => {
     const store = new MemoryEventStore();
     const keys = Keys.fromSecretKey(SK);
