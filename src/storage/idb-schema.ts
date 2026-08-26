@@ -20,14 +20,6 @@ import {
 import { normalizeEvent } from "./put.ts";
 
 export const IDB_VERSION = 4;
-export {
-  EVENTS,
-  TAG_REFS,
-  ADDRESSES,
-  TOMBSTONES,
-  OUTBOX_BOUNDS,
-  WRITE_STORES,
-} from "./idb-types.ts";
 
 export function openDb(dbName: string): Promise<IDBDatabaseLike> {
   return new Promise((resolve, reject) => {
