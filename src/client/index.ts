@@ -1,6 +1,8 @@
+export { Client } from "./client.ts";
+export { ClientBuilder } from "./builder.ts";
 export {
-  Client,
   ClientError,
+  SyncDirection,
   type ClientOptions,
   type FetchEventsOptions,
   type SubscribeOptions,
@@ -10,9 +12,7 @@ export {
   type ReceivedPrivateMessage,
   type FetchPrivateMessagesOptions,
   type SubscribePrivateMessagesOptions,
-  SyncDirection,
   type SyncDirectionName,
   type SyncOptions,
   type SyncSummary,
-} from "./client.ts";
-export { ClientBuilder, type ClientBuilderOptions } from "./builder.ts";
+} from "./types.ts";

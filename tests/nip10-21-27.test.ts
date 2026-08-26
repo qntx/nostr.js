@@ -6,15 +6,14 @@ import {
   Kind,
   Tag,
   buildReplyTags,
-  isNostrURI,
   npubEncode,
   nsecEncode,
   noteEncode,
-  parseContentBlocks,
-  parseNostrURI,
   parseThreadTags,
   replyTo,
 } from "../src/index.ts";
+import { isNostrURI, parseNostrURI } from "../src/nips/nip21.ts";
+import { parseContentBlocks } from "../src/nips/nip27.ts";
 
 const keysA = Keys.generate();
 const keysB = Keys.generate();

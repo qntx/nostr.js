@@ -3,6 +3,8 @@
  *
  * Prefer layer subpaths for tree-shaking:
  * `@qntx/nostr/core`, `/signer`, `/relay`, `/client`, `/storage`, `/loaders`, `/gossip`, `/nips/*`
+ *
+ * Heavy NIPs are `@qntx/nostr/nips/<id>` only. There is no `@qntx/nostr/nips` barrel.
  */
 
 // --- core (public) ---
@@ -104,7 +106,7 @@ export {
   type Nip46Transport,
 } from "./signer/index.ts";
 
-// --- nips ---
+// --- curated NIPs (quick start) ---
 export {
   Bech32MaxSize,
   decode as nip19Decode,
@@ -134,44 +136,7 @@ export {
   type ReplyTagsOptions,
   type ThreadReferences,
 } from "./nips/nip10.ts";
-export { Nip13Error, getPow, minePow, type MinePowOptions } from "./nips/nip13.ts";
-export { isNostrURI, NOSTR_URI_REGEX, parseNostrURI, type NostrURI } from "./nips/nip21.ts";
-export { parseContent, parseContentBlocks, type ContentBlock } from "./nips/nip27.ts";
-export { encrypt as nip04Encrypt, decrypt as nip04Decrypt } from "./nips/nip04.ts";
-export {
-  NIP05_REGEX,
-  NIP05_ROOT_LOCAL,
-  WELL_KNOWN_PATH,
-  Nip05Error,
-  isNip05,
-  lookupFromDocument,
-  parseNip05,
-  parseNip05Document,
-  queryProfile,
-  verifyNip05,
-  wellKnownUrl,
-  type Nip05,
-  type Nip05Address,
-  type Nip05Document,
-  type Nip05Fetch,
-  type Nip05Nip46,
-} from "./nips/nip05.ts";
-export {
-  Nip11Error,
-  fetchRelayInformation,
-  relayInfoHttpUrl,
-  type Nip11Fetch,
-  type RelayInformation,
-} from "./nips/nip11.ts";
 export { makeAuthEvent, isAuthRequired } from "./nips/nip42.ts";
-export {
-  calcPaddedLen,
-  decrypt as nip44Decrypt,
-  decryptFromPubkey,
-  encrypt as nip44Encrypt,
-  encryptToPubkey,
-  getConversationKey,
-} from "./nips/nip44.ts";
 export {
   markerOf,
   parseRelayList,
@@ -182,146 +147,6 @@ export {
   type RelayListItem,
   type RelayMarker,
 } from "./nips/nip65.ts";
-export {
-  bookmarkListEventBuilder,
-  decryptPrivateTags,
-  encryptPrivateTags,
-  muteListEventBuilder,
-  parseBookmarkList,
-  parseEmojiSet,
-  parseFavoriteRelays,
-  parseFollowPack,
-  parseMuteList,
-  parseMuteListPrivate,
-  parsePinList,
-  parseRelaySet,
-  parseUserEmojiList,
-  pinListEventBuilder,
-  type MuteItem,
-  type Nip51Crypto,
-} from "./nips/nip51.ts";
-export {
-  Nip59Error,
-  TWO_DAYS_SECS,
-  createRumor,
-  createSeal,
-  createGiftWrap,
-  wrap as wrapGift,
-  unwrap as unwrapGift,
-  randomPastTimestamp,
-  rumorToJson,
-  eventToJson,
-  isGiftWrapKind,
-  requireNip59Crypto,
-  requireNip44Decryptor,
-  type Rumor,
-  type Nip59Crypto,
-  type Nip44Decryptor,
-  type GiftWrapTimestamps,
-  type WrapOptions,
-  type SealOptions,
-  type TimestampRandomize,
-} from "./nips/nip59.ts";
-export {
-  dmRelayListEventBuilder,
-  dmRelayListToTags,
-  parseDmRelayList,
-  Nip17Error,
-  normalizeRecipients,
-  buildChatMessageRumor,
-  wrapDirectMessage,
-  requireDmRelays,
-  type Recipient,
-  type ReplyTo,
-  type ChatMessageOptions,
-} from "./nips/nip17.ts";
-export {
-  BUNKER_REGEX,
-  Nip46Error,
-  createNostrConnectURI,
-  decodeNip46Request,
-  decodeNip46Response,
-  encodeNip46Request,
-  encodeNip46Response,
-  parseBunkerURL,
-  parseNostrConnectURI,
-  toBunkerURL,
-  type BunkerPointer,
-  type ClientMetadata,
-  type Nip46Request,
-  type Nip46Response,
-  type NostrConnectParams,
-} from "./nips/nip46.ts";
-export {
-  makeZapRequest,
-  parseBolt11,
-  parseZapRequestFromReceipt,
-  validateZapReceipt,
-  type Bolt11Fields,
-  type EventZapRequest,
-  type ProfileZapRequest,
-  type ZapReceiptContext,
-  type ZapReceiptValidation,
-} from "./nips/nip57.ts";
-export {
-  encrypt as nip49Encrypt,
-  decrypt as nip49Decrypt,
-  Nip49Error,
-  type KeySecurityByte,
-  type Ncryptsec,
-} from "./nips/nip49.ts";
-export {
-  Nip77Error,
-  PROTOCOL_VERSION,
-  DEFAULT_FRAME_SIZE_LIMIT,
-  MAX_NEG_ROUNDS,
-  NegentropyStorageVector,
-  Negentropy,
-  runNegSession,
-  storageFromEvents,
-  storageFromItems,
-  type NegItem,
-  type ReconcileOutcome,
-} from "./nips/nip77.ts";
-export {
-  Nip96Error,
-  fetchNip96Info,
-  parseNip96UploadResponse,
-  uploadNip96,
-  type Nip96Fetch,
-  type Nip96ServerInfo,
-  type Nip96UploadResult,
-} from "./nips/nip96.ts";
-export {
-  Nip98Error,
-  getToken as nip98GetToken,
-  unpackEventFromToken,
-  validateAuthEvent,
-} from "./nips/nip98.ts";
-export {
-  BlossomError,
-  blobExists,
-  blossomServerListEventBuilder,
-  checkUpload,
-  createAuthTemplate,
-  createUploadAuth,
-  deleteBlob,
-  encodeAuthorizationHeader,
-  getBlob,
-  getHashFromURL,
-  healBlobUrl,
-  listBlobs,
-  mirrorBlob,
-  parseBlossomServerList,
-  sha256Blob,
-  upload,
-  uploadToServers,
-  verifyBlob,
-  type BlobDescriptor,
-  type BlossomAuthVerb,
-  type BlossomFetch,
-  type BlossomSign,
-} from "./nips/blossom.ts";
 
 // --- relay ---
 export {

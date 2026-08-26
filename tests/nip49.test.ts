@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vite-plus/test";
-import { hexToBytes, nip49Decrypt, nip49Encrypt, nsecEncode } from "../src/index.ts";
+import { hexToBytes, nsecEncode } from "../src/index.ts";
 import { decrypt, encrypt, Nip49Error, type KeySecurityByte } from "../src/nips/nip49.ts";
 
 describe("nip49", () => {
@@ -32,13 +32,6 @@ describe("nip49", () => {
   test("wrong prefix throws", () => {
     const sec = hexToBytes(vectors[0]![1]);
     expect(() => decrypt(nsecEncode(sec), "x")).toThrow(Nip49Error);
-  });
-
-  test("root aliases", () => {
-    const sec = hexToBytes(vectors[0]![1]);
-    const enc = nip49Encrypt(sec, "pw", 1);
-    expect(enc.startsWith("ncryptsec1")).toBe(true);
-    expect(nip49Decrypt(enc, "pw")).toEqual(sec);
   });
 
   test("excess bech32 padding throws Nip49Error", () => {

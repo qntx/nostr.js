@@ -3,7 +3,6 @@ import {
   EventBuilder,
   Keys,
   MessageError,
-  NegentropyStorageVector,
   Pool,
   Relay,
   RelayClosedError,
@@ -14,6 +13,7 @@ import {
   useWebSocketImplementation,
   verifyEvent,
 } from "../src/index.ts";
+import { NegentropyStorageVector } from "../src/nips/nip77.ts";
 import type { WebSocketConstructor } from "../src/relay/websocket.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 

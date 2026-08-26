@@ -5,23 +5,18 @@ import {
   Keys,
   KeysSigner,
   MemoryEventStore,
-  Nip17Error,
-  createGiftWrap,
-  createRumor,
-  createSeal,
-  dmRelayListEventBuilder,
   relayListEventBuilder,
-  encryptToPubkey,
-  eventToJson,
   finalizeEvent,
   normalizeURL,
   useWebSocketImplementation,
-  wrapGift,
   type Event,
   type EventStore,
   type Filter,
   type PutResult,
 } from "../src/index.ts";
+import { Nip17Error, dmRelayListEventBuilder } from "../src/nips/nip17.ts";
+import { encryptToPubkey } from "../src/nips/nip44.ts";
+import { createGiftWrap, createRumor, createSeal, eventToJson, wrap } from "../src/nips/nip59.ts";
 import { FakeRelayBus } from "./helpers/fake-relay.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 
@@ -257,7 +252,7 @@ describe("Client NIP-17", () => {
     seedLists(bus, aliceKeys, bobKeys);
 
     const alice = new KeysSigner(aliceKeys);
-    const wrap = await wrapGift(
+    const gift = await wrap(
       alice,
       bobKeys.publicKey,
       createRumor(aliceKeys.publicKey, {
@@ -280,8 +275,8 @@ describe("Client NIP-17", () => {
       kind: Kind.PrivateDirectMessage,
       content: "i am alice",
     });
-    const forged = await wrapGift(new KeysSigner(malloryKeys), bobKeys.publicKey, forgedRumor);
-    bus.seed(BOB_DM, [wrap, junk, forged]);
+    const forged = await wrap(new KeysSigner(malloryKeys), bobKeys.publicKey, forgedRumor);
+    bus.seed(BOB_DM, [gift, junk, forged]);
 
     const { store, persistIds } = trackingStore();
     const bob = Client.builder()
@@ -298,7 +293,7 @@ describe("Client NIP-17", () => {
     expect(inbox[0]!.rumor.content).toBe("hola");
     expect(inbox[0]!.rumor.pubkey).toBe(aliceKeys.publicKey);
     expect(giftWrapReqKinds(BOB_DM, bobKeys.publicKey)).toEqual([Kind.GiftWrap]);
-    await waitFor(() => persistIds.includes(wrap.id));
+    await waitFor(() => persistIds.includes(gift.id));
     expect(persistIds.includes(junk.id)).toBe(false);
     expect(persistIds.includes(forged.id)).toBe(false);
     expect(await store.get(junk.id)).toBeUndefined();
@@ -313,7 +308,7 @@ describe("Client NIP-17", () => {
     seedLists(bus, aliceKeys, bobKeys);
 
     const alice = new KeysSigner(aliceKeys);
-    const wrap = await wrapGift(
+    const gift = await wrap(
       alice,
       bobKeys.publicKey,
       createRumor(aliceKeys.publicKey, {
@@ -331,7 +326,7 @@ describe("Client NIP-17", () => {
     );
     expect(storedKind).toBe(Kind.GiftWrap);
     expect(ephemeral.kind).toBe(Kind.GiftWrapEphemeral);
-    bus.seed(BOB_DM, [wrap, ephemeral]);
+    bus.seed(BOB_DM, [gift, ephemeral]);
 
     const bob = Client.builder()
       .signer(new KeysSigner(bobKeys))
@@ -499,7 +494,7 @@ describe("Client NIP-17", () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
     seedLists(bus, aliceKeys, bobKeys);
-    const wrap = await wrapGift(
+    const gift = await wrap(
       new KeysSigner(aliceKeys),
       bobKeys.publicKey,
       createRumor(aliceKeys.publicKey, {
@@ -532,13 +527,13 @@ describe("Client NIP-17", () => {
       },
     });
     await waitFor(() => reqFilters(BOB_DM).some((f) => Array.isArray(f["#p"])));
-    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), wrap]));
+    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), gift]));
     sub.close();
-    await waitQuiet(() => got.length > 0 || persistIds.includes(wrap.id) || decrypts > 0);
+    await waitQuiet(() => got.length > 0 || persistIds.includes(gift.id) || decrypts > 0);
     expect(got).toEqual([]);
-    expect(persistIds.includes(wrap.id)).toBe(false);
+    expect(persistIds.includes(gift.id)).toBe(false);
     expect(decrypts).toBe(0);
-    expect(await store.get(wrap.id)).toBeUndefined();
+    expect(await store.get(gift.id)).toBeUndefined();
     await bob.shutdown();
   });
 
@@ -546,7 +541,7 @@ describe("Client NIP-17", () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
     seedLists(bus, aliceKeys, bobKeys);
-    const wrap = await wrapGift(
+    const gift = await wrap(
       new KeysSigner(aliceKeys),
       bobKeys.publicKey,
       createRumor(aliceKeys.publicKey, {
@@ -593,15 +588,15 @@ describe("Client NIP-17", () => {
       },
     });
     await waitFor(() => reqFilters(BOB_DM).some((f) => Array.isArray(f["#p"])));
-    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), wrap]));
+    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), gift]));
     await waitFor(() => decryptEntered === 1);
     sub.close();
     release();
     await waitFor(() => decryptFinished === 2);
     expect(decryptErrors).toBe(0);
     expect(got).toEqual([]);
-    expect(persistIds.includes(wrap.id)).toBe(false);
-    expect(await store.get(wrap.id)).toBeUndefined();
+    expect(persistIds.includes(gift.id)).toBe(false);
+    expect(await store.get(gift.id)).toBeUndefined();
     await bob.shutdown();
   });
 
@@ -609,7 +604,7 @@ describe("Client NIP-17", () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
     seedLists(bus, aliceKeys, bobKeys);
-    const wrap = await wrapGift(
+    const gift = await wrap(
       new KeysSigner(aliceKeys),
       bobKeys.publicKey,
       createRumor(aliceKeys.publicKey, {
@@ -658,15 +653,15 @@ describe("Client NIP-17", () => {
       },
     });
     await waitFor(() => reqFilters(BOB_DM).some((f) => Array.isArray(f["#p"])));
-    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), wrap]));
+    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), gift]));
     await waitFor(() => decryptEntered === 1);
     ac.abort();
     release();
     await waitFor(() => decryptFinished === 2);
     expect(decryptErrors).toBe(0);
     expect(got).toEqual([]);
-    expect(persistIds.includes(wrap.id)).toBe(false);
-    expect(await store.get(wrap.id)).toBeUndefined();
+    expect(persistIds.includes(gift.id)).toBe(false);
+    expect(await store.get(gift.id)).toBeUndefined();
     sub.close();
     await bob.shutdown();
   });
@@ -750,17 +745,17 @@ describe("Client NIP-17", () => {
     await alice.connect();
     await alice.hydrateGossip([bobKeys.publicKey]);
 
-    const wrap = await wrapGift(
+    const gift = await wrap(
       new KeysSigner(aliceKeys),
       bobKeys.publicKey,
       createRumor(aliceKeys.publicKey, { kind: 14, content: "x" }),
     );
-    await alice.publish(wrap);
-    expect(bus.eventsOn(BOB_DM).some((e) => e.id === wrap.id)).toBe(true);
-    expect(bus.eventsOn(IDX).some((e) => e.id === wrap.id)).toBe(false);
+    await alice.publish(gift);
+    expect(bus.eventsOn(BOB_DM).some((e) => e.id === gift.id)).toBe(true);
+    expect(bus.eventsOn(IDX).some((e) => e.id === gift.id)).toBe(false);
 
     alice.gossip.clear();
-    const wrap2 = await wrapGift(
+    const wrap2 = await wrap(
       new KeysSigner(aliceKeys),
       bobKeys.publicKey,
       createRumor(aliceKeys.publicKey, { kind: 14, content: "y" }),

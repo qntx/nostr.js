@@ -65,7 +65,7 @@ Prefer a layer import when you do not need the facade.
 
 | Import                | Surface                                                                      |
 | --------------------- | ---------------------------------------------------------------------------- |
-| `@qntx/nostr`         | Re-export of the layers below                                                |
+| `@qntx/nostr`         | Curated facade: layers below plus nip19 / nip10 / nip42 / nip65              |
 | `@qntx/nostr/core`    | `Event`, `Kind`, `Filter`, `Keys`, `EventBuilder`, messages, `mergeCountHll` |
 | `@qntx/nostr/signer`  | `KeysSigner`, `Nip07Signer`, `Nip46Signer`                                   |
 | `@qntx/nostr/relay`   | `Relay`, `Pool`, `useWebSocketImplementation`                                |
@@ -102,7 +102,8 @@ const client = Client.builder()
 **`fetch`** — NIP-05, NIP-11, NIP-96, and Blossom take `{ fetch }`. Default is `globalThis.fetch`.
 
 ```ts
-import { fetchRelayInformation, queryProfile } from "@qntx/nostr";
+import { queryProfile } from "@qntx/nostr/nips/nip05";
+import { fetchRelayInformation } from "@qntx/nostr/nips/nip11";
 
 await queryProfile("alice@example.com", { fetch: myFetch });
 await fetchRelayInformation("wss://relay.example", { fetch: myFetch });
@@ -248,7 +249,13 @@ One Negentropy session per relay, in parallel. Fulfilled summaries merge. Mixed 
 Upload with a kind 24242 auth event. Heal a dead blob URL with **that author's** kind 10063 list — not a global server list. There is no 10063 loader.
 
 ```ts
-import { Kind, createUploadAuth, healBlobUrl, parseBlossomServerList, upload } from "@qntx/nostr";
+import { Kind } from "@qntx/nostr";
+import {
+  createUploadAuth,
+  healBlobUrl,
+  parseBlossomServerList,
+  upload,
+} from "@qntx/nostr/nips/blossom";
 
 const auth = await createUploadAuth((template) => client.signTemplate(template), file);
 const descriptor = await upload("https://cdn.example", file, auth);

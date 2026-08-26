@@ -4,7 +4,7 @@ import {
   fetchRelayInformation,
   relayInfoHttpUrl,
   type Nip11Fetch,
-} from "../src/index.ts";
+} from "../src/nips/nip11.ts";
 
 describe("relayInfoHttpUrl", () => {
   test("rewrites websocket schemes", () => {

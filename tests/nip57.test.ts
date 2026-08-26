@@ -7,14 +7,16 @@ import {
   Keys,
   Kind,
   hexToBytes,
-  makeZapRequest,
-  parseBolt11,
-  parseZapRequestFromReceipt,
   utf8Encoder,
-  validateZapReceipt,
   type Event,
   type Tag,
 } from "../src/index.ts";
+import {
+  makeZapRequest,
+  parseBolt11,
+  parseZapRequestFromReceipt,
+  validateZapReceipt,
+} from "../src/nips/nip57.ts";
 
 const keys = Keys.generate();
 const relays = ["wss://a.example", "wss://b.example"] as const;

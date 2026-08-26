@@ -1,14 +1,12 @@
 import { describe, expect, test } from "vite-plus/test";
 import { sha256 } from "@noble/hashes/sha2.js";
+import { Kind, finalizeEvent } from "../src/index.ts";
 import {
-  Kind,
   Nip98Error,
-  finalizeEvent,
-  nip98GetToken,
+  getToken,
   unpackEventFromToken,
   validateAuthEvent,
-} from "../src/index.ts";
-import { getToken } from "../src/nips/nip98.ts";
+} from "../src/nips/nip98.ts";
 import { bytesToHex, utf8Encoder } from "../src/core/util.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
@@ -20,10 +18,6 @@ function sign(template: Parameters<typeof finalizeEvent>[0]) {
 }
 
 describe("nip98", () => {
-  test("root facade aliases getToken as nip98GetToken", () => {
-    expect(nip98GetToken).toBe(getToken);
-  });
-
   test("round-trip token: kind 27235, u/method tags, standard base64", async () => {
     const token = await getToken(URL, METHOD, sign);
     expect(token.startsWith("Nostr ")).toBe(false);

@@ -1,14 +1,10 @@
+import { Kind, Keys, finalizeEvent, type Tag } from "../../src/index.ts";
+import { decodeNip46Request, encodeNip46Response } from "../../src/nips/nip46.ts";
 import {
-  Kind,
-  Keys,
-  decodeNip46Request,
-  encodeNip46Response,
-  finalizeEvent,
+  decrypt as nip44Decrypt,
+  encrypt as nip44Encrypt,
   getConversationKey,
-  nip44Decrypt,
-  nip44Encrypt,
-  type Tag,
-} from "../../src/index.ts";
+} from "../../src/nips/nip44.ts";
 import { MockWebSocket } from "./mock-ws.ts";
 
 export type BunkerResponderOptions = {
