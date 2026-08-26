@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vite-plus/test";
-import { EventBuilder, Keys, Pool, type Filter } from "../src/index.ts";
+import { EventBuilder, Keys, Pool, naddrEncode, type Filter } from "../src/index.ts";
 import { createEventLoader, LoaderContext } from "../src/loaders/index.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
@@ -251,5 +251,93 @@ describe("createEventLoader overlapping fetches", () => {
     const err2 = await captureError(loader.load(ID1));
     expect(fetchCalls).toBe(2);
     expect(err2).toBe(boom);
+  });
+
+  test('addressable kind 30023 with empty identifier sends #d:[""]', async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const pool = new Pool();
+    const seen: Filter[] = [];
+    pool.fetch = async (_relays, filters) => {
+      const f = filters[0];
+      if (!f) throw new Error("expected a filter");
+      seen.push(f);
+      return [];
+    };
+    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
+    const pubkey = keys.publicKey;
+    expect(await loader.load({ kind: 30023, pubkey, identifier: "" })).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    expect(Object.hasOwn(seen[0]!, "#d")).toBe(true);
+    expect(seen[0]!["#d"]).toEqual([""]);
+    expect(seen[0]!.authors).toEqual([pubkey.toLowerCase()]);
+    expect(seen[0]!.kinds).toEqual([30023]);
+
+    loader.clearAll();
+    const naddr = naddrEncode({ kind: 30023, pubkey, identifier: "" });
+    expect(await loader.load(naddr)).toBeUndefined();
+    expect(seen).toHaveLength(2);
+    expect(Object.hasOwn(seen[1]!, "#d")).toBe(true);
+    expect(seen[1]!["#d"]).toEqual([""]);
+    expect(seen[1]!.authors).toEqual([pubkey.toLowerCase()]);
+    expect(seen[1]!.kinds).toEqual([30023]);
+  });
+
+  test("kind 0 AddressPointer omits #d", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const pool = new Pool();
+    const seen: Filter[] = [];
+    pool.fetch = async (_relays, filters) => {
+      const f = filters[0];
+      if (!f) throw new Error("expected a filter");
+      seen.push(f);
+      return [];
+    };
+    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
+    const pubkey = keys.publicKey;
+    expect(await loader.load({ kind: 0, pubkey, identifier: "" })).toBeUndefined();
+    expect(seen).toHaveLength(1);
+    expect(Object.hasOwn(seen[0]!, "#d")).toBe(false);
+    expect(seen[0]!["#d"]).toBeUndefined();
+    expect(seen[0]!.authors).toEqual([pubkey.toLowerCase()]);
+    expect(seen[0]!.kinds).toEqual([0]);
+
+    expect(await loader.load({ kind: 0, pubkey, identifier: "profile" })).toBeUndefined();
+    expect(seen).toHaveLength(2);
+    expect(Object.hasOwn(seen[1]!, "#d")).toBe(false);
+    expect(seen[1]!["#d"]).toBeUndefined();
+    expect(seen[1]!.kinds).toEqual([0]);
+
+    loader.clearAll();
+    const naddr = naddrEncode({ kind: 0, pubkey, identifier: "" });
+    expect(await loader.load(naddr)).toBeUndefined();
+    expect(seen).toHaveLength(3);
+    expect(Object.hasOwn(seen[2]!, "#d")).toBe(false);
+    expect(seen[2]!["#d"]).toBeUndefined();
+    expect(seen[2]!.authors).toEqual([pubkey.toLowerCase()]);
+    expect(seen[2]!.kinds).toEqual([0]);
+  });
+
+  test("two events same created_at, lower id wins", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const a = EventBuilder.textNote("a").createdAt(50).signWithKeys(keys);
+    const b = EventBuilder.textNote("b").createdAt(50).signWithKeys(keys);
+    expect(a.created_at).toBe(50);
+    expect(b.created_at).toBe(50);
+    expect(a.id).not.toBe(b.id);
+    const winner = a.id < b.id ? a : b;
+    const loser = a.id < b.id ? b : a;
+    expect(loser.id > winner.id).toBe(true);
+
+    const pool = new Pool();
+    let fetchCalls = 0;
+    pool.fetch = async () => {
+      fetchCalls += 1;
+      return [loser, winner];
+    };
+    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
+    const result = await loader.load(loser.id);
+    expect(fetchCalls).toBe(1);
+    expect(result).toEqual(winner);
+    expect(result?.id).toBe(winner.id);
   });
 });

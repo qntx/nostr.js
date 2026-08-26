@@ -1,9 +1,15 @@
-import type { Event } from "../core/event.ts";
+import { isReplaceableWinner, type Event } from "../core/event.ts";
+import { isAddressableKind } from "../core/kind.ts";
 import { isHex32 } from "../core/util.ts";
 import { decode, Nip19Error, type AddressPointer, type EventPointer } from "../nips/nip19.ts";
 import type { LoaderContext } from "./context.ts";
 
 export type EventRef = string | EventPointer | AddressPointer;
+
+function dFilter(kind: number, identifier: string): { "#d"?: string[] } {
+  if (isAddressableKind(kind)) return { "#d": [identifier] };
+  return {};
+}
 
 function parseRef(ref: EventRef): {
   filter: { ids?: string[]; authors?: string[]; kinds?: number[]; "#d"?: string[] };
@@ -31,9 +37,9 @@ function parseRef(ref: EventRef): {
       case "naddr":
         return {
           filter: {
-            authors: [decoded.data.pubkey],
+            authors: [decoded.data.pubkey.toLowerCase()],
             kinds: [decoded.data.kind],
-            "#d": decoded.data.identifier ? [decoded.data.identifier] : undefined,
+            ...dFilter(decoded.data.kind, decoded.data.identifier),
           },
           hints: decoded.data.relays ?? [],
           cacheKey: `addr:${decoded.data.kind}:${decoded.data.pubkey}:${decoded.data.identifier}`,
@@ -53,7 +59,7 @@ function parseRef(ref: EventRef): {
     filter: {
       authors: [ref.pubkey.toLowerCase()],
       kinds: [ref.kind],
-      "#d": ref.identifier ? [ref.identifier] : undefined,
+      ...dFilter(ref.kind, ref.identifier),
     },
     hints: ref.relays ?? [],
     cacheKey: `addr:${ref.kind}:${ref.pubkey}:${ref.identifier}`,
@@ -76,7 +82,9 @@ export function createEventLoader(ctx: LoaderContext) {
           timeoutMs: ctx.fetchTimeoutMs,
         });
         let best: Event | undefined;
-        for (const e of events) if (!best || e.created_at > best.created_at) best = e;
+        for (const e of events) {
+          if (!best || isReplaceableWinner(e, best)) best = e;
+        }
         cache.set(parsed.cacheKey, best);
         return best;
       })().finally(() => inflight.delete(parsed.cacheKey));
