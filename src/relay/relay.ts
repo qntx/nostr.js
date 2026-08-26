@@ -360,10 +360,25 @@ export class Relay {
       this.#status = RelayStatus.Connected;
       this.#deathHandled = false;
       const wasReconnect = this.#reconnectAttempts > 0;
-      this.#reconnectAttempts = 0;
       this.#challenge = undefined;
       this.#authPromise = undefined;
-      this.#resubscribeAll();
+      if (!this.#resubscribeAll()) {
+        this.#connected = false;
+        this.#status = RelayStatus.Disconnected;
+        if (!isReconnect && !this.#enableReconnect) this.#skipReconnect = true;
+        release();
+        finish(new RelayConnectionError("connection failed", this.url));
+        if (
+          this.#enableReconnect &&
+          !this.#intentionalClose &&
+          !this.#skipReconnect &&
+          this.#subs.size > 0
+        ) {
+          this.#scheduleReconnect();
+        }
+        return;
+      }
+      this.#reconnectAttempts = 0;
       this.#startPingLoop();
       if (wasReconnect) this.onreconnect?.();
       finish();
@@ -578,7 +593,7 @@ export class Relay {
     }, delay);
   }
 
-  #resubscribeAll(): void {
+  #resubscribeAll(): boolean {
     for (const sub of this.#subs.values()) {
       if (sub.closed) continue;
       sub.eosed = false;
@@ -590,15 +605,10 @@ export class Relay {
       try {
         this.#send(["REQ", sub.id, ...sub.replayFilters()]);
       } catch {
-        // Failed REQ on this socket: reconnect instead of a silent live sub.
-        this.#connected = false;
-        this.#status = RelayStatus.Disconnected;
-        this.#detachSocketHandlers();
-        this.#teardownSocket();
-        this.#scheduleReconnect();
-        return;
+        return false;
       }
     }
+    return true;
   }
 
   #send(message: ClientMessage | string): void {
@@ -1193,11 +1203,12 @@ export class Relay {
       waiter.reject(new RelayClosedError(reason || "COUNT closed", this.url));
     };
     try {
-      if (!(await this.#ensureAuthed())) {
+      const ok = await this.#ensureAuthed();
+      if (this.#counts.get(id) !== waiter) return;
+      if (!ok) {
         fail();
         return;
       }
-      if (!this.#counts.has(id)) return;
       if (!this.#connected) {
         fail();
         return;
@@ -1229,11 +1240,12 @@ export class Relay {
         finish({ ok: false, message });
         return;
       }
-      if (!(await this.#ensureAuthed())) {
+      const ok = await this.#ensureAuthed();
+      if (this.#publishes.get(eventId) !== waiter) return;
+      if (!ok) {
         finish({ ok: false, message });
         return;
       }
-      if (!this.#publishes.has(eventId)) return;
       if (!this.#connected) {
         finish({ ok: false, message });
         return;

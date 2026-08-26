@@ -341,6 +341,37 @@ describe("Relay", () => {
     relay.close();
   });
 
+  test("AUTH failure after a replacement publish of the same event does not settle the new waiter", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://pub-auth-reuse.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const note = EventBuilder.textNote("auth-reuse").createdAt(2).signWithKeys(keys);
+    const first = relay.publish(note, { timeoutMs: 2000 });
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "reuse-challenge"]));
+    ws.receive(JSON.stringify(["OK", note.id, false, "auth-required: login"]));
+    await waitUntil(() => sentMessages(ws).some((m) => m[0] === "AUTH"));
+    const authFrame = sentMessages(ws).find((m) => m[0] === "AUTH") as [string, { id: string }];
+    ws.receive(JSON.stringify(["OK", note.id, true, ""]));
+    await expect(first).resolves.toEqual({ ok: true, message: "" });
+
+    const second = relay.publish(note, { timeoutMs: 2000 });
+    await waitUntil(() => sentMessages(ws).filter((m) => m[0] === "EVENT").length >= 2);
+    ws.receive(JSON.stringify(["OK", authFrame[1].id, false, "restricted: bad auth"]));
+    await sleep(20);
+    ws.receive(JSON.stringify(["OK", note.id, true, ""]));
+    await expect(second).resolves.toEqual({ ok: true, message: "" });
+    relay.close();
+  });
+
   test("authSigner throw resolves publish as { ok: false }", async () => {
     const boom = new Error("sign failed");
     const keys = Keys.fromSecretKey(SK);

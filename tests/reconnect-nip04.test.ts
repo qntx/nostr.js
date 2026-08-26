@@ -422,6 +422,10 @@ describe("Relay reconnect", () => {
       reconnectBackoffMs: [5],
       websocketImplementation: FailReqCtor,
     });
+    let reconnects = 0;
+    relay.onreconnect = () => {
+      reconnects += 1;
+    };
     await relay.connect();
     const sub = relay.subscribe([{ kinds: [1] }]);
     const first = MockWebSocket.last();
@@ -431,8 +435,14 @@ describe("Relay reconnect", () => {
     first.close();
     await waitUntil(() => MockWebSocket.instances.length >= 2);
     const second = MockWebSocket.instances[1]!;
+    await waitUntil(() => !relay.connected && second.readyState === MockWebSocket.CLOSED);
+    expect(reconnects).toBe(0);
+    expect(sub.closed).toBe(false);
+    expect(reqFilters(second).some((m) => m[1] === sub.id)).toBe(false);
+
     await waitUntil(
       () =>
+        relay.connected &&
         MockWebSocket.instances.some(
           (ws) => ws !== first && ws !== second && reqFilters(ws).some((m) => m[1] === sub.id),
         ),
@@ -441,8 +451,8 @@ describe("Relay reconnect", () => {
     const later = MockWebSocket.instances.find(
       (ws) => ws !== first && ws !== second && reqFilters(ws).some((m) => m[1] === sub.id),
     )!;
+    expect(reconnects).toBe(1);
     expect(sub.closed).toBe(false);
-    expect(reqFilters(second).some((m) => m[1] === sub.id)).toBe(false);
     expect(reqFilters(later).some((m) => m[1] === sub.id)).toBe(true);
     FailReqSocket.failNextReq = false;
     relay.close();
