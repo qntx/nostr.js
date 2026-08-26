@@ -68,6 +68,8 @@ export {
   type PublicKey,
   EventBuilder,
   type ProfileMetadata,
+  canonicalizeFilter,
+  canonicalizeFilters,
   cloneFilter,
   filterFingerprint,
   getFilterLimit,

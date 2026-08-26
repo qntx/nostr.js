@@ -128,7 +128,8 @@ export function cloneFilter(filter: Filter): Filter {
 
 const HEX_LIST_KEYS = new Set(["ids", "authors", "#e", "#p"]);
 
-function canonicalizeFilter(filter: Filter): Record<string, unknown> {
+/** Lowercase hex lists and sort every array. Omits undefined so `[]` stays distinct from missing. */
+export function canonicalizeFilter(filter: Filter): Filter {
   const raw = filter as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(raw).sort()) {
@@ -147,7 +148,11 @@ function canonicalizeFilter(filter: Filter): Record<string, unknown> {
       out[key] = value;
     }
   }
-  return out;
+  return out as Filter;
+}
+
+export function canonicalizeFilters(filters: readonly Filter[]): Filter[] {
+  return filters.map(canonicalizeFilter);
 }
 
 /**

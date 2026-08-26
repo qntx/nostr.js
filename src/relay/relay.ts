@@ -1,6 +1,11 @@
 import type { Event, EventTemplate } from "../core/event.ts";
 import { verifyEvent } from "../core/key.ts";
-import { filterFingerprint, type Filter } from "../core/filter.ts";
+import {
+  canonicalizeFilter,
+  canonicalizeFilters,
+  filterFingerprint,
+  type Filter,
+} from "../core/filter.ts";
 import { WasmVerifyPoisonedError } from "../core/error.ts";
 import {
   assertSubscriptionId,
@@ -759,8 +764,9 @@ export class Relay {
     if (!this.#connected && !this.#enableReconnect) {
       throw new RelayClosedError("not connected", this.url);
     }
-    if (opts.closeOnEose === true) return this.#openExclusive(filters, opts);
-    return this.#subscribeLive(filters, opts);
+    const canonical = canonicalizeFilters(filters);
+    if (opts.closeOnEose === true) return this.#openExclusive(canonical, opts);
+    return this.#subscribeLive(canonical, opts);
   }
 
   #openExclusive(filters: Filter[], opts: SubscribeOptions): Subscription {
@@ -984,6 +990,7 @@ export class Relay {
     filters: Filter[],
     opts?: { timeoutMs?: number; signal?: AbortSignal; id?: string },
   ): Promise<Event[]> {
+    filters = canonicalizeFilters(filters);
     if (!this.#connected) {
       await this.connect({ signal: opts?.signal });
     }
@@ -1067,6 +1074,7 @@ export class Relay {
     if (opts?.signal?.aborted) {
       throw new RelayConnectionError("count aborted", this.url);
     }
+    filters = canonicalizeFilters(filters);
 
     const id = opts?.id !== undefined ? createSubscriptionId(opts.id) : this.nextSubId("count");
     const timeoutMs = opts?.timeoutMs ?? this.#publishTimeoutMs;
@@ -1279,6 +1287,7 @@ export class Relay {
     if (opts?.signal?.aborted) {
       throw new RelayConnectionError("negentropy aborted", this.url);
     }
+    filter = canonicalizeFilter(filter);
 
     const id = opts?.id !== undefined ? assertSubscriptionId(opts.id) : this.nextSubId("neg");
     const timeoutMs = opts?.timeoutMs ?? this.#publishTimeoutMs;
