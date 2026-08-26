@@ -70,7 +70,10 @@ export type ClientOptions = {
    * Set false to disable automatic persistence while keeping the store for manual use.
    */
   persistEvents?: boolean;
-  /** Live persist failures. Does not throw on the subscribe path. */
+  /**
+   * Storage I/O failures: live `putMany` flush and `fetchEvents({ localFirst: true })` query.
+   * Those paths do not throw.
+   */
   onstorageerror?: (err: StorageError) => void;
 };
 
