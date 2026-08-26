@@ -4,26 +4,28 @@ import {
   EventBuilder,
   Gossip,
   Keys,
-  MAX_NEG_ROUNDS,
   MemoryEventStore,
   MessageError,
-  Negentropy,
-  NegentropyStorageVector,
-  Nip77Error,
-  PROTOCOL_VERSION,
   Relay,
   SyncDirection,
   encodeClientMessage,
   parseClientMessage,
   parseRelayMessage,
-  runNegSession,
-  storageFromEvents,
   useWebSocketImplementation,
   type Event,
   type EventStore,
   type Filter,
   type PutResult,
 } from "../src/index.ts";
+import {
+  MAX_NEG_ROUNDS,
+  Negentropy,
+  NegentropyStorageVector,
+  Nip77Error,
+  PROTOCOL_VERSION,
+  runNegSession,
+  storageFromEvents,
+} from "../src/nips/nip77.ts";
 import { FakeRelayBus } from "./helpers/fake-relay.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 

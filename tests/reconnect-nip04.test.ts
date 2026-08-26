@@ -1,13 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
-import {
-  EventBuilder,
-  Keys,
-  KeysSigner,
-  Relay,
-  nip04Decrypt,
-  nip04Encrypt,
-  useWebSocketImplementation,
-} from "../src/index.ts";
+import { EventBuilder, Keys, KeysSigner, Relay, useWebSocketImplementation } from "../src/index.ts";
+import { decrypt as nip04Decrypt, encrypt as nip04Encrypt } from "../src/nips/nip04.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";

@@ -5,6 +5,9 @@ import {
   HexError,
   KeysSigner,
   Kind,
+  normalizeURL,
+} from "../src/index.ts";
+import {
   bookmarkListEventBuilder,
   decryptPrivateTags,
   encryptPrivateTags,
@@ -19,10 +22,9 @@ import {
   parseRelaySet,
   parseUserEmojiList,
   pinListEventBuilder,
-  normalizeURL,
   type MuteItem,
   type Nip51Crypto,
-} from "../src/index.ts";
+} from "../src/nips/nip51.ts";
 
 const PK = "aa".repeat(32);
 const PK2 = "cc".repeat(32);

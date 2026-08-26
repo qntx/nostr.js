@@ -7,11 +7,10 @@ import {
   Kind,
   Pool,
   createLoaders,
-  dmRelayListEventBuilder,
-  parseDmRelayList,
   relayListEventBuilder,
   useWebSocketImplementation,
 } from "../src/index.ts";
+import { dmRelayListEventBuilder, parseDmRelayList } from "../src/nips/nip17.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";

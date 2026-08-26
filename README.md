@@ -65,7 +65,7 @@ Prefer a layer import when you do not need the facade.
 
 | Import                | Surface                                                                      |
 | --------------------- | ---------------------------------------------------------------------------- |
-| `@qntx/nostr`         | Re-export of the layers below                                                |
+| `@qntx/nostr`         | Curated facade: layers below plus nip19 / nip10 / nip42 / nip65              |
 | `@qntx/nostr/core`    | `Event`, `Kind`, `Filter`, `Keys`, `EventBuilder`, messages, `mergeCountHll` |
 | `@qntx/nostr/signer`  | `KeysSigner`, `Nip07Signer`, `Nip46Signer`                                   |
 | `@qntx/nostr/relay`   | `Relay`, `Pool`, `useWebSocketImplementation`                                |
@@ -102,7 +102,8 @@ const client = Client.builder()
 **`fetch`** — NIP-05, NIP-11, NIP-96, and Blossom take `{ fetch }`. Default is `globalThis.fetch`.
 
 ```ts
-import { fetchRelayInformation, queryProfile } from "@qntx/nostr";
+import { queryProfile } from "@qntx/nostr/nips/nip05";
+import { fetchRelayInformation } from "@qntx/nostr/nips/nip11";
 
 await queryProfile("alice@example.com", { fetch: myFetch });
 await fetchRelayInformation("wss://relay.example", { fetch: myFetch });

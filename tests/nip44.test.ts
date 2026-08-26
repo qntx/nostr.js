@@ -3,15 +3,15 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { hexToBytes } from "@noble/hashes/utils.js";
-import {
-  KeysSigner,
-  calcPaddedLen,
-  getConversationKey,
-  nip44Decrypt,
-  nip44Encrypt,
-} from "../src/index.ts";
+import { KeysSigner } from "../src/index.ts";
 import { bytesToHex } from "../src/core/util.ts";
 import * as nip44 from "../src/nips/nip44.ts";
+import {
+  calcPaddedLen,
+  decrypt as nip44Decrypt,
+  encrypt as nip44Encrypt,
+  getConversationKey,
+} from "../src/nips/nip44.ts";
 
 const dir = dirname(fileURLToPath(import.meta.url));
 const vectors = JSON.parse(readFileSync(join(dir, "fixtures/nip44.vectors.json"), "utf8")) as {

@@ -1,17 +1,13 @@
 import { describe, expect, test } from "vite-plus/test";
+import { Kind, Keys, KeysSigner } from "../src/index.ts";
 import {
-  Kind,
-  Keys,
-  KeysSigner,
   Nip17Error,
   buildChatMessageRumor,
   normalizeRecipients,
   requireDmRelays,
-  unwrapGift,
   wrapDirectMessage,
-  type SealOptions,
-  type WrapOptions,
-} from "../src/index.ts";
+} from "../src/nips/nip17.ts";
+import { unwrap, type SealOptions, type WrapOptions } from "../src/nips/nip59.ts";
 
 const ALICE_SK = "000000000000000000000000000000000000000000000000000000000000a1ce";
 const BOB_SK = "00000000000000000000000000000000000000000000000000000000000000b0";
@@ -70,15 +66,15 @@ describe("nip17 chat helpers", () => {
     const wraps = await wrapDirectMessage(alice, recipients, rumor);
     expect(wraps.map((w) => w.recipient)).toEqual([alicePk, bobPk, carolPk]);
 
-    const self = await unwrapGift(alice, wraps[0]!.wrap);
+    const self = await unwrap(alice, wraps[0]!.wrap);
     expect(self.content).toBe("group");
     expect(self.id).toBe(rumor.id);
 
-    const toBob = await unwrapGift(bob, wraps[1]!.wrap);
+    const toBob = await unwrap(bob, wraps[1]!.wrap);
     expect(toBob.content).toBe("group");
-    await expect(unwrapGift(bob, wraps[2]!.wrap)).rejects.toThrow(/failed to decrypt/);
+    await expect(unwrap(bob, wraps[2]!.wrap)).rejects.toThrow(/failed to decrypt/);
 
-    const toCarol = await unwrapGift(carol, wraps[2]!.wrap);
+    const toCarol = await unwrap(carol, wraps[2]!.wrap);
     expect(toCarol.content).toBe("group");
   });
 
@@ -127,7 +123,7 @@ describe("nip17 chat helpers", () => {
     const seal = JSON.parse(sealJson) as { tags: unknown; created_at: number };
     expect(seal.tags).toEqual([]);
     expect(seal.created_at).toBe(rumor.created_at);
-    const toBob = await unwrapGift(bob, bobWrap);
+    const toBob = await unwrap(bob, bobWrap);
     expect(toBob.content).toBe("x");
   });
 

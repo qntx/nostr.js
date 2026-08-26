@@ -3,14 +3,16 @@ import {
   EventBuilder,
   Nip46Signer,
   Pool,
-  createNostrConnectURI,
   getPublicKey,
-  parseBunkerURL,
-  parseNostrConnectURI,
-  toBunkerURL,
   useWebSocketImplementation,
   verifyEvent,
 } from "../src/index.ts";
+import {
+  createNostrConnectURI,
+  parseBunkerURL,
+  parseNostrConnectURI,
+  toBunkerURL,
+} from "../src/nips/nip46.ts";
 import { armBunkerResponder, publishNostrConnectAck } from "./helpers/nip46-bunker.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 

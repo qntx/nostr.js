@@ -1,10 +1,15 @@
 import { base64, base64urlnopad } from "@scure/base";
 import { describe, expect, test } from "vite-plus/test";
 import {
-  BlossomError,
   EventValidationError,
   Kind,
   Keys,
+  finalizeEvent,
+  utf8Encoder,
+  type Event,
+} from "../src/index.ts";
+import {
+  BlossomError,
   blobExists,
   blossomServerListEventBuilder,
   checkUpload,
@@ -12,7 +17,6 @@ import {
   createUploadAuth,
   deleteBlob,
   encodeAuthorizationHeader,
-  finalizeEvent,
   getBlob,
   getHashFromURL,
   healBlobUrl,
@@ -22,12 +26,10 @@ import {
   sha256Blob,
   upload,
   uploadToServers,
-  utf8Encoder,
   verifyBlob,
   type BlobDescriptor,
   type BlossomFetch,
-  type Event,
-} from "../src/index.ts";
+} from "../src/nips/blossom.ts";
 
 const HASH = "b1674191a88ec5cdd733e4240a81803105dc412d6c6708d53ab94fc248f4f553";
 const ABC_SHA256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";

@@ -9,8 +9,8 @@ import {
   verifyNip05,
   wellKnownUrl,
   type Nip05Fetch,
-} from "../src/index.ts";
-import { queryNip05Document } from "../src/nips/nip05.ts";
+  queryNip05Document,
+} from "../src/nips/nip05.ts";
 
 const PK = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
 const PK2 = "2c7cc62a697ea3a7826521f3fd34f0cb273693cbe5e9310f35449f43622a5cdc";

@@ -5,7 +5,7 @@ import {
   parseNip96UploadResponse,
   uploadNip96,
   type Nip96Fetch,
-} from "../src/index.ts";
+} from "../src/nips/nip96.ts";
 
 const SERVICE = "https://files.example";
 const INFO_URL = "https://files.example/.well-known/nostr/nip96.json";

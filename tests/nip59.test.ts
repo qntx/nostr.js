@@ -1,25 +1,22 @@
 import { describe, expect, test } from "vite-plus/test";
+import { Kind, Keys, KeysSigner, finalizeEvent } from "../src/index.ts";
+import { encryptToPubkey } from "../src/nips/nip44.ts";
 import {
-  Kind,
-  Keys,
-  KeysSigner,
   Nip59Error,
   TWO_DAYS_SECS,
   createGiftWrap,
   createRumor,
   createSeal,
   eventToJson,
-  finalizeEvent,
   isGiftWrapKind,
   randomPastTimestamp,
   requireNip44Decryptor,
   requireNip59Crypto,
-  unwrapGift,
-  wrapGift,
+  unwrap,
+  wrap,
   type SealOptions,
   type WrapOptions,
-} from "../src/index.ts";
-import { encryptToPubkey } from "../src/nips/nip44.ts";
+} from "../src/nips/nip59.ts";
 import { verifyEvent } from "../src/core/key.ts";
 
 const ALICE_SK = "000000000000000000000000000000000000000000000000000000000000a1ce";
@@ -59,13 +56,13 @@ describe("nip59", () => {
       tags: [["p", bobKeys.publicKey]],
       created_at: 1_700_000_000,
     });
-    const wrap = await wrapGift(alice, bobKeys.publicKey, rumor);
-    expect(wrap.kind).toBe(Kind.GiftWrap);
-    expect(wrap.pubkey).not.toBe(aliceKeys.publicKey);
-    expect(wrap.pubkey).not.toBe(bobKeys.publicKey);
-    expect(verifyEvent(wrap)).toBe(true);
+    const gift = await wrap(alice, bobKeys.publicKey, rumor);
+    expect(gift.kind).toBe(Kind.GiftWrap);
+    expect(gift.pubkey).not.toBe(aliceKeys.publicKey);
+    expect(gift.pubkey).not.toBe(bobKeys.publicKey);
+    expect(verifyEvent(gift)).toBe(true);
 
-    const inner = await unwrapGift(bob, wrap);
+    const inner = await unwrap(bob, gift);
     expect(inner.content).toBe("secret hello");
     expect(inner.kind).toBe(Kind.PrivateDirectMessage);
     expect(inner.created_at).toBe(1_700_000_000);
@@ -82,10 +79,10 @@ describe("nip59", () => {
       created_at: 1_700_000_000,
     });
     const timestamps = { seal: 1_699_900_000, wrap: 1_699_800_000 };
-    const wrap = await wrapGift(alice, bobKeys.publicKey, rumor, { timestamps });
-    expect(wrap.created_at).toBe(timestamps.wrap);
+    const gift = await wrap(alice, bobKeys.publicKey, rumor, { timestamps });
+    expect(gift.created_at).toBe(timestamps.wrap);
 
-    const sealJson = await bob.nip44Decrypt!(wrap.pubkey, wrap.content);
+    const sealJson = await bob.nip44Decrypt!(gift.pubkey, gift.content);
     const seal = JSON.parse(sealJson) as { created_at: number; kind: number };
     expect(seal.kind).toBe(Kind.Seal);
     expect(seal.created_at).toBe(timestamps.seal);
@@ -104,31 +101,31 @@ describe("nip59", () => {
       { kind: Kind.TextNote, content: "nope", tags: [], created_at: 1 },
       aliceKeys.secretKey,
     );
-    await expect(unwrapGift(bob, note)).rejects.toThrow(/expected gift wrap/);
+    await expect(unwrap(bob, note)).rejects.toThrow(/expected gift wrap/);
   });
 
   test("wrong recipient cannot unwrap", async () => {
     const { alice, aliceKeys, bobKeys } = pair();
     const mallory = new KeysSigner(MALLORY_SK);
     const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "x" });
-    const wrap = await wrapGift(alice, bobKeys.publicKey, rumor);
-    await expect(unwrapGift(mallory, wrap)).rejects.toThrow(/failed to decrypt/);
+    const gift = await wrap(alice, bobKeys.publicKey, rumor);
+    await expect(unwrap(mallory, gift)).rejects.toThrow(/failed to decrypt/);
   });
 
   test("Mallory cannot impersonate Alice by rewriting rumor pubkey", async () => {
     const { bob, aliceKeys, bobKeys } = pair();
     const mallory = new KeysSigner(MALLORY_SK);
     const forged = createRumor(aliceKeys.publicKey, { kind: 14, content: "i am alice" });
-    const wrap = await wrapGift(mallory, bobKeys.publicKey, forged);
-    await expect(unwrapGift(bob, wrap)).rejects.toThrow(/seal pubkey does not match rumor pubkey/);
+    const gift = await wrap(mallory, bobKeys.publicKey, forged);
+    await expect(unwrap(bob, gift)).rejects.toThrow(/seal pubkey does not match rumor pubkey/);
   });
 
   test("tampered gift wrap signature is rejected", async () => {
     const { alice, bob, aliceKeys, bobKeys } = pair();
     const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "x" });
-    const wrap = await wrapGift(alice, bobKeys.publicKey, rumor);
-    const bad = { ...wrap, sig: "00".repeat(64) };
-    await expect(unwrapGift(bob, bad)).rejects.toThrow(/gift wrap signature/);
+    const gift = await wrap(alice, bobKeys.publicKey, rumor);
+    const bad = { ...gift, sig: "00".repeat(64) };
+    await expect(unwrap(bob, bad)).rejects.toThrow(/gift wrap signature/);
   });
 
   test("tampered seal signature is rejected", async () => {
@@ -137,7 +134,7 @@ describe("nip59", () => {
     const seal = await createSeal(alice, bobKeys.publicKey, rumor);
     const badSeal = { ...seal, sig: "00".repeat(64) };
     const wrap = createGiftWrap(badSeal, bobKeys.publicKey);
-    await expect(unwrapGift(bob, wrap)).rejects.toThrow(/seal signature/);
+    await expect(unwrap(bob, wrap)).rejects.toThrow(/seal signature/);
   });
 
   test("rumor carrying a sig is rejected", async () => {
@@ -153,7 +150,7 @@ describe("nip59", () => {
       pubkey: aliceKeys.publicKey,
     });
     const wrap = createGiftWrap(seal, bobKeys.publicKey);
-    await expect(unwrapGift(bob, wrap)).rejects.toThrow(/rumor must be unsigned/);
+    await expect(unwrap(bob, wrap)).rejects.toThrow(/rumor must be unsigned/);
   });
 
   test("createGiftWrap uses an ephemeral pubkey and kind 1059", () => {
@@ -186,7 +183,7 @@ describe("nip59", () => {
       },
       ephemeral.secretKey,
     );
-    const inner = await unwrapGift(bob, wrap);
+    const inner = await unwrap(bob, wrap);
     expect(inner.content).toBe("ephemeral");
   });
 
@@ -227,28 +224,28 @@ describe("nip59", () => {
     expect(taggedSeal.tags).toEqual([["p", bobKeys.publicKey]]);
     expect(verifyEvent(taggedSeal)).toBe(true);
     const wrap = createGiftWrap(taggedSeal, bobKeys.publicKey);
-    await expect(unwrapGift(bob, wrap)).rejects.toThrow(Nip59Error);
-    await expect(unwrapGift(bob, wrap)).rejects.toThrow(/seal tags must be empty/);
+    await expect(unwrap(bob, wrap)).rejects.toThrow(Nip59Error);
+    await expect(unwrap(bob, wrap)).rejects.toThrow(/seal tags must be empty/);
   });
 
   test("wrap extraTags land only on the wrap; seal tags stay empty", async () => {
     const { alice, bob, aliceKeys, bobKeys } = pair();
     const malloryKeys = Keys.fromSecretKey(MALLORY_SK);
     const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "x" });
-    const wrap = await wrapGift(alice, bobKeys.publicKey, rumor, {
+    const gift = await wrap(alice, bobKeys.publicKey, rumor, {
       extraTags: [["p", malloryKeys.publicKey]],
     });
-    expect(wrap.tags).toEqual([
+    expect(gift.tags).toEqual([
       ["p", bobKeys.publicKey],
       ["p", malloryKeys.publicKey],
     ]);
 
-    const sealJson = await bob.nip44Decrypt!(wrap.pubkey, wrap.content);
+    const sealJson = await bob.nip44Decrypt!(gift.pubkey, gift.content);
     const seal = JSON.parse(sealJson) as { tags: unknown; kind: number };
     expect(seal.kind).toBe(Kind.Seal);
     expect(seal.tags).toEqual([]);
 
-    const inner = await unwrapGift(bob, wrap);
+    const inner = await unwrap(bob, gift);
     expect(inner.content).toBe("x");
   });
 
@@ -270,12 +267,12 @@ describe("nip59", () => {
     const { alice, bob, aliceKeys, bobKeys } = pair();
     const mallory = new KeysSigner(MALLORY_SK);
     const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "for bob" });
-    const wrap = await wrapGift(alice, bobKeys.publicKey, rumor);
-    expect(wrap.tags[0]).toEqual(["p", bobKeys.publicKey]);
+    const gift = await wrap(alice, bobKeys.publicKey, rumor);
+    expect(gift.tags[0]).toEqual(["p", bobKeys.publicKey]);
 
-    const inner = await unwrapGift(bob, wrap);
+    const inner = await unwrap(bob, gift);
     expect(inner.content).toBe("for bob");
-    await expect(unwrapGift(mallory, wrap)).rejects.toThrow(/failed to decrypt/);
+    await expect(unwrap(mallory, gift)).rejects.toThrow(/failed to decrypt/);
   });
 
   test("encryptTo and seal extraTags are not wrap/seal options; emit stays 1059", () => {
@@ -334,16 +331,16 @@ describe("nip59", () => {
       created_at: 1_700_000_000,
     });
     const now = 1_710_000_000;
-    const wrap = await wrapGift(alice, bobKeys.publicKey, rumor, {
+    const gift = await wrap(alice, bobKeys.publicKey, rumor, {
       now,
       randomize: "wrap",
       randomInt: () => 42,
     });
-    expect(wrap.created_at).toBe(now - 42);
-    expect(wrap.created_at).toBeGreaterThanOrEqual(now - TWO_DAYS_SECS);
-    expect(wrap.created_at).toBeLessThanOrEqual(now);
+    expect(gift.created_at).toBe(now - 42);
+    expect(gift.created_at).toBeGreaterThanOrEqual(now - TWO_DAYS_SECS);
+    expect(gift.created_at).toBeLessThanOrEqual(now);
 
-    const sealJson = await bob.nip44Decrypt!(wrap.pubkey, wrap.content);
+    const sealJson = await bob.nip44Decrypt!(gift.pubkey, gift.content);
     const seal = JSON.parse(sealJson) as { created_at: number };
     expect(seal.created_at).toBe(rumor.created_at);
   });
@@ -358,14 +355,14 @@ describe("nip59", () => {
     const now = 1_710_000_000;
     const offset = 42;
     for (const randomize of [undefined, "seal+wrap"] as const) {
-      const wrap = await wrapGift(alice, bobKeys.publicKey, rumor, {
+      const gift = await wrap(alice, bobKeys.publicKey, rumor, {
         now,
         randomInt: () => offset,
         ...(randomize ? { randomize } : {}),
       });
-      expect(wrap.created_at).toBe(now - offset);
-      expect(wrap.created_at).not.toBe(rumor.created_at);
-      const sealJson = await bob.nip44Decrypt!(wrap.pubkey, wrap.content);
+      expect(gift.created_at).toBe(now - offset);
+      expect(gift.created_at).not.toBe(rumor.created_at);
+      const sealJson = await bob.nip44Decrypt!(gift.pubkey, gift.content);
       const seal = JSON.parse(sealJson) as { created_at: number };
       expect(seal.created_at).toBe(now - offset);
       expect(seal.created_at).not.toBe(rumor.created_at);
@@ -386,7 +383,7 @@ describe("nip59", () => {
       sig: "35fabdae4634eb630880a1896a886e40fd6ea8a60958e30b89b33a93e6235df750097b04f9e13053764251b8bc5dd7e8e0794a3426a90b6bcc7e5ff660f54259",
       tags: [["p", "166bf3765ebd1fc55decfe395beff2ea3b2a4e0a8946e7eb578512b555737c99"]] as const,
     };
-    const rumor = await unwrapGift(recipient, wrap);
+    const rumor = await unwrap(recipient, wrap);
     expect(rumor.content).toBe("Are you going to the party tonight?");
     expect(rumor.kind).toBe(1);
     expect(rumor.pubkey).toBe("611df01bfcf85c26ae65453b772d8f1dfd25c264621c0277e1fc1518686faef9");
