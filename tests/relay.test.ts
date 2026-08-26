@@ -13,7 +13,7 @@ import {
   useWebSocketImplementation,
   verifyEvent,
 } from "../src/index.ts";
-import { NegentropyStorageVector } from "../src/nips/nip77.ts";
+import { NegentropyStorageVector, Nip77Error } from "../src/nips/nip77.ts";
 import type { WebSocketConstructor } from "../src/relay/websocket.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 
@@ -880,6 +880,89 @@ describe("Relay", () => {
     expect(open?.[1]).toBe(id);
     MockWebSocket.last().receive(JSON.stringify(["NEG-MSG", id, "61"]));
     await expect(pending).resolves.toEqual({ have: [], need: [] });
+    relay.close();
+  });
+
+  test("negReconcile overlapping custom id fails previous; first finally does not NEG-CLOSE the second", async () => {
+    const relay = await Relay.connect("wss://neg-id-reuse.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const storage = new NegentropyStorageVector();
+    storage.seal();
+    const id = "n".repeat(SUBSCRIPTION_ID_MAX_CHARS);
+    const first = relay.negReconcile({ kinds: [1] }, storage, { id, timeoutMs: 2000 });
+    await waitUntil(() => sentMessages(MockWebSocket.last()).some((m) => m[0] === "NEG-OPEN"));
+    const ws = MockWebSocket.last();
+
+    const second = relay.negReconcile({ kinds: [1] }, storage, { id, timeoutMs: 2000 });
+    const firstErr = await captureError(first);
+    expect(firstErr).toBeInstanceOf(Nip77Error);
+    expect((firstErr as Nip77Error).message).toBe("closed: replaced by new NEG-OPEN");
+
+    await waitUntil(() => sentMessages(ws).filter((m) => m[0] === "NEG-OPEN").length >= 2);
+    expect(sentMessages(ws).filter((m) => m[0] === "NEG-CLOSE")).toHaveLength(0);
+
+    ws.receive(JSON.stringify(["NEG-MSG", id, "61"]));
+    await expect(second).resolves.toEqual({ have: [], need: [] });
+    expect(sentMessages(ws).filter((m) => m[0] === "NEG-CLOSE")).toHaveLength(1);
+    relay.close();
+  });
+
+  test("negReconcile overlapping custom id: NEG-ERR after replace fails only the new session", async () => {
+    const relay = await Relay.connect("wss://neg-id-reuse-err.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const storage = new NegentropyStorageVector();
+    storage.seal();
+    const id = "e".repeat(SUBSCRIPTION_ID_MAX_CHARS);
+    const first = relay.negReconcile({ kinds: [1] }, storage, { id, timeoutMs: 2000 });
+    await waitUntil(() => sentMessages(MockWebSocket.last()).some((m) => m[0] === "NEG-OPEN"));
+    const ws = MockWebSocket.last();
+
+    const second = relay.negReconcile({ kinds: [1] }, storage, { id, timeoutMs: 2000 });
+    const firstErr = await captureError(first);
+    expect(firstErr).toBeInstanceOf(Nip77Error);
+    expect((firstErr as Nip77Error).message).toBe("closed: replaced by new NEG-OPEN");
+
+    await waitUntil(() => sentMessages(ws).filter((m) => m[0] === "NEG-OPEN").length >= 2);
+    expect(sentMessages(ws).filter((m) => m[0] === "NEG-CLOSE")).toHaveLength(0);
+
+    ws.receive(JSON.stringify(["NEG-ERR", id, "error: boom"]));
+    const secondErr = await captureError(second);
+    expect(secondErr).toBeInstanceOf(Nip77Error);
+    expect((secondErr as Nip77Error).message).toBe("error: boom");
+    expect(firstErr).not.toBe(secondErr);
+    expect((firstErr as Nip77Error).message).toBe("closed: replaced by new NEG-OPEN");
+    expect(sentMessages(ws).filter((m) => m[0] === "NEG-CLOSE")).toHaveLength(1);
+    relay.close();
+  });
+
+  test("negReconcile invalid custom id does not replace or NEG-CLOSE a live session", async () => {
+    const relay = await Relay.connect("wss://neg-id-invalid-reuse.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const storage = new NegentropyStorageVector();
+    storage.seal();
+    const id = "v".repeat(SUBSCRIPTION_ID_MAX_CHARS);
+    const first = relay.negReconcile({ kinds: [1] }, storage, { id, timeoutMs: 2000 });
+    await waitUntil(() => sentMessages(MockWebSocket.last()).some((m) => m[0] === "NEG-OPEN"));
+    const ws = MockWebSocket.last();
+
+    await expect(relay.negReconcile({ kinds: [1] }, storage, { id: "" })).rejects.toThrow(
+      MessageError,
+    );
+    await expect(
+      relay.negReconcile({ kinds: [1] }, storage, {
+        id: "a".repeat(SUBSCRIPTION_ID_MAX_CHARS + 1),
+      }),
+    ).rejects.toThrow(MessageError);
+
+    expect(sentMessages(ws).filter((m) => m[0] === "NEG-OPEN")).toHaveLength(1);
+    expect(sentMessages(ws).filter((m) => m[0] === "NEG-CLOSE")).toHaveLength(0);
+
+    ws.receive(JSON.stringify(["NEG-MSG", id, "61"]));
+    await expect(first).resolves.toEqual({ have: [], need: [] });
+    expect(sentMessages(ws).filter((m) => m[0] === "NEG-CLOSE")).toHaveLength(1);
     relay.close();
   });
 });
