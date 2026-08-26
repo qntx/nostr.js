@@ -20,3 +20,6 @@ export class CryptoError extends NostrError {}
 
 /** Message parse / encode failure. */
 export class MessageError extends NostrError {}
+
+/** Wasm verify instance aborted; later verifies on that instance fail. */
+export class WasmVerifyPoisonedError extends NostrError {}

@@ -487,30 +487,24 @@ export class Negentropy {
   }
 }
 
-/** Initiator session: produce the opening message, then fold each peer reply. */
-export class Reconciliation {
-  readonly #neg: Negentropy;
-  readonly opening: string;
-
-  constructor(storage: NegentropyStorageVector, frameSizeLimit = DEFAULT_FRAME_SIZE_LIMIT) {
-    this.#neg = new Negentropy(storage, frameSizeLimit);
-    this.opening = this.#neg.initiate();
+/** Drive initiate/reconcile until nextMessage is null. Transport-free. */
+export async function runNegSession(opts: {
+  storage: NegentropyStorageVector;
+  frameSizeLimit?: number;
+  openingSend: (hex: string) => void;
+  msgSend: (hex: string) => void;
+  next: () => Promise<string>;
+}): Promise<{ have: string[]; need: string[] }> {
+  const neg = new Negentropy(opts.storage, opts.frameSizeLimit);
+  const have = new Set<string>();
+  const need = new Set<string>();
+  opts.openingSend(neg.initiate());
+  for (let round = 0; round < MAX_NEG_ROUNDS; round++) {
+    const out = neg.reconcile(await opts.next());
+    for (const id of out.have) have.add(id);
+    for (const id of out.need) need.add(id);
+    if (out.nextMessage === null) return { have: [...have], need: [...need] };
+    opts.msgSend(out.nextMessage);
   }
-
-  reconcile(queryHex: string): ReconcileOutcome {
-    return this.#neg.reconcile(queryHex);
-  }
-}
-
-/** Responder session: fold each initiator message (does not call initiate). */
-export class Responder {
-  readonly #neg: Negentropy;
-
-  constructor(storage: NegentropyStorageVector, frameSizeLimit = DEFAULT_FRAME_SIZE_LIMIT) {
-    this.#neg = new Negentropy(storage, frameSizeLimit);
-  }
-
-  reconcile(queryHex: string): ReconcileOutcome {
-    return this.#neg.reconcile(queryHex);
-  }
+  throw new Nip77Error("negentropy exceeded max rounds");
 }

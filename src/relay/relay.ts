@@ -1,7 +1,9 @@
 import type { Event, EventTemplate } from "../core/event.ts";
 import { verifyEvent } from "../core/key.ts";
 import { filterFingerprint, type Filter } from "../core/filter.ts";
+import { WasmVerifyPoisonedError } from "../core/error.ts";
 import {
+  assertSubscriptionId,
   createSubscriptionId,
   encodeClientMessage,
   parseRelayMessage,
@@ -9,12 +11,7 @@ import {
   type CountResult,
   type SubscriptionId,
 } from "../core/message.ts";
-import {
-  MAX_NEG_ROUNDS,
-  Nip77Error,
-  Reconciliation,
-  type NegentropyStorageVector,
-} from "../nips/nip77.ts";
+import { Nip77Error, runNegSession, type NegentropyStorageVector } from "../nips/nip77.ts";
 import { isAuthRequired, makeAuthEvent } from "../nips/nip42.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayClosedError, RelayConnectionError, RelayError, RelayPublishError } from "./error.ts";
@@ -887,8 +884,7 @@ export class Relay {
     try {
       return this.#verify(event);
     } catch (e) {
-      const name = e instanceof Error ? e.name : "";
-      if (name === "WasmVerifyPoisonedError" || e instanceof WebAssembly.RuntimeError) {
+      if (e instanceof WasmVerifyPoisonedError || e instanceof WebAssembly.RuntimeError) {
         this.#verifyDead = true;
         this.onnotice?.("verify-poisoned: wasm instance aborted");
         return false;
@@ -1281,7 +1277,7 @@ export class Relay {
       throw new RelayConnectionError("negentropy aborted", this.url);
     }
 
-    const id = opts?.id ?? this.nextSubId("neg");
+    const id = opts?.id !== undefined ? assertSubscriptionId(opts.id) : this.nextSubId("neg");
     const timeoutMs = opts?.timeoutMs ?? this.#publishTimeoutMs;
     const deadline = Date.now() + timeoutMs;
     const session: NegSession = { queue: [], waiter: undefined, error: undefined };
@@ -1320,23 +1316,17 @@ export class Relay {
       });
     };
 
-    const recon = new Reconciliation(storage);
-    const have = new Set<string>();
-    const need = new Set<string>();
-
     try {
-      this.#send(["NEG-OPEN", id, filter, recon.opening]);
-      for (let round = 0; round < MAX_NEG_ROUNDS; round++) {
-        const incoming = await next();
-        const out = recon.reconcile(incoming);
-        for (const hid of out.have) have.add(hid);
-        for (const nid of out.need) need.add(nid);
-        if (out.nextMessage === null) {
-          return { have: [...have], need: [...need] };
-        }
-        this.#send(["NEG-MSG", id, out.nextMessage]);
-      }
-      throw new Nip77Error("negentropy exceeded max rounds");
+      return await runNegSession({
+        storage,
+        openingSend: (hex) => {
+          this.#send(["NEG-OPEN", id, filter, hex]);
+        },
+        msgSend: (hex) => {
+          this.#send(["NEG-MSG", id, hex]);
+        },
+        next,
+      });
     } finally {
       this.#neg.delete(id);
       try {

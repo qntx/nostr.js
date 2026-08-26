@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { itemCompare } from "../src/core/index.ts";
-import { EventBuilder, IndexedDbEventStore, Keys, Kind, StorageError } from "../src/index.ts";
+import {
+  CryptoError,
+  EventBuilder,
+  IndexedDbEventStore,
+  Keys,
+  Kind,
+  StorageError,
+} from "../src/index.ts";
 import {
   installIdbMock,
   seedIdbV1,
@@ -29,6 +36,26 @@ describe("IndexedDbEventStore", () => {
 
   afterEach(() => {
     mock.uninstall();
+  });
+
+  test("open throws StorageError when IndexedDB is unavailable", async () => {
+    const g = globalThis as { indexedDB?: unknown };
+    const prev = g.indexedDB;
+    delete g.indexedDB;
+    try {
+      expect(IndexedDbEventStore.isAvailable()).toBe(false);
+      const err = await new IndexedDbEventStore({ dbName: "no-idb" }).open().then(
+        () => {
+          throw new Error("expected reject");
+        },
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(StorageError);
+      expect(err).not.toBeInstanceOf(CryptoError);
+      expect((err as StorageError).message).toBe("IndexedDB is not available in this environment");
+    } finally {
+      g.indexedDB = prev;
+    }
   });
 
   test("put query replaceable and deletion", async () => {

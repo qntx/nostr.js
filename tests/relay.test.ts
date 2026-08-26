@@ -3,11 +3,13 @@ import {
   EventBuilder,
   Keys,
   MessageError,
+  NegentropyStorageVector,
   Pool,
   Relay,
   RelayClosedError,
   RelayStatus,
   SUBSCRIPTION_ID_MAX_CHARS,
+  WasmVerifyPoisonedError,
   isInsecureRelayUrl,
   useWebSocketImplementation,
   verifyEvent,
@@ -26,6 +28,15 @@ function captureError(p: Promise<unknown>): Promise<unknown> {
     },
     (err: unknown) => err,
   );
+}
+
+function syncThrow(fn: () => unknown): unknown {
+  try {
+    fn();
+  } catch (err) {
+    return err;
+  }
+  throw new Error("expected throw");
 }
 
 async function waitUntil(pred: () => boolean, timeoutMs = 500): Promise<void> {
@@ -350,15 +361,13 @@ describe("Relay", () => {
     relay.close();
   });
 
-  test("wasm poison by name drops EVENTs and notices once", async () => {
+  test("WasmVerifyPoisonedError poisons verify and drops later EVENTs", async () => {
     let verifies = 0;
     const notices: string[] = [];
-    const relay = await Relay.connect("wss://poison-name.example", {
+    const relay = await Relay.connect("wss://poison-instance.example", {
       verifyEvent: () => {
         verifies += 1;
-        const err = new Error("wasm verify aborted");
-        err.name = "WasmVerifyPoisonedError";
-        throw err;
+        throw new WasmVerifyPoisonedError("wasm verify aborted the instance");
       },
     });
     relay.onnotice = (msg) => notices.push(msg);
@@ -382,6 +391,47 @@ describe("Relay", () => {
     expect(events).toEqual([]);
     expect(notices).toEqual(["verify-poisoned: wasm instance aborted"]);
     expect(sub.idsAtWatermark.size).toBe(0);
+    relay.close();
+  });
+
+  test("Error named WasmVerifyPoisonedError does not poison verify", async () => {
+    let verifies = 0;
+    const notices: string[] = [];
+    const relay = await Relay.connect("wss://poison-name.example", {
+      verifyEvent: () => {
+        verifies += 1;
+        const err = new Error("wasm verify aborted");
+        err.name = "WasmVerifyPoisonedError";
+        throw err;
+      },
+    });
+    relay.onnotice = (msg) => notices.push(msg);
+    const keys = Keys.fromSecretKey(SK);
+    const first = EventBuilder.textNote("a").createdAt(1).signWithKeys(keys);
+    const second = EventBuilder.textNote("b").createdAt(2).signWithKeys(keys);
+    const events: string[] = [];
+    const sub = relay.subscribe([{ kinds: [1] }], {
+      onevent: (e) => events.push(e.id),
+    });
+    const ws = MockWebSocket.last();
+    const firstErr = syncThrow(() => {
+      ws.receive(JSON.stringify(["EVENT", sub.id, first]));
+    });
+    expect(firstErr).toBeInstanceOf(Error);
+    expect(firstErr).not.toBeInstanceOf(WasmVerifyPoisonedError);
+    expect((firstErr as Error).name).toBe("WasmVerifyPoisonedError");
+    expect(verifies).toBe(1);
+    expect(events).toEqual([]);
+    expect(notices).toEqual([]);
+
+    const secondErr = syncThrow(() => {
+      ws.receive(JSON.stringify(["EVENT", sub.id, second]));
+    });
+    expect(secondErr).toBeInstanceOf(Error);
+    expect(secondErr).not.toBeInstanceOf(WasmVerifyPoisonedError);
+    expect(verifies).toBe(2);
+    expect(events).toEqual([]);
+    expect(notices).toEqual([]);
     relay.close();
   });
 
@@ -491,6 +541,47 @@ describe("Relay", () => {
     expect(req[0]).toBe("REQ");
     expect(req[1]).toBe(id);
     sub.close();
+    relay.close();
+  });
+
+  test("negReconcile rejects empty and oversize custom ids without sending NEG", async () => {
+    const relay = await Relay.connect("wss://neg-id.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const storage = new NegentropyStorageVector();
+    storage.seal();
+    await expect(relay.negReconcile({ kinds: [1] }, storage, { id: "" })).rejects.toThrow(
+      MessageError,
+    );
+    await expect(
+      relay.negReconcile({ kinds: [1] }, storage, {
+        id: "a".repeat(SUBSCRIPTION_ID_MAX_CHARS + 1),
+      }),
+    ).rejects.toThrow(MessageError);
+    expect(
+      sentMessages(MockWebSocket.last()).filter(
+        (m) => m[0] === "NEG-OPEN" || m[0] === "NEG-MSG" || m[0] === "NEG-CLOSE",
+      ),
+    ).toHaveLength(0);
+    relay.close();
+  });
+
+  test("negReconcile sends NEG-OPEN with a 64-char custom id", async () => {
+    const relay = await Relay.connect("wss://neg-id-ok.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const storage = new NegentropyStorageVector();
+    storage.seal();
+    const id = "n".repeat(SUBSCRIPTION_ID_MAX_CHARS);
+    const pending = relay.negReconcile({ kinds: [1] }, storage, { id, timeoutMs: 2000 });
+    await Promise.resolve();
+    const open = sentMessages(MockWebSocket.last()).find((m) => m[0] === "NEG-OPEN") as
+      | [string, string, ...unknown[]]
+      | undefined;
+    expect(open?.[0]).toBe("NEG-OPEN");
+    expect(open?.[1]).toBe(id);
+    MockWebSocket.last().receive(JSON.stringify(["NEG-MSG", id, "61"]));
+    await expect(pending).resolves.toEqual({ have: [], need: [] });
     relay.close();
   });
 });
