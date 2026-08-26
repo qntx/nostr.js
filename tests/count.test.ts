@@ -351,6 +351,67 @@ describe("Relay.count", () => {
     relay.close();
   });
 
+  test("authSigner throw rejects COUNT with the thrown Error", async () => {
+    const boom = new Error("sign failed");
+    const relay = await Relay.connect("wss://count-auth-throw.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async () => {
+        throw boom;
+      },
+    });
+    const first = relay.count([{ kinds: [1] }], { id: "count:throw", timeoutMs: 2000 });
+    await Promise.resolve();
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "throw-challenge"]));
+    ws.receive(JSON.stringify(["CLOSED", "count:throw", "auth-required: login"]));
+    await expect(first).rejects.toBe(boom);
+
+    const second = relay.count([{ kinds: [1] }], { id: "count:after-throw", timeoutMs: 2000 });
+    await Promise.resolve();
+    ws.receive(JSON.stringify(["COUNT", "count:after-throw", { count: 3 }]));
+    await expect(second).resolves.toEqual({ count: 3 });
+    relay.close();
+  });
+
+  test("AUTH failure after abort does not reject a replacement COUNT with the same id", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://count-auth-reuse.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const ac = new AbortController();
+    const first = relay.count([{ kinds: [1] }], {
+      id: "count:reuse",
+      timeoutMs: 2000,
+      signal: ac.signal,
+    });
+    await Promise.resolve();
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "reuse-challenge"]));
+    ws.receive(JSON.stringify(["CLOSED", "count:reuse", "auth-required: login"]));
+    await new Promise((r) => setTimeout(r, 20));
+    const authFrame = ws.sent
+      .map((s) => JSON.parse(s) as unknown[])
+      .find((m) => m[0] === "AUTH") as [string, { id: string }] | undefined;
+    expect(authFrame?.[0]).toBe("AUTH");
+    ac.abort();
+    await expect(first).rejects.toThrow(/count aborted/);
+
+    const second = relay.count([{ kinds: [0] }], { id: "count:reuse", timeoutMs: 2000 });
+    await Promise.resolve();
+    ws.receive(JSON.stringify(["OK", authFrame![1].id, false, "restricted: bad auth"]));
+    await new Promise((r) => setTimeout(r, 20));
+    ws.receive(JSON.stringify(["COUNT", "count:reuse", { count: 9 }]));
+    await expect(second).resolves.toEqual({ count: 9 });
+    relay.close();
+  });
+
   test("requires connection and non-empty filters", async () => {
     const relay = new Relay("wss://count.example", {
       websocketImplementation: MockWebSocketCtor,

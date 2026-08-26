@@ -122,8 +122,8 @@ export class Pool {
     this.#rejectInsecure(url, norm);
     let relay = this.#relays.get(norm);
     if (!relay) {
-      const authSigner = this.#opts.automaticallyAuth?.(norm) ?? undefined;
-      relay = new Relay(norm, {
+      const signFn = this.#opts.automaticallyAuth?.(norm) ?? undefined;
+      const created = new Relay(norm, {
         websocketImplementation: this.#opts.websocketImplementation,
         verifyEvent: this.#opts.verifyEvent,
         publishTimeoutMs: this.#opts.publishTimeoutMs,
@@ -133,25 +133,22 @@ export class Pool {
         enablePing: this.#opts.enablePing,
         pingIntervalMs: this.#opts.pingIntervalMs,
         pingTimeoutMs: this.#opts.pingTimeoutMs,
-        authSigner,
+        authSigner: signFn,
       });
       // Only drop from the pool on terminal close (reconnect keeps the entry).
-      relay.onclose = () => {
+      created.onclose = () => {
         this.#relays.delete(norm);
         this.#lastActivity.delete(norm);
       };
-      if (this.#opts.automaticallyAuth) {
-        const signFn = this.#opts.automaticallyAuth(norm);
-        if (signFn) {
-          relay.onauth = (challenge) => {
-            void relay!.auth(signFn).catch(() => {
-              // auth failure surfaces on subsequent CLOSED/OK; avoid unhandled rejection
-              void challenge;
-            });
-          };
-        }
+      if (signFn) {
+        created.onauth = () => {
+          void created.auth(signFn).catch(() => {
+            // auth failure surfaces on subsequent CLOSED/OK; avoid unhandled rejection
+          });
+        };
       }
-      this.#relays.set(norm, relay);
+      this.#relays.set(norm, created);
+      relay = created;
     }
     this.#touch(norm);
     if (!relay.connected) {
