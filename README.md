@@ -249,7 +249,13 @@ One Negentropy session per relay, in parallel. Fulfilled summaries merge. Mixed 
 Upload with a kind 24242 auth event. Heal a dead blob URL with **that author's** kind 10063 list — not a global server list. There is no 10063 loader.
 
 ```ts
-import { Kind, createUploadAuth, healBlobUrl, parseBlossomServerList, upload } from "@qntx/nostr";
+import { Kind } from "@qntx/nostr";
+import {
+  createUploadAuth,
+  healBlobUrl,
+  parseBlossomServerList,
+  upload,
+} from "@qntx/nostr/nips/blossom";
 
 const auth = await createUploadAuth((template) => client.signTemplate(template), file);
 const descriptor = await upload("https://cdn.example", file, auth);
