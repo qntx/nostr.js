@@ -11,7 +11,7 @@ import {
   type CountResult,
   type SubscriptionId,
 } from "../core/message.ts";
-import { type NegentropyStorageVector } from "../nips/nip77.ts";
+import { Nip77Error, type NegentropyStorageVector } from "../nips/nip77.ts";
 import { isAuthRequired, makeAuthEvent } from "../nips/nip42.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayClosedError, RelayConnectionError, RelayError, RelayPublishError } from "./error.ts";
@@ -976,6 +976,8 @@ export class Relay {
 
     const id = opts?.id !== undefined ? assertSubscriptionId(opts.id) : this.nextSubId("neg");
     const timeoutMs = opts?.timeoutMs ?? this.#publishTimeoutMs;
+    const prev = this.#neg.get(id);
+    if (prev) failNegSession(prev, new Nip77Error("closed: replaced by new NEG-OPEN"));
     const session = createNegSession();
     this.#neg.set(id, session);
 
@@ -991,11 +993,13 @@ export class Relay {
         url: this.url,
       });
     } finally {
-      this.#neg.delete(id);
-      try {
-        this.#send(["NEG-CLOSE", id]);
-      } catch {
-        // connection already gone
+      if (this.#neg.get(id) === session) {
+        this.#neg.delete(id);
+        try {
+          this.#send(["NEG-CLOSE", id]);
+        } catch {
+          // connection already gone
+        }
       }
     }
   }
