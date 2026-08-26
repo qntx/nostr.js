@@ -42,6 +42,13 @@ describe("EventBuilder", () => {
     expect(del.tags[0]).toEqual(["e", meta.id]);
   });
 
+  test("contacts lowercases p pubkeys", () => {
+    const pk = "ab".repeat(32);
+    const draft = EventBuilder.contacts([pk.toUpperCase()]);
+    expect(draft.currentKind).toBe(Kind.Contacts);
+    expect(draft.currentTags).toEqual([["p", pk]]);
+  });
+
   test("repost NIP-70 empty content and required normalized relay URL", () => {
     const keys = Keys.fromSecretKey(SK);
     const target = EventBuilder.textNote("n").createdAt(1).signWithKeys(keys);
@@ -169,6 +176,16 @@ describe("EventBuilder", () => {
     expect(draft.currentTags.find((t) => t[0] === "e")).toEqual(["e", target.id, RELAY]);
   });
 
+  test("genericRepost lowercases e/p hex and a-tag pubkey", () => {
+    const keys = Keys.fromSecretKey(SK);
+    const signed = EventBuilder.metadata({ name: "alice" }).createdAt(1).signWithKeys(keys);
+    const target = { ...signed, id: signed.id.toUpperCase(), pubkey: signed.pubkey.toUpperCase() };
+    const draft = EventBuilder.genericRepost(target, RELAY_HINT);
+    expect(draft.currentTags.find((t) => t[0] === "e")).toEqual(["e", signed.id, RELAY]);
+    expect(draft.currentTags).toContainEqual(["p", signed.pubkey]);
+    expect(draft.currentTags).toContainEqual(["a", `0:${signed.pubkey}:`]);
+  });
+
   test("genericRepost NIP-70 protected event has empty content", () => {
     const keys = Keys.fromSecretKey(SK);
     const target = new EventBuilder(20, "secret").tag(["-"]).createdAt(1).signWithKeys(keys);
@@ -188,6 +205,34 @@ describe("EventBuilder", () => {
       ["p", target.pubkey],
       ["k", "1"],
     ]);
+  });
+
+  test("reaction lowercases uppercase target id and pubkey", () => {
+    const keys = Keys.fromSecretKey(SK);
+    const signed = EventBuilder.textNote("n").createdAt(1).signWithKeys(keys);
+    const target = { ...signed, id: signed.id.toUpperCase(), pubkey: signed.pubkey.toUpperCase() };
+    const draft = EventBuilder.reaction(target);
+    expect(draft.currentTags).toEqual([
+      ["e", signed.id, "", signed.pubkey],
+      ["p", signed.pubkey],
+      ["k", "1"],
+    ]);
+    expect(draft.currentTags[0]![1]).not.toBe(target.id);
+    expect(draft.currentTags[0]![3]).not.toBe(target.pubkey);
+  });
+
+  test("reaction addressable lowercases a-tag pubkey", () => {
+    const keys = Keys.fromSecretKey(SK);
+    const signed = new EventBuilder(34235, "v").tag(["d", "ep1"]).createdAt(1).signWithKeys(keys);
+    const target = { ...signed, id: signed.id.toUpperCase(), pubkey: signed.pubkey.toUpperCase() };
+    const draft = EventBuilder.reaction(target);
+    expect(draft.currentTags).toEqual([
+      ["e", signed.id, "", signed.pubkey],
+      ["p", signed.pubkey],
+      ["k", "34235"],
+      ["a", `34235:${signed.pubkey}:ep1`],
+    ]);
+    expect(draft.currentTags.find((t) => t[0] === "a")![1]).not.toContain(target.pubkey);
   });
 
   test("reaction custom content and normalized relayHint on e and p", () => {
@@ -268,6 +313,12 @@ describe("EventBuilder", () => {
     const keys = Keys.fromSecretKey(SK);
     const target = EventBuilder.textNote("n").createdAt(1).signWithKeys(keys);
     expect(() => EventBuilder.reaction(target, "+", { relayHint: "not a url" })).toThrow(UrlError);
+  });
+
+  test("deletion lowercases e ids", () => {
+    const id = "ab".repeat(32);
+    const del = EventBuilder.deletion([id.toUpperCase()]);
+    expect(del.currentTags).toEqual([["e", id]]);
   });
 
   test("deletion k tags with e", () => {

@@ -81,7 +81,7 @@ export function dmRelayListToTags(relays: readonly string[]): Tag[] {
     }
     if (seen.has(url)) continue;
     seen.add(url);
-    tags.push(["relay", url] as Tag);
+    tags.push(["relay", url]);
   }
   return tags;
 }

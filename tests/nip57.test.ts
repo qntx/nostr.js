@@ -131,6 +131,27 @@ describe("makeZapRequest", () => {
     expect(zr.tags).toContainEqual(["k", "30023"]);
   });
 
+  test("p and e hex slots are lowercase", () => {
+    const profile = makeZapRequest({
+      pubkey: keys.publicKey.toUpperCase(),
+      amount: 1,
+      relays: ["wss://r.example"],
+    });
+    expect(profile.tags[0]).toEqual(["p", keys.publicKey]);
+    expect(profile.tags[0]![1]).not.toBe(keys.publicKey.toUpperCase());
+
+    const event = EventBuilder.textNote("hi").signWithKeys(keys);
+    const zr = makeZapRequest({
+      event: { ...event, id: event.id.toUpperCase(), pubkey: event.pubkey.toUpperCase() },
+      amount: 21,
+      relays: ["wss://r.example"],
+    });
+    expect(zr.tags).toContainEqual(["p", event.pubkey]);
+    expect(zr.tags).toContainEqual(["e", event.id]);
+    expect(zr.tags.some((t) => t[0] === "p" && t[1] === event.pubkey.toUpperCase())).toBe(false);
+    expect(zr.tags.some((t) => t[0] === "e" && t[1] === event.id.toUpperCase())).toBe(false);
+  });
+
   test("optional lnurl tag", () => {
     const lnurl =
       "lnurl1dp68gurn8ghj7um5v93kketj9ehx2amn9uh8wetvdskkkmn0wahz7mrww4excup0dajx2mrv92x9xp";

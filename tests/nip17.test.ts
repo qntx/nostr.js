@@ -1,8 +1,9 @@
 import { describe, expect, test } from "vite-plus/test";
-import { Kind, Keys, KeysSigner } from "../src/index.ts";
+import { Kind, Keys, KeysSigner, normalizeURL, type Tag } from "../src/index.ts";
 import {
   Nip17Error,
   buildChatMessageRumor,
+  dmRelayListToTags,
   normalizeRecipients,
   requireDmRelays,
   wrapDirectMessage,
@@ -125,6 +126,12 @@ describe("nip17 chat helpers", () => {
     expect(seal.created_at).toBe(rumor.created_at);
     const toBob = await unwrap(bob, bobWrap);
     expect(toBob.content).toBe("x");
+  });
+
+  test("dmRelayListToTags emits relay tags without assertion", () => {
+    const url = "wss://inbox.example";
+    const tags: Tag[] = dmRelayListToTags([url, `${url}/`]);
+    expect(tags).toEqual([["relay", normalizeURL(url)]]);
   });
 
   test("requireDmRelays throws on empty list", () => {

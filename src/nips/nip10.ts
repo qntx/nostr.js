@@ -6,7 +6,7 @@ import { EventBuilder } from "../core/builder.ts";
 import { EventValidationError } from "../core/error.ts";
 import type { Event } from "../core/event.ts";
 import { Kind } from "../core/kind.ts";
-import { formatEventAddress, parseEventAddress, type Tag } from "../core/tag.ts";
+import { formatEventAddress, parseEventAddress, Tag } from "../core/tag.ts";
 import { isHex32 } from "../core/util.ts";
 import type { AddressPointer, EventPointer, ProfilePointer } from "./nip19.ts";
 
@@ -193,22 +193,14 @@ export function buildReplyTags(opts: ReplyTagsOptions): Tag[] {
   assertKind1Parent(opts.parent);
   const thread = parseThreadTags(opts.parent);
   const root = thread.root ?? { id: opts.parent.id, relays: [], author: opts.parent.pubkey };
-  const parentIsRoot = root.id === opts.parent.id;
+  const parentIsRoot = root.id.toLowerCase() === opts.parent.id.toLowerCase();
 
   const tags: Tag[] = [];
   const rootRelay = root.relays?.[0] ?? opts.relayHint ?? "";
-  tags.push(
-    ["e", root.id, rootRelay, "root", root.author ?? opts.parent.pubkey].filter(
-      (x, i) => i < 4 || Boolean(x),
-    ),
-  );
+  tags.push(Tag.e(root.id, rootRelay, "root", root.author ?? opts.parent.pubkey));
 
   if (!parentIsRoot) {
-    tags.push(
-      ["e", opts.parent.id, opts.relayHint ?? "", "reply", opts.parent.pubkey].filter(
-        (x, i) => i < 4 || Boolean(x),
-      ),
-    );
+    tags.push(Tag.e(opts.parent.id, opts.relayHint ?? "", "reply", opts.parent.pubkey));
   }
 
   // Ensure root + parent authors are p-tagged.
@@ -217,7 +209,7 @@ export function buildReplyTags(opts: ReplyTagsOptions): Tag[] {
     const key = pk.toLowerCase();
     if (pSeen.has(key)) return;
     pSeen.add(key);
-    tags.push(relay ? ["p", key, relay] : ["p", key]);
+    tags.push(Tag.p(pk, relay || undefined));
   };
   if (root.author) addP(root.author, root.relays?.[0]);
   addP(opts.parent.pubkey, opts.relayHint);

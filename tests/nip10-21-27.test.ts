@@ -164,6 +164,60 @@ describe("nip10", () => {
     expect(pTags.some((t) => t[1] === parent.pubkey)).toBe(true);
   });
 
+  test("buildReplyTags lowercases e/p hex", () => {
+    const parent = signedNote(keysA, "root note");
+    const tags = buildReplyTags({
+      parent: { ...parent, id: parent.id.toUpperCase(), pubkey: parent.pubkey.toUpperCase() },
+      relayHint: "wss://r.example",
+    });
+    expect(tags.filter((t) => t[0] === "e")).toEqual([
+      ["e", parent.id, "wss://r.example", "root", parent.pubkey],
+    ]);
+    expect(tags.filter((t) => t[0] === "p")).toEqual([["p", parent.pubkey]]);
+
+    const child = signedNote(keysB, "child", [
+      ["e", parent.id.toUpperCase(), "wss://root.example", "root", parent.pubkey.toUpperCase()],
+      ["p", parent.pubkey.toUpperCase()],
+    ]);
+    const nested = buildReplyTags({
+      parent: { ...child, id: child.id.toUpperCase(), pubkey: child.pubkey.toUpperCase() },
+      relayHint: "wss://parent.example",
+    });
+    expect(nested.find((t) => t[0] === "e" && t[3] === "root")).toEqual([
+      "e",
+      parent.id,
+      "wss://root.example",
+      "root",
+      parent.pubkey,
+    ]);
+    expect(nested.find((t) => t[0] === "e" && t[3] === "reply")).toEqual([
+      "e",
+      child.id,
+      "wss://parent.example",
+      "reply",
+      child.pubkey,
+    ]);
+    expect(nested.filter((t) => t[0] === "p")).toEqual([
+      ["p", parent.pubkey, "wss://root.example"],
+      ["p", child.pubkey, "wss://parent.example"],
+    ]);
+  });
+
+  test("buildReplyTags mixed-case parent id matching root does not emit reply e", () => {
+    const parent = signedNote(keysA, "root note");
+    const tagged = {
+      ...parent,
+      id: parent.id.toUpperCase(),
+      pubkey: parent.pubkey.toUpperCase(),
+      tags: [["e", parent.id, "wss://r.example", "root", parent.pubkey]],
+    };
+    const tags = buildReplyTags({ parent: tagged, relayHint: "wss://r.example" });
+    const eTags = tags.filter((t) => t[0] === "e");
+    expect(eTags).toHaveLength(1);
+    expect(eTags[0]).toEqual(["e", parent.id, "wss://r.example", "root", parent.pubkey]);
+    expect(eTags.some((t) => t[3] === "reply")).toBe(false);
+  });
+
   test("buildReplyTags for nested reply", () => {
     const root = signedNote(keysA, "root");
     const parent = signedNote(keysB, "child", [
@@ -348,6 +402,15 @@ describe("nip10", () => {
   });
 
   test("Tag.e and replyTo builder", () => {
+    const id = "aa".repeat(32);
+    const pk = "cd".repeat(32);
+    expect(Tag.e(id.toUpperCase(), "wss://x", "root", pk.toUpperCase())).toEqual([
+      "e",
+      id,
+      "wss://x",
+      "root",
+      pk,
+    ]);
     expect(Tag.e("aa".repeat(32), "wss://x", "root", keysA.publicKey)).toEqual([
       "e",
       "aa".repeat(32),
