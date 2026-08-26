@@ -9,6 +9,7 @@ import {
   createLoaders,
   dmRelayListEventBuilder,
   parseDmRelayList,
+  relayListEventBuilder,
   useWebSocketImplementation,
 } from "../src/index.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
@@ -53,10 +54,10 @@ function respondReplaceables(
 describe("Gossip", () => {
   test("ingest NIP-65 and breakDownFilter by authors", () => {
     const keys = Keys.fromSecretKey(SK);
-    const list = EventBuilder.relayList([
+    const list = relayListEventBuilder([
       { url: "wss://write.example", read: false, write: true },
       { url: "wss://read.example", read: true, write: false },
-      { url: "wss://both.example" },
+      { url: "wss://both.example", read: true, write: true },
     ])
       .createdAt(1)
       .signWithKeys(keys);
@@ -89,7 +90,7 @@ describe("Gossip", () => {
     const b = Keys.fromSecretKey(SK2);
     const gossip = new Gossip();
     gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
@@ -115,7 +116,7 @@ describe("Gossip", () => {
     const b = Keys.fromSecretKey(SK2);
     const gossip = new Gossip();
     gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://in-a.example", read: true, write: false }])
+      relayListEventBuilder([{ url: "wss://in-a.example", read: true, write: false }])
         .createdAt(1)
         .signWithKeys(a),
     );
@@ -140,7 +141,7 @@ describe("Gossip", () => {
     const b = Keys.fromSecretKey(SK2);
     const gossip = new Gossip();
     gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
@@ -162,7 +163,7 @@ describe("Gossip", () => {
 
   test("ingest kind 10050 DM relays without clobbering NIP-65", () => {
     const keys = Keys.fromSecretKey(SK);
-    const nip65 = EventBuilder.relayList([{ url: "wss://out.example", read: false, write: true }])
+    const nip65 = relayListEventBuilder([{ url: "wss://out.example", read: false, write: true }])
       .createdAt(10)
       .signWithKeys(keys);
     const dm = dmRelayListEventBuilder(["wss://dm-a.example", "wss://dm-b.example"])
@@ -241,7 +242,7 @@ describe("Loaders", () => {
 
   test("relayList loader + client.observe", async () => {
     const keys = Keys.fromSecretKey(SK);
-    const list = EventBuilder.relayList([{ url: "wss://out.example" }])
+    const list = relayListEventBuilder([{ url: "wss://out.example", read: true, write: true }])
       .createdAt(5)
       .signWithKeys(keys);
 
@@ -291,7 +292,7 @@ describe("Loaders", () => {
 
   test("hydrateGossip loads 10002 and 10050", async () => {
     const keys = Keys.fromSecretKey(SK);
-    const list = EventBuilder.relayList([{ url: "wss://out.example" }])
+    const list = relayListEventBuilder([{ url: "wss://out.example", read: true, write: true }])
       .createdAt(8)
       .signWithKeys(keys);
     const dm = dmRelayListEventBuilder(["wss://dm.example"]).createdAt(9).signWithKeys(keys);

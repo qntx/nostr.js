@@ -5,6 +5,7 @@ import {
   Kind,
   Keys,
   KeysSigner,
+  relayListEventBuilder,
   useWebSocketImplementation,
 } from "../src/index.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
@@ -186,12 +187,12 @@ describe("Client", () => {
     await client.connect();
 
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://author-write.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://author-write.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(Keys.fromSecretKey(SK)),
     );
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://tagged-read.example", read: true, write: false }])
+      relayListEventBuilder([{ url: "wss://tagged-read.example", read: true, write: false }])
         .createdAt(1)
         .signWithKeys(tagged),
     );
@@ -257,12 +258,12 @@ describe("Client", () => {
       .websocketImplementation(MockWebSocketCtor)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(author),
     );
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-b.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-b.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(tagged),
     );
@@ -307,7 +308,7 @@ describe("Client", () => {
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
@@ -335,7 +336,7 @@ describe("Client", () => {
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
@@ -381,7 +382,7 @@ describe("Client", () => {
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
@@ -417,7 +418,7 @@ describe("Client", () => {
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
@@ -437,7 +438,7 @@ describe("Client", () => {
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
@@ -468,7 +469,7 @@ describe("Client", () => {
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://in-a.example", read: true, write: false }])
+      relayListEventBuilder([{ url: "wss://in-a.example", read: true, write: false }])
         .createdAt(1)
         .signWithKeys(a),
     );
@@ -493,7 +494,7 @@ describe("Client", () => {
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
@@ -524,12 +525,12 @@ describe("Client", () => {
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-b.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-b.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(b),
     );
@@ -563,12 +564,12 @@ describe("Client", () => {
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-b.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-b.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(b),
     );
@@ -612,12 +613,12 @@ describe("Client", () => {
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-b.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-b.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(b),
     );
@@ -655,7 +656,7 @@ describe("Client", () => {
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
@@ -689,7 +690,7 @@ describe("Client", () => {
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
@@ -736,12 +737,12 @@ describe("Client", () => {
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-a.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(a),
     );
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://out-b.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://out-b.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(b),
     );
@@ -912,7 +913,7 @@ describe("Client", () => {
     await client.connect();
 
     client.gossip.ingest(
-      EventBuilder.relayList([{ url: "wss://author-write.example", read: false, write: true }])
+      relayListEventBuilder([{ url: "wss://author-write.example", read: false, write: true }])
         .createdAt(1)
         .signWithKeys(Keys.fromSecretKey(SK)),
     );

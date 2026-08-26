@@ -2,7 +2,7 @@ import { isAddressableKind, isReplaceableKind } from "./kind.ts";
 import { isHex32 } from "./util.ts";
 
 /** A NIP-01 tag: first element is the name, rest are values. */
-export type Tag = readonly [string, ...string[]];
+export type Tag = readonly string[];
 
 /** Mutable tag builder input. */
 export type TagInput = string[];
@@ -30,18 +30,18 @@ export const Tag = {
     if (relay !== undefined) t.push(relay);
     if (marker !== undefined) t.push(marker);
     if (pubkey !== undefined) t.push(pubkey);
-    return t as unknown as Tag;
+    return t;
   },
   p(pubkey: string, relay?: string, petname?: string): Tag {
     const t: string[] = ["p", pubkey];
     if (relay !== undefined) t.push(relay);
     if (petname !== undefined) t.push(petname);
-    return t as unknown as Tag;
+    return t;
   },
   a(coordinate: string, relay?: string): Tag {
     const t: string[] = ["a", coordinate];
     if (relay !== undefined) t.push(relay);
-    return t as unknown as Tag;
+    return t;
   },
   d(identifier: string): Tag {
     return ["d", identifier];
@@ -52,7 +52,7 @@ export const Tag = {
   r(url: string, marker?: string): Tag {
     const t: string[] = ["r", url];
     if (marker !== undefined) t.push(marker);
-    return t as unknown as Tag;
+    return t;
   },
   k(kind: number | string): Tag {
     return ["k", String(kind)];

@@ -9,6 +9,7 @@ import {
   OutboxFeed,
   StorageError,
   groupAuthorsByOutboxRelay,
+  relayListEventBuilder,
   normalizeURL,
   useWebSocketImplementation,
   type Event,
@@ -246,7 +247,7 @@ describe("OutboxFeed", () => {
   test("sync pulls notes from outbox relays and updates storage", async () => {
     const a = Keys.fromSecretKey(SK_A);
     const note = EventBuilder.textNote("outbox note").createdAt(50).signWithKeys(a);
-    const list = EventBuilder.relayList([{ url: "wss://out.example", read: false, write: true }])
+    const list = relayListEventBuilder([{ url: "wss://out.example", read: false, write: true }])
       .createdAt(1)
       .signWithKeys(a);
 
@@ -341,7 +342,7 @@ describe("OutboxFeed", () => {
   test("sync REQ since is derived from stored newest on a fresh feed", async () => {
     const a = Keys.fromSecretKey(SK_A);
     const stored = EventBuilder.textNote("seeded newest").createdAt(100).signWithKeys(a);
-    const list = EventBuilder.relayList([{ url: "wss://out.example", read: false, write: true }])
+    const list = relayListEventBuilder([{ url: "wss://out.example", read: false, write: true }])
       .createdAt(1)
       .signWithKeys(a);
 

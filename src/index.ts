@@ -43,7 +43,6 @@ export {
   tagName,
   tagValue,
   type EventAddress,
-  type TagTuple,
   type TagInput,
   getEventHash,
   isMarkedVerified,
@@ -75,6 +74,7 @@ export {
   matchFilters,
   mergeFilters,
   type Filter,
+  assertSubscriptionId,
   createSubscriptionId,
   encodeClientMessage,
   encodeRelayMessage,
@@ -126,7 +126,6 @@ export {
 } from "./nips/nip19.ts";
 export {
   buildReplyTags,
-  eTag,
   parseThreadTags,
   replyTo,
   type ReplyTagsOptions,

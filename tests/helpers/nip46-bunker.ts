@@ -7,7 +7,7 @@ import {
   getConversationKey,
   nip44Decrypt,
   nip44Encrypt,
-  type TagTuple,
+  type Tag,
 } from "../../src/index.ts";
 import { MockWebSocket } from "./mock-ws.ts";
 
@@ -132,7 +132,7 @@ export function armBunkerResponder(opts: BunkerResponderOptions): () => void {
             case "sign_event": {
               const template = JSON.parse(req.params[0]!) as {
                 kind: number;
-                tags: TagTuple[];
+                tags: Tag[];
                 content: string;
                 created_at: number;
               };

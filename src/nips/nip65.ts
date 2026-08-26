@@ -54,10 +54,10 @@ export function parseRelayList(event: Event): RelayListItem[] {
 /** Encode relay list items as NIP-65 `r` tags. */
 export function relayListToTags(items: RelayListItem[]): Tag[] {
   return items.map((item) => {
-    if (item.read && item.write) return ["r", item.url] as Tag;
-    if (item.read) return ["r", item.url, "read"] as Tag;
-    if (item.write) return ["r", item.url, "write"] as Tag;
-    return ["r", item.url] as Tag;
+    if (item.read && item.write) return ["r", item.url];
+    if (item.read) return ["r", item.url, "read"];
+    if (item.write) return ["r", item.url, "write"];
+    return ["r", item.url];
   });
 }
 

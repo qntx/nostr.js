@@ -7,6 +7,7 @@ import {
   Kind,
   UrlError,
   normalizeURL,
+  relayListEventBuilder,
   verifyEvent,
 } from "../src/index.ts";
 
@@ -291,8 +292,8 @@ describe("EventBuilder", () => {
 
   test("relayList markers", () => {
     const keys = Keys.fromSecretKey(SK);
-    const event = EventBuilder.relayList([
-      { url: "wss://a.example" },
+    const event = relayListEventBuilder([
+      { url: "wss://a.example", read: true, write: true },
       { url: "wss://b.example", read: true, write: false },
       { url: "wss://c.example", read: false, write: true },
     ]).signWithKeys(keys);

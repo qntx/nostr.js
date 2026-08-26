@@ -138,20 +138,6 @@ export class EventBuilder {
     return b;
   }
 
-  static relayList(relays: Array<{ url: string; read?: boolean; write?: boolean }>): EventBuilder {
-    const b = new EventBuilder(Kind.RelayList, "");
-    for (const r of relays) {
-      if (r.read !== false && r.write !== false) {
-        b.#tags.push(["r", r.url]);
-      } else if (r.read !== false && r.write === false) {
-        b.#tags.push(["r", r.url, "read"]);
-      } else if (r.read === false && r.write !== false) {
-        b.#tags.push(["r", r.url, "write"]);
-      }
-    }
-    return b;
-  }
-
   kind(kind: number): this {
     this.#kind = kind;
     return this;
@@ -162,13 +148,13 @@ export class EventBuilder {
     return this;
   }
 
-  tag(tag: Tag | string[]): this {
-    this.#tags.push(tag as Tag);
+  tag(tag: Tag): this {
+    this.#tags.push(tag);
     return this;
   }
 
-  tags(tags: Iterable<Tag | string[]>): this {
-    for (const t of tags) this.#tags.push(t as Tag);
+  tags(tags: Iterable<Tag>): this {
+    for (const t of tags) this.#tags.push(t);
     return this;
   }
 
