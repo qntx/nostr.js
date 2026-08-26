@@ -1,11 +1,6 @@
 import type { Event, EventTemplate } from "../core/event.ts";
 import { verifyEvent } from "../core/key.ts";
-import {
-  canonicalizeFilter,
-  canonicalizeFilters,
-  filterFingerprint,
-  type Filter,
-} from "../core/filter.ts";
+import { canonicalizeFilter, canonicalizeFilters, type Filter } from "../core/filter.ts";
 import { WasmVerifyPoisonedError } from "../core/error.ts";
 import {
   assertSubscriptionId,
@@ -16,16 +11,34 @@ import {
   type CountResult,
   type SubscriptionId,
 } from "../core/message.ts";
-import { Nip77Error, runNegSession, type NegentropyStorageVector } from "../nips/nip77.ts";
+import { type NegentropyStorageVector } from "../nips/nip77.ts";
 import { isAuthRequired, makeAuthEvent } from "../nips/nip42.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayClosedError, RelayConnectionError, RelayError, RelayPublishError } from "./error.ts";
 import {
-  Subscription,
-  subscriptionToAsyncIterable,
-  type SubscribeOptions,
-  type SubscriptionHandlers,
-} from "./subscription.ts";
+  armEoseTimeout,
+  closeAllSubscriptions,
+  dropSubscription,
+  fetchFilters,
+  onSubEose,
+  onSubEvent,
+  openExclusive,
+  resubscribeAll,
+  streamFilters,
+  subscribeLive,
+  type LiveCtx,
+  type LiveGroup,
+} from "./live.ts";
+import {
+  createNegSession,
+  failNegErr,
+  failNegSession,
+  pushNegMsg,
+  runWiredNegSession,
+  type NegSession,
+} from "./neg-session.ts";
+import { DEFAULT_PING_INTERVAL_MS, DEFAULT_PING_TIMEOUT_MS, PingLoop } from "./ping.ts";
+import type { SubscribeOptions, Subscription, SubscriptionHandlers } from "./subscription.ts";
 import {
   getWebSocketImplementation,
   type WebSocketConstructor,
@@ -85,42 +98,6 @@ type CountWaiter = {
   timeoutMs: number;
 };
 
-type NegSession = {
-  queue: string[];
-  waiter:
-    | {
-        resolve: (hex: string) => void;
-        reject: (err: Error) => void;
-      }
-    | undefined;
-  error: Error | undefined;
-};
-
-type PingWaiter = {
-  resolve: (alive: boolean) => void;
-};
-
-type LiveGroup = {
-  fp: string;
-  sub: Subscription;
-  attachments: Set<Subscription>;
-};
-
-// Independent live attachments must not abort sibling delivery or skip watermark.
-function captureListenerError(errors: unknown[], fn: () => void): void {
-  try {
-    fn();
-  } catch (err) {
-    errors.push(err);
-  }
-}
-
-function flushListenerErrors(errors: unknown[]): void {
-  if (errors.length === 0) return;
-  if (errors.length === 1) throw errors[0];
-  throw new AggregateError(errors);
-}
-
 type SocketHandlers = {
   onOpen: () => void;
   onError: () => void;
@@ -130,17 +107,6 @@ type SocketHandlers = {
 };
 
 const DEFAULT_BACKOFF = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000, 60_000];
-const DEFAULT_PING_INTERVAL_MS = 29_000;
-const DEFAULT_PING_TIMEOUT_MS = 20_000;
-const PING_DUMMY_ID = "a".repeat(64);
-const PING_DUMMY_FILTER: Filter = { ids: [PING_DUMMY_ID], limit: 0 };
-
-/** node `ws` delivers `pong` on the EventEmitter, not via addEventListener. */
-function canNativePing(ws: WebSocketLike): boolean {
-  return (
-    typeof ws.ping === "function" && (typeof ws.once === "function" || typeof ws.on === "function")
-  );
-}
 
 /**
  * Single-relay NIP-01 client.
@@ -159,6 +125,7 @@ export class Relay {
   #subs = new Map<SubscriptionId, Subscription>();
   #liveByFp = new Map<string, LiveGroup>();
   #liveBySubId = new Map<SubscriptionId, LiveGroup>();
+  #live: LiveCtx;
   #publishes = new Map<string, PublishWaiter>();
   #counts = new Map<string, CountWaiter>();
   #neg = new Map<SubscriptionId, NegSession>();
@@ -181,12 +148,7 @@ export class Relay {
   /** Collapses error+close pairs into a single terminal/reconnect action. */
   #deathHandled = false;
   #enablePing: boolean;
-  #pingIntervalMs: number;
-  #pingTimeoutMs: number;
-  #pingTimer: ReturnType<typeof setInterval> | undefined;
-  #pingWaiters = new Map<SubscriptionId, PingWaiter>();
-  #pingGen = 0;
-  #nativePing: { abort: () => void } | undefined;
+  #ping: PingLoop;
 
   onnotice: ((msg: string) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -204,9 +166,35 @@ export class Relay {
     this.#enableReconnect = opts.enableReconnect ?? false;
     this.#backoff = opts.reconnectBackoffMs ?? DEFAULT_BACKOFF;
     this.#enablePing = opts.enablePing ?? false;
-    this.#pingIntervalMs = opts.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS;
-    this.#pingTimeoutMs = opts.pingTimeoutMs ?? DEFAULT_PING_TIMEOUT_MS;
     this.#authSigner = opts.authSigner;
+    this.#ping = new PingLoop({
+      send: (message) => this.#send(message),
+      nextSubId: (prefix) => this.nextSubId(prefix),
+      getWs: () => this.#ws,
+      closeWs: () => {
+        const ws = this.#ws;
+        if (ws && ws.readyState === this.#WS.OPEN) {
+          try {
+            ws.close();
+          } catch {
+            // ignore
+          }
+        }
+      },
+      pingIntervalMs: opts.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS,
+      pingTimeoutMs: opts.pingTimeoutMs ?? DEFAULT_PING_TIMEOUT_MS,
+    });
+    this.#live = {
+      liveByFp: this.#liveByFp,
+      liveBySubId: this.#liveBySubId,
+      subs: this.#subs,
+      connected: () => this.#connected,
+      enableReconnect: () => this.#enableReconnect,
+      send: (message) => this.#send(message),
+      scheduleReconnect: () => this.#scheduleReconnect(),
+      acceptEvent: (event) => this.#acceptEvent(event),
+      armEoseTimeout,
+    };
   }
 
   /** Latest NIP-42 challenge, if any. */
@@ -367,7 +355,7 @@ export class Relay {
       const wasReconnect = this.#reconnectAttempts > 0;
       this.#challenge = undefined;
       this.#authPromise = undefined;
-      if (!this.#resubscribeAll()) {
+      if (!resubscribeAll(this.#live)) {
         this.#connected = false;
         this.#status = RelayStatus.Disconnected;
         if (!isReconnect && !this.#enableReconnect) this.#skipReconnect = true;
@@ -384,7 +372,8 @@ export class Relay {
         return;
       }
       this.#reconnectAttempts = 0;
-      this.#startPingLoop();
+      if (this.#enablePing) this.#ping.start();
+      else this.#ping.stop();
       if (wasReconnect) this.onreconnect?.();
       finish();
     };
@@ -460,10 +449,10 @@ export class Relay {
       clearTimeout(this.#connectTimer);
       this.#connectTimer = undefined;
     }
-    this.#stopPingLoop();
+    this.#ping.stop();
     this.#connectFinish?.(new RelayClosedError("relay closed", this.url));
     try {
-      this.#closeAllSubscriptions("relay closed");
+      closeAllSubscriptions(this.#live, "relay closed");
     } finally {
       this.#rejectPublishes(new RelayClosedError("relay closed", this.url));
       this.#rejectCounts(new RelayClosedError("relay closed", this.url));
@@ -491,28 +480,6 @@ export class Relay {
     }
   }
 
-  #closeAllSubscriptions(reason: string): void {
-    const errors: unknown[] = [];
-    const fps = Array.from(this.#liveByFp.keys());
-    for (const fp of fps) {
-      captureListenerError(errors, () => {
-        this.#endLiveGroup(fp, { sendClose: false, reason });
-      });
-    }
-    for (const sub of this.#subs.values()) {
-      if (!sub.closed) {
-        sub.closed = true;
-        captureListenerError(errors, () => {
-          sub.handlers.onclose?.(reason);
-        });
-      }
-    }
-    this.#subs.clear();
-    this.#liveByFp.clear();
-    this.#liveBySubId.clear();
-    flushListenerErrors(errors);
-  }
-
   #rejectPublishes(err: Error): void {
     for (const [, waiter] of this.#publishes) {
       clearTimeout(waiter.timer);
@@ -530,11 +497,7 @@ export class Relay {
   }
 
   #rejectNeg(err: Error): void {
-    for (const session of this.#neg.values()) {
-      session.error = err;
-      session.waiter?.reject(err);
-      session.waiter = undefined;
-    }
+    for (const session of this.#neg.values()) failNegSession(session, err);
     this.#neg.clear();
   }
 
@@ -545,7 +508,7 @@ export class Relay {
     if (opts.gen !== this.#gen) return;
     if (this.#deathHandled) return;
     this.#deathHandled = true;
-    this.#stopPingLoop();
+    this.#ping.stop();
     this.#detachSocketHandlers();
     this.#connected = false;
     this.#ws = undefined;
@@ -568,7 +531,7 @@ export class Relay {
     if (!this.#intentionalClose) this.#status = RelayStatus.Disconnected;
 
     if (!opts.fromConnectAttempt || this.#subs.size > 0) {
-      this.#closeAllSubscriptions(reason);
+      closeAllSubscriptions(this.#live, reason);
       if (!this.#intentionalClose) this.onclose?.();
     }
 
@@ -598,24 +561,6 @@ export class Relay {
     }, delay);
   }
 
-  #resubscribeAll(): boolean {
-    for (const sub of this.#subs.values()) {
-      if (sub.closed) continue;
-      sub.eosed = false;
-      sub.authRetried = false;
-      const group = this.#liveBySubId.get(sub.id);
-      if (group) {
-        for (const att of group.attachments) att.eosed = false;
-      }
-      try {
-        this.#send(["REQ", sub.id, ...sub.replayFilters()]);
-      } catch {
-        return false;
-      }
-    }
-    return true;
-  }
-
   #send(message: ClientMessage | string): void {
     if (!this.#ws || !this.#connected) {
       throw new RelayClosedError("not connected", this.url);
@@ -635,41 +580,19 @@ export class Relay {
     switch (msg[0]) {
       case "EVENT": {
         const [, subId, event] = msg;
-        if (this.#pingWaiters.has(subId)) return;
-        const sub = this.#subs.get(subId);
-        if (!sub || sub.closed) return;
-        const group = this.#liveBySubId.get(subId);
-        if (group) {
-          this.#deliverLiveEvent(group, event);
-          break;
-        }
-        sub.handlers.receivedEvent?.(event.id);
-        if (sub.idsAtWatermark.has(event.id)) return;
-        if (sub.handlers.alreadyHaveEvent?.(event.id)) return;
-        if (!this.#acceptEvent(event)) return;
-        sub.noteVerified(event);
-        sub.handlers.onevent?.(event);
+        if (this.#ping.hasWaiter(subId)) return;
+        onSubEvent(this.#live, subId, event);
         break;
       }
       case "EOSE": {
         const [, subId] = msg;
-        if (this.#finishDummyPing(subId)) return;
-        const sub = this.#subs.get(subId);
-        if (!sub || sub.closed) return;
-        if (sub.eosed) return;
-        sub.eosed = true;
-        const group = this.#liveBySubId.get(subId);
-        if (group) {
-          this.#deliverLiveEose(group);
-        } else {
-          sub.handlers.oneose?.();
-          if (sub.closeOnEose) sub.close("eose");
-        }
+        if (this.#ping.finishDummyPing(subId)) return;
+        onSubEose(this.#live, subId);
         break;
       }
       case "CLOSED": {
         const [, subId, reason] = msg;
-        if (this.#finishDummyPing(subId)) return;
+        if (this.#ping.finishDummyPing(subId)) return;
         const countWaiter = this.#counts.get(subId);
         if (countWaiter) {
           if (isAuthRequired(reason) && this.#authSigner && !countWaiter.authRetried) {
@@ -687,7 +610,7 @@ export class Relay {
           void this.#authThenResubscribe(sub, reason);
           return;
         }
-        this.#dropSubscription(sub, reason);
+        dropSubscription(this.#live, sub, reason);
         break;
       }
       case "OK": {
@@ -721,26 +644,14 @@ export class Relay {
         const [, negId, hex] = msg;
         const session = this.#neg.get(negId);
         if (!session) return;
-        if (session.waiter) {
-          const waiter = session.waiter;
-          session.waiter = undefined;
-          waiter.resolve(hex);
-        } else {
-          session.queue.push(hex);
-        }
+        pushNegMsg(session, hex);
         break;
       }
       case "NEG-ERR": {
         const [, negId, reason] = msg;
         const session = this.#neg.get(negId);
         if (!session) return;
-        const err = new Nip77Error(reason);
-        session.error = err;
-        if (session.waiter) {
-          const waiter = session.waiter;
-          session.waiter = undefined;
-          waiter.reject(err);
-        }
+        failNegErr(session, reason);
         break;
       }
       case "NOTICE": {
@@ -765,140 +676,8 @@ export class Relay {
       throw new RelayClosedError("not connected", this.url);
     }
     const canonical = canonicalizeFilters(filters);
-    if (opts.closeOnEose === true) return this.#openExclusive(canonical, opts);
-    return this.#subscribeLive(canonical, opts);
-  }
-
-  #openExclusive(filters: Filter[], opts: SubscribeOptions): Subscription {
-    const sub = new Subscription(filters, opts, (id) => {
-      this.#subs.delete(id);
-      try {
-        if (this.#connected) this.#send(["CLOSE", id]);
-      } catch {
-        // ignore
-      }
-    });
-
-    this.#subs.set(sub.id, sub);
-    if (this.#connected) {
-      this.#send(["REQ", sub.id, ...filters]);
-    } else if (this.#enableReconnect) {
-      // wait for reconnect; REQ sent in #resubscribeAll
-      this.#scheduleReconnect();
-    }
-
-    if (opts.eoseTimeoutMs !== undefined) this.#armEoseTimeout(sub, opts.eoseTimeoutMs);
-    return sub;
-  }
-
-  #subscribeLive(filters: Filter[], opts: SubscribeOptions): Subscription {
-    const fp = filterFingerprint(filters);
-    let group = this.#liveByFp.get(fp);
-    let created = false;
-    if (!group) {
-      created = true;
-      const wire = new Subscription(filters, { id: opts.id }, () => {
-        this.#endLiveGroup(fp, { sendClose: true, reason: "closed by client" });
-      });
-      group = { fp, sub: wire, attachments: new Set() };
-      this.#liveByFp.set(fp, group);
-      this.#liveBySubId.set(wire.id, group);
-      this.#subs.set(wire.id, wire);
-    }
-
-    const slot: { handle: Subscription | undefined } = { handle: undefined };
-    const handle = new Subscription(filters, { ...opts, id: group.sub.id }, () => {
-      // constructor may close on an already-aborted signal before `handle` is assigned
-      const current = slot.handle;
-      if (!current) return;
-      this.#detachLive(fp, current);
-    });
-    slot.handle = handle;
-
-    if (handle.closed) {
-      if (created && group.attachments.size === 0) {
-        this.#forgetLiveGroup(group);
-      }
-      return handle;
-    }
-
-    group.attachments.add(handle);
-
-    if (created) {
-      if (this.#connected) {
-        this.#send(["REQ", group.sub.id, ...filters]);
-      } else if (this.#enableReconnect) {
-        this.#scheduleReconnect();
-      }
-    }
-
-    if (opts.eoseTimeoutMs !== undefined) this.#armEoseTimeout(handle, opts.eoseTimeoutMs);
-
-    if (group.sub.eosed) {
-      queueMicrotask(() => {
-        if (handle.closed || handle.eosed) return;
-        handle.eosed = true;
-        handle.handlers.oneose?.();
-      });
-    }
-
-    return handle;
-  }
-
-  #armEoseTimeout(sub: Subscription, eoseTimeoutMs: number): void {
-    const timer = setTimeout(() => {
-      if (sub.eosed || sub.closed) return;
-      sub.eosed = true;
-      sub.handlers.oneose?.();
-    }, eoseTimeoutMs);
-    const prevClose = sub.handlers.onclose;
-    sub.handlers.onclose = (reason) => {
-      clearTimeout(timer);
-      prevClose?.(reason);
-    };
-    const prevEose = sub.handlers.oneose;
-    sub.handlers.oneose = () => {
-      clearTimeout(timer);
-      prevEose?.();
-    };
-  }
-
-  #forgetLiveGroup(group: LiveGroup): void {
-    this.#liveByFp.delete(group.fp);
-    this.#liveBySubId.delete(group.sub.id);
-    this.#subs.delete(group.sub.id);
-    group.sub.closed = true;
-  }
-
-  #detachLive(fp: string, handle: Subscription): void {
-    const group = this.#liveByFp.get(fp);
-    if (!group) return;
-    if (!group.attachments.delete(handle)) return;
-    if (group.attachments.size > 0) return;
-    this.#endLiveGroup(fp, { sendClose: true, reason: "closed by client" });
-  }
-
-  #endLiveGroup(fp: string, opts: { sendClose: boolean; reason: string }): void {
-    const group = this.#liveByFp.get(fp);
-    if (!group) return;
-    const id = group.sub.id;
-    const remaining = [...group.attachments];
-    group.attachments.clear();
-    this.#forgetLiveGroup(group);
-    if (opts.sendClose) {
-      try {
-        if (this.#connected) this.#send(["CLOSE", id]);
-      } catch {
-        // ignore
-      }
-    }
-    const errors: unknown[] = [];
-    for (const att of remaining) {
-      captureListenerError(errors, () => {
-        att.close(opts.reason);
-      });
-    }
-    flushListenerErrors(errors);
+    if (opts.closeOnEose === true) return openExclusive(this.#live, canonical, opts);
+    return subscribeLive(this.#live, canonical, opts);
   }
 
   #acceptEvent(event: Event): boolean {
@@ -915,61 +694,6 @@ export class Relay {
     }
   }
 
-  #deliverLiveEvent(group: LiveGroup, event: Event): void {
-    const sub = group.sub;
-    const attachments = [...group.attachments];
-    const errors: unknown[] = [];
-    for (const att of attachments) {
-      captureListenerError(errors, () => {
-        att.handlers.receivedEvent?.(event.id);
-      });
-    }
-    if (sub.idsAtWatermark.has(event.id)) {
-      flushListenerErrors(errors);
-      return;
-    }
-
-    const recipients: Subscription[] = [];
-    for (const att of attachments) {
-      if (att.closed) continue;
-      let skip = false;
-      captureListenerError(errors, () => {
-        skip = Boolean(att.handlers.alreadyHaveEvent?.(event.id));
-      });
-      if (!skip) recipients.push(att);
-    }
-    if (recipients.length === 0) {
-      flushListenerErrors(errors);
-      return;
-    }
-    if (!this.#acceptEvent(event)) {
-      flushListenerErrors(errors);
-      return;
-    }
-
-    sub.noteVerified(event);
-    for (const att of recipients) att.noteVerified(event);
-    for (const att of recipients) {
-      captureListenerError(errors, () => {
-        att.handlers.onevent?.(event);
-      });
-    }
-    flushListenerErrors(errors);
-  }
-
-  #deliverLiveEose(group: LiveGroup): void {
-    const attachments = Array.from(group.attachments);
-    const errors: unknown[] = [];
-    for (const att of attachments) {
-      if (att.closed || att.eosed) continue;
-      att.eosed = true;
-      captureListenerError(errors, () => {
-        att.handlers.oneose?.();
-      });
-    }
-    flushListenerErrors(errors);
-  }
-
   /** AsyncIterable of events for filters until the subscription is closed. */
   stream(
     filters: Filter[],
@@ -977,10 +701,7 @@ export class Relay {
   ): AsyncIterable<Event> & {
     close: (reason?: string) => void;
   } {
-    return subscriptionToAsyncIterable(
-      (handlers) => this.subscribe(filters, { ...handlers, id: opts?.id, signal: opts?.signal }),
-      { signal: opts?.signal },
-    );
+    return streamFilters((f, o) => this.subscribe(f, o), filters, opts);
   }
 
   /**
@@ -994,48 +715,12 @@ export class Relay {
     if (!this.#connected) {
       await this.connect({ signal: opts?.signal });
     }
-    const timeoutMs = opts?.timeoutMs ?? 4400;
-    const events: Event[] = [];
-    const seen = new Set<string>();
-
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const done = (err?: Error) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        sub.close(err ? err.message : "fetch complete");
-        if (err) reject(err);
-        else resolve();
-      };
-
-      const timer = setTimeout(() => done(), timeoutMs);
-
-      const sub = this.subscribe(filters, {
-        id: opts?.id,
-        signal: opts?.signal,
-        closeOnEose: true,
-        onevent(event) {
-          if (seen.has(event.id)) return;
-          seen.add(event.id);
-          events.push(event);
-        },
-        oneose() {
-          done();
-        },
-        onclose() {
-          if (!settled) done();
-        },
-      });
-
-      opts?.signal?.addEventListener(
-        "abort",
-        () => done(new RelayConnectionError("fetch aborted", this.url)),
-        { once: true },
-      );
+    return fetchFilters((f, o) => this.subscribe(f, o), filters, {
+      timeoutMs: opts?.timeoutMs ?? 4400,
+      signal: opts?.signal,
+      id: opts?.id,
+      url: this.url,
     });
-
-    return events;
   }
 
   /** Publish an event and wait for OK. */
@@ -1162,17 +847,6 @@ export class Relay {
     }
   }
 
-  #dropSubscription(sub: Subscription, reason: string): void {
-    const group = this.#liveBySubId.get(sub.id);
-    if (group) {
-      this.#endLiveGroup(group.fp, { sendClose: false, reason });
-      return;
-    }
-    this.#subs.delete(sub.id);
-    sub.closed = true;
-    sub.handlers.onclose?.(reason);
-  }
-
   async #ensureAuthed(): Promise<boolean> {
     const signer = this.#authSigner;
     if (!signer || !this.#challenge) return false;
@@ -1184,11 +858,11 @@ export class Relay {
   async #authThenResubscribe(sub: Subscription, reason: string): Promise<void> {
     try {
       if (!(await this.#ensureAuthed())) {
-        this.#dropSubscription(sub, reason);
+        dropSubscription(this.#live, sub, reason);
         return;
       }
       if (sub.closed || !this.#connected) {
-        this.#dropSubscription(sub, reason);
+        dropSubscription(this.#live, sub, reason);
         return;
       }
       sub.eosed = false;
@@ -1198,7 +872,7 @@ export class Relay {
       }
       this.#send(["REQ", sub.id, ...sub.replayFilters()]);
     } catch {
-      this.#dropSubscription(sub, reason);
+      dropSubscription(this.#live, sub, reason);
     }
   }
 
@@ -1291,53 +965,19 @@ export class Relay {
 
     const id = opts?.id !== undefined ? assertSubscriptionId(opts.id) : this.nextSubId("neg");
     const timeoutMs = opts?.timeoutMs ?? this.#publishTimeoutMs;
-    const deadline = Date.now() + timeoutMs;
-    const session: NegSession = { queue: [], waiter: undefined, error: undefined };
+    const session = createNegSession();
     this.#neg.set(id, session);
 
-    const timedOut = (): RelayPublishError =>
-      new RelayPublishError("negentropy timed out", this.url);
-
-    const remainingMs = (): number => deadline - Date.now();
-
-    const next = (): Promise<string> => {
-      if (session.error) return Promise.reject(session.error);
-      if (remainingMs() <= 0) return Promise.reject(timedOut());
-      const queued = session.queue.shift();
-      if (queued !== undefined) return Promise.resolve(queued);
-      return new Promise<string>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          session.waiter = undefined;
-          reject(timedOut());
-        }, remainingMs());
-        const fail = (err: Error): void => {
-          clearTimeout(timer);
-          session.waiter = undefined;
-          reject(err);
-        };
-        const onAbort = (): void => fail(new RelayConnectionError("negentropy aborted", this.url));
-        session.waiter = {
-          resolve: (hex) => {
-            clearTimeout(timer);
-            opts?.signal?.removeEventListener("abort", onAbort);
-            resolve(hex);
-          },
-          reject: (err) => fail(err),
-        };
-        opts?.signal?.addEventListener("abort", onAbort, { once: true });
-      });
-    };
-
     try {
-      return await runNegSession({
+      return await runWiredNegSession({
+        session,
         storage,
-        openingSend: (hex) => {
-          this.#send(["NEG-OPEN", id, filter, hex]);
-        },
-        msgSend: (hex) => {
-          this.#send(["NEG-MSG", id, hex]);
-        },
-        next,
+        filter,
+        id,
+        timeoutMs,
+        signal: opts?.signal,
+        send: (message) => this.#send(message),
+        url: this.url,
       });
     } finally {
       this.#neg.delete(id);
@@ -1353,121 +993,6 @@ export class Relay {
   nextSubId(prefix = "sub"): string {
     this.#serial += 1;
     return `${prefix}:${this.#serial}`;
-  }
-
-  #startPingLoop(): void {
-    this.#stopPingLoop();
-    if (!this.#enablePing) return;
-    this.#pingTimer = setInterval(() => {
-      void this.#pingpong();
-    }, this.#pingIntervalMs);
-  }
-
-  #stopPingLoop(): void {
-    if (this.#pingTimer !== undefined) {
-      clearInterval(this.#pingTimer);
-      this.#pingTimer = undefined;
-    }
-    this.#abortCurrentPing();
-  }
-
-  #abortCurrentPing(): void {
-    this.#pingGen += 1;
-    const native = this.#nativePing;
-    this.#nativePing = undefined;
-    native?.abort();
-    for (const waiter of this.#pingWaiters.values()) waiter.resolve(false);
-    this.#pingWaiters.clear();
-  }
-
-  #finishDummyPing(id: string): boolean {
-    const waiter = this.#pingWaiters.get(id);
-    if (!waiter) return false;
-    this.#pingWaiters.delete(id);
-    waiter.resolve(true);
-    try {
-      if (this.#connected) this.#send(["CLOSE", id]);
-    } catch {
-      // socket already gone
-    }
-    return true;
-  }
-
-  async #pingpong(): Promise<void> {
-    const ws = this.#ws;
-    if (!ws || ws.readyState !== this.#WS.OPEN) return;
-    if (this.#nativePing || this.#pingWaiters.size > 0) return;
-
-    const gen = this.#pingGen;
-    const ping = canNativePing(ws) ? this.#waitForNativePing(ws) : this.#waitForDummyPing();
-    const ok = await new Promise<boolean>((resolve) => {
-      let settled = false;
-      const done = (alive: boolean) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(alive);
-      };
-      const timer = setTimeout(() => {
-        if (this.#nativePing || this.#pingWaiters.size > 0) done(false);
-      }, this.#pingTimeoutMs);
-      void ping.then(done);
-    });
-
-    if (gen !== this.#pingGen) return;
-
-    if (!ok) {
-      this.#abortCurrentPing();
-      if (ws.readyState === this.#WS.OPEN) {
-        try {
-          ws.close();
-        } catch {
-          // ignore
-        }
-      }
-    }
-  }
-
-  #waitForNativePing(ws: WebSocketLike): Promise<boolean> {
-    return new Promise((resolve) => {
-      let settled = false;
-      const finish = (alive: boolean) => {
-        if (settled) return;
-        settled = true;
-        this.#nativePing = undefined;
-        ws.off?.("pong", onPong);
-        resolve(alive);
-      };
-      const onPong = () => finish(true);
-      this.#nativePing = { abort: () => finish(false) };
-
-      // node `ws` once() wraps the listener; off(fn) would miss it.
-      if (typeof ws.on === "function" && typeof ws.off === "function") {
-        ws.on("pong", onPong);
-      } else if (typeof ws.once === "function") {
-        ws.once("pong", onPong);
-      } else {
-        ws.on!("pong", onPong);
-      }
-      try {
-        ws.ping!();
-      } catch {
-        finish(false);
-      }
-    });
-  }
-
-  #waitForDummyPing(): Promise<boolean> {
-    return new Promise((resolve) => {
-      const id = this.nextSubId("__ping__");
-      this.#pingWaiters.set(id, { resolve });
-      try {
-        this.#send(["REQ", id, PING_DUMMY_FILTER]);
-      } catch {
-        this.#pingWaiters.delete(id);
-        resolve(false);
-      }
-    });
   }
 }
 
