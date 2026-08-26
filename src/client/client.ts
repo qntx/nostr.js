@@ -333,6 +333,10 @@ export class Client {
     return list;
   }
 
+  #wantObserve(flag?: boolean): boolean {
+    return flag !== false;
+  }
+
   /**
    * Unified ingest pipeline: gossip + replaceable loader cache immediately;
    * storage writes are coalesced into a single-flight `putMany`.
@@ -417,7 +421,7 @@ export class Client {
 
   /**
    * Create an outbox-model feed for the given authors (NIP-65 write relays).
-   * Live events go through {@link observe}; sync persists via putMany then ingestMeta.
+   * Live events go through {@link observe}; sync persists via applySync.
    */
   outbox(opts: {
     authors: readonly string[];
@@ -436,7 +440,20 @@ export class Client {
       onEvent: opts.onEvent,
       maxRelaysPerAuthor: opts.maxRelaysPerAuthor,
       observe: (event) => this.observe(event),
-      ingestMeta: (event) => this.#ingestMeta(event),
+      applySync: async (events) => {
+        if (!this.#persistEvents) {
+          for (const event of events) this.#ingestMeta(event);
+          return [];
+        }
+        const results = await this.storage.putMany(events);
+        const applied: Event[] = [];
+        for (let i = 0; i < events.length; i++) {
+          if (results[i] === "rejected" || results[i] === "ephemeral") continue;
+          this.#ingestMeta(events[i]!);
+          applied.push(events[i]!);
+        }
+        return applied;
+      },
       hydrate: (pubkeys) => this.hydrateGossip(pubkeys),
     });
   }
@@ -513,7 +530,7 @@ export class Client {
     });
 
     const anyOk = results.some((r) => r.result?.ok);
-    if (anyOk && opts?.observe !== false) {
+    if (anyOk && this.#wantObserve(opts?.observe)) {
       this.observe(event);
     }
     return results;
@@ -526,7 +543,7 @@ export class Client {
   async fetchEvents(filter: Filter | Filter[], opts?: FetchEventsOptions): Promise<Event[]> {
     this.#assertAlive();
     const filters = Array.isArray(filter) ? filter : [filter];
-    const shouldObserve = opts?.observe !== false;
+    const shouldObserve = this.#wantObserve(opts?.observe);
     const byId = new Map<string, Event>();
 
     if (opts?.localFirst) {
@@ -580,7 +597,7 @@ export class Client {
   ): { close: (reason?: string) => void } {
     this.#assertAlive();
     const filters = Array.isArray(filter) ? filter : [filter];
-    const shouldObserve = opts?.observe !== false;
+    const shouldObserve = this.#wantObserve(opts?.observe);
 
     const wrapEvent = (event: Event) => {
       if (shouldObserve) this.observe(event);
@@ -674,20 +691,16 @@ export class Client {
       replyTo: opts?.replyTo,
     });
     const wraps = await wrapDirectMessage(crypto, list, rumor);
-    const sent: Array<{
-      recipient: string;
-      wrap: Event;
-      results: PoolPublishResult[];
-    }> = [];
-    for (const { recipient, wrap } of wraps) {
-      const relays = requireDmRelays(recipient, this.gossip.dmRelays(recipient));
-      const results = await this.pool.publish(relays, wrap, { timeoutMs: opts?.timeoutMs });
-      const anyOk = results.some((r) => r.result?.ok);
-      if (anyOk && opts?.observe !== false) {
-        this.observe(wrap);
-      }
-      sent.push({ recipient, wrap, results });
-    }
+    const sent = await Promise.all(
+      wraps.map(async ({ recipient, wrap }) => {
+        const relays = requireDmRelays(recipient, this.gossip.dmRelays(recipient));
+        const results = await this.pool.publish(relays, wrap, { timeoutMs: opts?.timeoutMs });
+        if (results.some((r) => r.result?.ok) && this.#wantObserve(opts?.observe)) {
+          this.observe(wrap);
+        }
+        return { recipient, wrap, results };
+      }),
+    );
     return { rumor, wraps: sent };
   }
 
@@ -716,12 +729,12 @@ export class Client {
 
     const byRumor = new Map<string, ReceivedPrivateMessage>();
     for (const wrap of events) {
-      if (opts?.observe !== false) this.observe(wrap);
       try {
         const rumor = await unwrap(crypto, wrap);
+        if (this.#wantObserve(opts?.observe)) this.observe(wrap);
         byRumor.set(rumor.id, { wrap, rumor });
       } catch {
-        // junk / forgery / key mismatch — NIP-17 allows unreadable wraps
+        // junk / forgery / key mismatch — not stored
       }
     }
 
@@ -775,7 +788,7 @@ export class Client {
                 if (closed) return;
                 if (seen.has(rumor.id)) return;
                 seen.add(rumor.id);
-                if (opts?.observe !== false) this.observe(wrap);
+                if (this.#wantObserve(opts?.observe)) this.observe(wrap);
                 opts?.onevent?.({ wrap, rumor });
               } catch {
                 // junk / forgery — not stored
@@ -800,6 +813,7 @@ export class Client {
    * NIP-77 sync against one relay: reconcile, then optionally upload
    * local-only events and/or download remote-only events.
    * `observe: false` skips putMany and ingestMeta; received ids are still listed.
+   * `persistEvents: false` skips putMany, still ingestMeta when observe is on.
    */
   async syncToRelay(
     url: string,
@@ -861,7 +875,7 @@ export class Client {
     }
 
     if ((direction === SyncDirection.Down || direction === SyncDirection.Both) && need.length > 0) {
-      const skipPersist = opts?.observe === false;
+      const shouldObserve = this.#wantObserve(opts?.observe);
       for (let i = 0; i < need.length; i += SYNC_ID_BATCH) {
         const batch = need.slice(i, i + SYNC_ID_BATCH);
         this.#throwIfAborted(opts?.signal);
@@ -869,8 +883,15 @@ export class Client {
           timeoutMs: opts?.timeoutMs,
           signal: opts?.signal,
         });
-        if (skipPersist) {
+        if (!shouldObserve) {
           for (const event of events) summary.received.push(event.id);
+          continue;
+        }
+        if (!this.#persistEvents) {
+          for (const event of events) {
+            this.#ingestMeta(event);
+            summary.received.push(event.id);
+          }
           continue;
         }
         let results;

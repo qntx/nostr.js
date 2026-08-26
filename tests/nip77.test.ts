@@ -666,7 +666,7 @@ describe("Relay.negReconcile + Client.sync", () => {
       .relays(["wss://neg.example"])
       .websocketImplementation(MockWebSocketCtor)
       .enableReconnect(false)
-      .persistEvents(false)
+      .persistEvents(true)
       .build();
     await client.connect();
     const summary = await client.sync(
@@ -680,7 +680,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     await client.shutdown();
   });
 
-  test("Client.sync down writes once via putMany then ingestMeta", async () => {
+  test("Client.sync down persistEvents false skips putMany and still ingestMeta", async () => {
     const remote = note(SK_B, "once", 24);
     bus.seed("wss://neg.example", [remote]);
     const inner = new MemoryEventStore();
@@ -719,6 +719,58 @@ describe("Relay.negReconcile + Client.sync", () => {
       .websocketImplementation(MockWebSocketCtor)
       .enableReconnect(false)
       .persistEvents(false)
+      .build();
+    await client.connect();
+    const summary = await client.sync(
+      { kinds: [1] },
+      { direction: SyncDirection.Down, timeoutMs: 2000 },
+    );
+    expect(summary.received).toEqual([remote.id]);
+    expect(persistCalls).toEqual([]);
+    expect(ingested).toBe(1);
+    expect(await inner.get(remote.id)).toBeUndefined();
+    await client.shutdown();
+  });
+
+  test("Client.sync down persistEvents true writes once via putMany then ingestMeta", async () => {
+    const remote = note(SK_B, "once-persist", 24);
+    bus.seed("wss://neg.example", [remote]);
+    const inner = new MemoryEventStore();
+    const persistCalls: string[] = [];
+    let ingested = 0;
+    const gossip = new Gossip();
+    const origIngest = gossip.ingest.bind(gossip);
+    gossip.ingest = (event) => {
+      ingested += 1;
+      return origIngest(event);
+    };
+    const store: EventStore = {
+      put: async (event) => {
+        persistCalls.push("put");
+        return inner.put(event);
+      },
+      putMany: async (events) => {
+        persistCalls.push(`putMany:${events.length}`);
+        const out: PutResult[] = [];
+        for (const event of events) out.push(await inner.put(event));
+        return out;
+      },
+      get: (id) => inner.get(id),
+      query: (filters) => inner.query(filters),
+      count: (filters) => inner.count(filters),
+      negentropyItems: (filter) => inner.negentropyItems(filter),
+      remove: (ids) => inner.remove(ids),
+      clear: () => inner.clear(),
+      getOutboxBound: (pubkey, kind) => inner.getOutboxBound(pubkey, kind),
+      setOutboxBound: (pubkey, kind, bound) => inner.setOutboxBound(pubkey, kind, bound),
+    };
+    const client = Client.builder()
+      .storage(store)
+      .gossip(gossip)
+      .relays(["wss://neg.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .persistEvents(true)
       .build();
     await client.connect();
     const summary = await client.sync(
@@ -825,7 +877,7 @@ describe("Relay.negReconcile + Client.sync", () => {
       .relays(["wss://neg.example"])
       .websocketImplementation(MockWebSocketCtor)
       .enableReconnect(false)
-      .persistEvents(false)
+      .persistEvents(true)
       .build();
     await client.connect();
     const summary = await client.sync(

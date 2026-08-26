@@ -693,6 +693,98 @@ describe("OutboxFeed", () => {
     expect(feed.getBound(a.publicKey, Kind.TextNote)).toEqual({ oldest: 50, newest: 50 });
   });
 
+  test("sync without applySync does not persist events or advance bounds", async () => {
+    const a = Keys.fromSecretKey(SK_A);
+    const note = EventBuilder.textNote("unapplied").createdAt(50).signWithKeys(a);
+    const inner = new MemoryEventStore();
+    const store = trackingStore(inner);
+    const gossip = new Gossip();
+    gossip.setRoutes(a.publicKey, [{ url: "wss://out.example", read: true, write: true }]);
+    const got: string[] = [];
+
+    const client = await feedClient({ store, gossip });
+    const feed = new OutboxFeed({
+      pool: client.pool,
+      gossip,
+      storage: store,
+      discoveryRelays: client.relays,
+      authors: [a.publicKey],
+      kinds: [Kind.TextNote],
+      onEvent: (event) => {
+        got.push(event.id);
+      },
+    });
+
+    const syncP = feed.sync({ skipHydrate: true, limit: 20 });
+    await waitForReq();
+    for (const ws of MockWebSocket.instances) {
+      for (const raw of ws.sent) {
+        const msg = JSON.parse(raw) as unknown[];
+        if (msg[0] !== "REQ") continue;
+        const subId = msg[1] as string;
+        ws.receive(JSON.stringify(["EVENT", subId, note]));
+        ws.receive(JSON.stringify(["EOSE", subId]));
+      }
+    }
+    const events = await syncP;
+    expect(events.map((e) => e.id)).toEqual([note.id]);
+    expect(store.persistCalls).toEqual([]);
+    expect(got).toEqual([]);
+    expect(feed.getBound(a.publicKey, Kind.TextNote)).toBeUndefined();
+    expect(await inner.get(note.id)).toBeUndefined();
+    expect(await inner.getOutboxBound(a.publicKey, Kind.TextNote)).toBeUndefined();
+
+    feed.close();
+    await client.shutdown();
+  });
+
+  test("sync persistEvents false ingestMeta without putMany and does not advance bounds", async () => {
+    const a = Keys.fromSecretKey(SK_A);
+    const note = EventBuilder.textNote("no-persist").createdAt(50).signWithKeys(a);
+    const inner = new MemoryEventStore();
+    const store = trackingStore(inner);
+    const gossip = new Gossip();
+    gossip.setRoutes(a.publicKey, [{ url: "wss://out.example", read: true, write: true }]);
+    const got: string[] = [];
+    let ingested = 0;
+    const origIngest = gossip.ingest.bind(gossip);
+    gossip.ingest = (event) => {
+      ingested += 1;
+      return origIngest(event);
+    };
+
+    const client = await feedClient({ store, gossip, persistEvents: false });
+    const feed = client.outbox({
+      authors: [a.publicKey],
+      kinds: [Kind.TextNote],
+      onEvent: (event) => {
+        got.push(event.id);
+      },
+    });
+
+    const syncP = feed.sync({ skipHydrate: true, limit: 20 });
+    await waitForReq();
+    for (const ws of MockWebSocket.instances) {
+      for (const raw of ws.sent) {
+        const msg = JSON.parse(raw) as unknown[];
+        if (msg[0] !== "REQ") continue;
+        const subId = msg[1] as string;
+        ws.receive(JSON.stringify(["EVENT", subId, note]));
+        ws.receive(JSON.stringify(["EOSE", subId]));
+      }
+    }
+    const events = await syncP;
+    expect(events.map((e) => e.id)).toEqual([note.id]);
+    expect(store.persistCalls).toEqual([]);
+    expect(ingested).toBe(1);
+    expect(got).toEqual([]);
+    expect(feed.getBound(a.publicKey, Kind.TextNote)).toBeUndefined();
+    expect(await inner.get(note.id)).toBeUndefined();
+
+    feed.close();
+    await client.shutdown();
+  });
+
   test("sync putMany throw does not advance bounds and is StorageError", async () => {
     const a = Keys.fromSecretKey(SK_A);
     const note = EventBuilder.textNote("fail").createdAt(50).signWithKeys(a);
@@ -704,20 +796,18 @@ describe("OutboxFeed", () => {
     });
     const gossip = new Gossip();
     gossip.setRoutes(a.publicKey, [{ url: "wss://out.example", read: true, write: true }]);
-    const meta: string[] = [];
     const got: string[] = [];
+    let ingested = 0;
+    const origIngest = gossip.ingest.bind(gossip);
+    gossip.ingest = (event) => {
+      ingested += 1;
+      return origIngest(event);
+    };
 
     const client = await feedClient({ store, gossip });
-    const feed = new OutboxFeed({
-      pool: client.pool,
-      gossip,
-      storage: store,
-      discoveryRelays: client.relays,
+    const feed = client.outbox({
       authors: [a.publicKey],
       kinds: [Kind.TextNote],
-      ingestMeta: (event) => {
-        meta.push(event.id);
-      },
       onEvent: (event) => {
         got.push(event.id);
       },
@@ -736,7 +826,7 @@ describe("OutboxFeed", () => {
     }
     await expect(syncP).rejects.toBeInstanceOf(StorageError);
     expect(feed.getBound(a.publicKey, Kind.TextNote)).toBeUndefined();
-    expect(meta).toEqual([]);
+    expect(ingested).toBe(0);
     expect(got).toEqual([]);
     expect(store.persistCalls).toEqual(["putMany:1"]);
     expect(await inner.get(note.id)).toBeUndefined();
@@ -745,7 +835,7 @@ describe("OutboxFeed", () => {
     await client.shutdown();
   });
 
-  test("startLive with observe does not putMany from OutboxFeed", async () => {
+  test("startLive with Client.outbox persists via observe", async () => {
     const a = Keys.fromSecretKey(SK_A);
     const note = EventBuilder.textNote("live")
       .createdAt(Math.floor(Date.now() / 1000))
@@ -758,15 +848,13 @@ describe("OutboxFeed", () => {
     const got: string[] = [];
 
     const client = await feedClient({ store, gossip });
-    const feed = new OutboxFeed({
-      pool: client.pool,
-      gossip,
-      storage: store,
-      discoveryRelays: client.relays,
+    const origObserve = client.observe.bind(client);
+    client.observe = (event) => {
+      observed.push(event.id);
+      origObserve(event);
+    };
+    const feed = client.outbox({
       authors: [a.publicKey],
-      observe: (event) => {
-        observed.push(event.id);
-      },
       onEvent: (event) => {
         got.push(event.id);
       },
@@ -786,31 +874,22 @@ describe("OutboxFeed", () => {
 
     expect(observed).toEqual([note.id]);
     expect(got).toEqual([note.id]);
-    expect(store.persistCalls).toEqual([]);
-
     live.close();
     feed.close();
     await client.shutdown();
+    expect(store.persistCalls).toEqual(["putMany:1"]);
+    expect(await inner.get(note.id)).toBeDefined();
   });
 
-  test("startLive without observe putMany and onStorageError skips onEvent", async () => {
+  test("startLive without observe does not putMany and still delivers onEvent", async () => {
     const a = Keys.fromSecretKey(SK_A);
-    const note = EventBuilder.textNote("live-fail")
+    const note = EventBuilder.textNote("live-ok")
       .createdAt(Math.floor(Date.now() / 1000))
       .signWithKeys(a);
-    const ok = EventBuilder.textNote("live-ok")
-      .createdAt(Math.floor(Date.now() / 1000) + 1)
-      .signWithKeys(a);
     const inner = new MemoryEventStore();
-    const store = trackingStore(inner, {
-      putMany: async (events) => {
-        if (events.some((e) => e.id === note.id)) throw new Error("disk full");
-        return inner.putMany(events);
-      },
-    });
+    const store = trackingStore(inner);
     const gossip = new Gossip();
     gossip.setRoutes(a.publicKey, [{ url: "wss://live.example", read: true, write: true }]);
-    const errors: StorageError[] = [];
     const got: string[] = [];
 
     const client = await feedClient({ store, gossip });
@@ -822,9 +901,6 @@ describe("OutboxFeed", () => {
       authors: [a.publicKey],
       onEvent: (event) => {
         got.push(event.id);
-      },
-      onStorageError: (err) => {
-        errors.push(err);
       },
     });
 
@@ -839,26 +915,14 @@ describe("OutboxFeed", () => {
       }
     }
     await sleep(20);
-    expect(got).toEqual([]);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toBeInstanceOf(StorageError);
-    expect(errors[0]!.message).toBe("disk full");
-    expect(store.persistCalls).toEqual(["putMany:1"]);
 
-    for (const ws of MockWebSocket.instances) {
-      for (const raw of ws.sent) {
-        const msg = JSON.parse(raw) as unknown[];
-        if (msg[0] !== "REQ") continue;
-        const subId = msg[1] as string;
-        ws.receive(JSON.stringify(["EVENT", subId, ok]));
-      }
-    }
-    await sleep(20);
-    expect(got).toEqual([ok.id]);
-    expect(errors).toHaveLength(1);
-    expect(store.persistCalls).toEqual(["putMany:1", "putMany:1"]);
-    expect(await inner.get(ok.id)).toBeDefined();
+    expect(got).toEqual([note.id]);
+    expect(store.persistCalls).toEqual([]);
     expect(await inner.get(note.id)).toBeUndefined();
+    expect(feed.getBound(a.publicKey, Kind.TextNote)).toEqual({
+      oldest: note.created_at,
+      newest: note.created_at,
+    });
 
     live.close();
     feed.close();
