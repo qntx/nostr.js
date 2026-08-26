@@ -355,6 +355,7 @@ export class Relay {
       const wasReconnect = this.#reconnectAttempts > 0;
       this.#challenge = undefined;
       this.#authPromise = undefined;
+      this.#authedChallenge = undefined;
       if (!resubscribeAll(this.#live)) {
         this.#connected = false;
         this.#status = RelayStatus.Disconnected;
@@ -811,13 +812,14 @@ export class Relay {
     sign: (template: EventTemplate) => Promise<Event>,
     opts?: { timeoutMs?: number },
   ): Promise<PublishResult> {
-    if (!this.#challenge) {
+    const challenge = this.#challenge;
+    if (!challenge) {
       throw new RelayError("no AUTH challenge received from relay", this.url);
     }
     if (this.#authPromise) return this.#authPromise;
 
-    this.#authPromise = (async () => {
-      const template = makeAuthEvent(this.url, this.#challenge!);
+    const pending = (async () => {
+      const template = makeAuthEvent(this.url, challenge);
       const event = await sign(template);
       if (!this.#connected) throw new RelayClosedError("not connected", this.url);
       const timeoutMs = opts?.timeoutMs ?? this.#publishTimeoutMs;
@@ -837,22 +839,31 @@ export class Relay {
         }
       });
     })();
-
+    this.#authPromise = pending;
     try {
-      const result = await this.#authPromise;
-      if (result.ok) this.#authedChallenge = this.#challenge;
+      const result = await pending;
+      if (result.ok && this.#challenge === challenge) this.#authedChallenge = challenge;
       return result;
     } finally {
-      this.#authPromise = undefined;
+      if (this.#authPromise === pending) this.#authPromise = undefined;
     }
   }
 
   async #ensureAuthed(): Promise<boolean> {
     const signer = this.#authSigner;
-    if (!signer || !this.#challenge) return false;
-    if (this.#authedChallenge === this.#challenge) return true;
-    const result = await this.auth(signer);
-    return result.ok;
+    if (!signer) return false;
+    for (let i = 0; i < 3; i++) {
+      if (!this.#challenge) return false;
+      if (this.#authedChallenge === this.#challenge) return true;
+      const signed = this.#challenge;
+      const result = await this.auth(signer);
+      if (this.#authedChallenge === this.#challenge) return true;
+      if (!result.ok) {
+        if (!this.#challenge || this.#challenge === signed) return false;
+        continue;
+      }
+    }
+    return this.#authedChallenge === this.#challenge;
   }
 
   async #authThenResubscribe(sub: Subscription, reason: string): Promise<void> {

@@ -52,6 +52,18 @@ function sentMessages(ws: MockWebSocket): unknown[][] {
   return ws.sent.map((s) => JSON.parse(s) as unknown[]);
 }
 
+type AuthWireEvent = { id: string; tags: string[][] };
+
+function sentAuthEvents(ws: MockWebSocket): AuthWireEvent[] {
+  return sentMessages(ws)
+    .filter((m) => m[0] === "AUTH")
+    .map((m) => m[1] as AuthWireEvent);
+}
+
+function challengeTag(event: AuthWireEvent): string | undefined {
+  return event.tags.find((t) => t[0] === "challenge")?.[1];
+}
+
 function dummyPingReqs(
   ws: MockWebSocket,
 ): Array<[string, string, { ids: string[]; limit: number }]> {
@@ -409,6 +421,221 @@ describe("Relay", () => {
     await waitUntil(() => reasons.length === 1);
     expect(reasons).toEqual(["auth-required: login"]);
     expect(sub.closed).toBe(true);
+    relay.close();
+  });
+
+  test("AUTH rotation: OK-false stale challenge then ch2 REQ retry proceeds", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://auth-rotate.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const events: string[] = [];
+    const sub = relay.subscribe([{ kinds: [1] }], {
+      onevent: (e) => {
+        events.push(e.id);
+      },
+    });
+    const ws = MockWebSocket.last();
+    expect(sentMessages(ws).filter((m) => m[0] === "REQ")).toHaveLength(1);
+
+    ws.receive(JSON.stringify(["AUTH", "ch1"]));
+    ws.receive(JSON.stringify(["CLOSED", sub.id, "auth-required: login"]));
+    await waitUntil(() => sentAuthEvents(ws).length >= 1);
+    const stale = sentAuthEvents(ws)[0]!;
+    expect(challengeTag(stale)).toBe("ch1");
+
+    ws.receive(JSON.stringify(["AUTH", "ch2"]));
+    ws.receive(JSON.stringify(["OK", stale.id, false, "restricted: stale challenge"]));
+    await waitUntil(() => sentAuthEvents(ws).length >= 2);
+    const fresh = sentAuthEvents(ws)[1]!;
+    expect(challengeTag(fresh)).toBe("ch2");
+
+    ws.receive(JSON.stringify(["OK", fresh.id, true, ""]));
+    await waitUntil(() => sentMessages(ws).filter((m) => m[0] === "REQ").length >= 2);
+
+    const note = EventBuilder.textNote("after rotation").createdAt(1).signWithKeys(keys);
+    ws.receive(JSON.stringify(["EVENT", sub.id, note]));
+    expect(events).toEqual([note.id]);
+    expect(sub.closed).toBe(false);
+    relay.close();
+  });
+
+  test("AUTH rotation: OK-false stale challenge then ch2 EVENT retry proceeds", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://auth-rotate-pub.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const note = EventBuilder.textNote("rotate-pub").createdAt(2).signWithKeys(keys);
+    const publishP = relay.publish(note);
+    const ws = MockWebSocket.last();
+    expect(sentMessages(ws).filter((m) => m[0] === "EVENT")).toHaveLength(1);
+
+    ws.receive(JSON.stringify(["AUTH", "ch1"]));
+    ws.receive(JSON.stringify(["OK", note.id, false, "auth-required: login"]));
+    await waitUntil(() => sentAuthEvents(ws).length >= 1);
+    const stale = sentAuthEvents(ws)[0]!;
+    expect(challengeTag(stale)).toBe("ch1");
+
+    ws.receive(JSON.stringify(["AUTH", "ch2"]));
+    ws.receive(JSON.stringify(["OK", stale.id, false, "restricted: stale challenge"]));
+    await waitUntil(() => sentAuthEvents(ws).length >= 2);
+    const fresh = sentAuthEvents(ws)[1]!;
+    expect(challengeTag(fresh)).toBe("ch2");
+
+    ws.receive(JSON.stringify(["OK", fresh.id, true, ""]));
+    await waitUntil(() => sentMessages(ws).filter((m) => m[0] === "EVENT").length >= 2);
+    ws.receive(JSON.stringify(["OK", note.id, true, ""]));
+    await expect(publishP).resolves.toEqual({ ok: true, message: "" });
+    relay.close();
+  });
+
+  test("hostile AUTH rotation bound 3 terminates wrapper without livelock", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://auth-hostile.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const reasons: string[] = [];
+    const sub = relay.subscribe([{ kinds: [1] }], {
+      onclose: (reason) => {
+        reasons.push(reason);
+      },
+    });
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "ch1"]));
+    ws.receive(JSON.stringify(["CLOSED", sub.id, "auth-required: login"]));
+
+    for (let i = 0; i < 3; i++) {
+      await waitUntil(() => sentAuthEvents(ws).length >= i + 1);
+      const event = sentAuthEvents(ws)[i]!;
+      expect(challengeTag(event)).toBe(`ch${i + 1}`);
+      ws.receive(JSON.stringify(["AUTH", `ch${i + 2}`]));
+      ws.receive(JSON.stringify(["OK", event.id, false, "restricted: stale challenge"]));
+    }
+
+    await waitUntil(() => reasons.length === 1);
+    expect(reasons).toEqual(["auth-required: login"]);
+    expect(sub.closed).toBe(true);
+    expect(sentAuthEvents(ws)).toHaveLength(3);
+    await sleep(30);
+    expect(sentAuthEvents(ws)).toHaveLength(3);
+    relay.close();
+  });
+
+  test("defense-in-depth: reconnect with reused AUTH challenge string sends a second AUTH event", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://auth-reconnect-pin.example", {
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: true,
+      reconnectBackoffMs: [5],
+      authSigner: async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    const sub = relay.subscribe([{ kinds: [1] }]);
+    const first = MockWebSocket.last();
+    first.receive(JSON.stringify(["AUTH", "ch1"]));
+    first.receive(JSON.stringify(["CLOSED", sub.id, "auth-required: login"]));
+    await waitUntil(() => sentAuthEvents(first).length >= 1);
+    const authed = sentAuthEvents(first)[0]!;
+    expect(challengeTag(authed)).toBe("ch1");
+    first.receive(JSON.stringify(["OK", authed.id, true, ""]));
+    await waitUntil(() => sentMessages(first).filter((m) => m[0] === "REQ").length >= 2);
+
+    first.close();
+    await waitUntil(() => relay.connected && MockWebSocket.instances.length >= 2);
+    const second = MockWebSocket.last();
+    expect(second).not.toBe(first);
+    await waitUntil(() => sentMessages(second).some((m) => m[0] === "REQ"));
+
+    second.receive(JSON.stringify(["AUTH", "ch1"]));
+    second.receive(JSON.stringify(["CLOSED", sub.id, "auth-required: login"]));
+    await waitUntil(() => sentAuthEvents(second).length >= 1);
+    expect(challengeTag(sentAuthEvents(second)[0]!)).toBe("ch1");
+    relay.close();
+  });
+
+  test("auth() after challenge rotation does not await or clear the replacement in-flight AUTH", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://auth-identity.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const sign = async (template: {
+      kind: number;
+      tags: ReadonlyArray<readonly string[]>;
+      content: string;
+      created_at: number;
+    }) =>
+      EventBuilder.textNote("")
+        .kind(template.kind)
+        .tags(template.tags)
+        .content(template.content)
+        .createdAt(template.created_at)
+        .signWithKeys(keys);
+
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "ch1"]));
+    const first = relay.auth(sign);
+    let firstResult: { ok: boolean; message: string } | undefined;
+    void first.then((r) => {
+      firstResult = r;
+    });
+    await waitUntil(() => sentAuthEvents(ws).length >= 1);
+    const stale = sentAuthEvents(ws)[0]!;
+    expect(challengeTag(stale)).toBe("ch1");
+
+    ws.receive(JSON.stringify(["AUTH", "ch2"]));
+    const second = relay.auth(sign);
+    let secondSettled = false;
+    void second.then(
+      () => {
+        secondSettled = true;
+      },
+      () => {
+        secondSettled = true;
+      },
+    );
+    await waitUntil(() => sentAuthEvents(ws).length >= 2);
+    const fresh = sentAuthEvents(ws)[1]!;
+    expect(challengeTag(fresh)).toBe("ch2");
+
+    ws.receive(JSON.stringify(["OK", stale.id, false, "restricted: stale challenge"]));
+    await waitUntil(() => firstResult !== undefined);
+    expect(firstResult).toEqual({ ok: false, message: "restricted: stale challenge" });
+    expect(secondSettled).toBe(false);
+
+    const third = relay.auth(sign);
+    await Promise.resolve();
+    expect(sentAuthEvents(ws)).toHaveLength(2);
+
+    ws.receive(JSON.stringify(["OK", fresh.id, true, ""]));
+    await expect(second).resolves.toEqual({ ok: true, message: "" });
+    await expect(third).resolves.toEqual({ ok: true, message: "" });
+    expect(sentAuthEvents(ws)).toHaveLength(2);
     relay.close();
   });
 
