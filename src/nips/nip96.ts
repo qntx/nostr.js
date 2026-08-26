@@ -5,23 +5,11 @@
  * @see https://github.com/nostr-protocol/nips/blob/master/96.md
  */
 import { NostrError } from "../core/error.ts";
+import { fetchManual, requireGlobalFetch, type ManualFetch } from "./http.ts";
 
 const WELL_KNOWN_PATH = "/.well-known/nostr/nip96.json";
 
-/**
- * Minimal fetch surface (NIP-11-shaped).
- * Implementations must honor `init.redirect`; this library always sends `"manual"`.
- */
-export type Nip96Fetch = (
-  url: string,
-  init?: {
-    method?: string;
-    headers?: Record<string, string>;
-    body?: Blob | FormData;
-    signal?: AbortSignal;
-    redirect?: "manual" | "error" | "follow";
-  },
-) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+export type Nip96Fetch = ManualFetch;
 
 export type Nip96ServerInfo = {
   api_url: string;
@@ -36,13 +24,6 @@ export type Nip96UploadResult = {
 };
 
 export class Nip96Error extends NostrError {}
-
-function defaultFetch(): Nip96Fetch {
-  if (typeof globalThis.fetch !== "function") {
-    throw new Nip96Error("no fetch implementation available; pass opts.fetch");
-  }
-  return globalThis.fetch.bind(globalThis) as Nip96Fetch;
-}
 
 function serverInfoUrl(serviceUrl: string): string {
   return `${serviceUrl.replace(/\/+$/, "")}${WELL_KNOWN_PATH}`;
@@ -125,19 +106,19 @@ export async function fetchNip96Info(
   opts?: { fetch?: Nip96Fetch; signal?: AbortSignal },
 ): Promise<Nip96ServerInfo> {
   const url = serverInfoUrl(serviceUrl);
-  const fetchImpl = opts?.fetch ?? defaultFetch();
+  const fetchImpl =
+    opts?.fetch ??
+    requireGlobalFetch(() => new Nip96Error("no fetch implementation available; pass opts.fetch"));
 
-  let res: Awaited<ReturnType<Nip96Fetch>>;
-  try {
-    res = await fetchImpl(url, {
-      signal: opts?.signal,
-      redirect: "manual",
-    });
-  } catch (cause) {
-    throw new Nip96Error(`NIP-96 server info request failed: ${url}`, {
-      cause: cause instanceof Error ? cause : undefined,
-    });
-  }
+  const res = await fetchManual(
+    fetchImpl,
+    url,
+    { signal: opts?.signal },
+    (cause) =>
+      new Nip96Error(`NIP-96 server info request failed: ${url}`, {
+        cause: cause instanceof Error ? cause : undefined,
+      }),
+  );
   if (!res.ok) {
     await throwHttpError("NIP-96 server info", res);
   }
@@ -160,7 +141,9 @@ export async function uploadNip96(
   authorization: string,
   opts?: { fetch?: Nip96Fetch; signal?: AbortSignal; extraFields?: Record<string, string> },
 ): Promise<Nip96UploadResult> {
-  const fetchImpl = opts?.fetch ?? defaultFetch();
+  const fetchImpl =
+    opts?.fetch ??
+    requireGlobalFetch(() => new Nip96Error("no fetch implementation available; pass opts.fetch"));
   const body = new FormData();
   body.append("file", file);
   if (opts?.extraFields) {
@@ -169,20 +152,20 @@ export async function uploadNip96(
     }
   }
 
-  let res: Awaited<ReturnType<Nip96Fetch>>;
-  try {
-    res = await fetchImpl(apiUrl, {
+  const res = await fetchManual(
+    fetchImpl,
+    apiUrl,
+    {
       method: "POST",
       headers: { Authorization: authorization },
       body,
       signal: opts?.signal,
-      redirect: "manual",
-    });
-  } catch (cause) {
-    throw new Nip96Error(`NIP-96 upload request failed: ${apiUrl}`, {
-      cause: cause instanceof Error ? cause : undefined,
-    });
-  }
+    },
+    (cause) =>
+      new Nip96Error(`NIP-96 upload request failed: ${apiUrl}`, {
+        cause: cause instanceof Error ? cause : undefined,
+      }),
+  );
   if (!res.ok) {
     await throwHttpError("NIP-96 upload", res);
   }

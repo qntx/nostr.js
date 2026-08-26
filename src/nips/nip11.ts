@@ -3,6 +3,7 @@
  * @see https://github.com/nostr-protocol/nips/blob/master/11.md
  */
 import { NostrError } from "../core/error.ts";
+import { fetchManual, requireGlobalFetch, type ManualFetch } from "./http.ts";
 
 const ACCEPT = "application/nostr+json";
 
@@ -35,18 +36,7 @@ const LIMITATION_NUMBERS = [
 
 const LIMITATION_BOOLEANS = ["auth_required", "payment_required", "restricted_writes"] as const;
 
-/**
- * Minimal fetch surface used by NIP-11.
- * Implementations must honor `init.redirect`; `fetchRelayInformation` always sends `"manual"`.
- */
-export type Nip11Fetch = (
-  url: string,
-  init?: {
-    headers?: Record<string, string>;
-    signal?: AbortSignal;
-    redirect?: "manual" | "error" | "follow";
-  },
-) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+export type Nip11Fetch = ManualFetch;
 
 export type RelayInformation = {
   name?: string;
@@ -100,13 +90,6 @@ export function relayInfoHttpUrl(wsUrl: string): string {
   return url.toString();
 }
 
-function defaultFetch(): Nip11Fetch {
-  if (typeof globalThis.fetch !== "function") {
-    throw new Nip11Error("no fetch implementation available; pass opts.fetch");
-  }
-  return globalThis.fetch.bind(globalThis) as Nip11Fetch;
-}
-
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
@@ -149,20 +132,19 @@ export async function fetchRelayInformation(
   opts?: { fetch?: Nip11Fetch; signal?: AbortSignal },
 ): Promise<RelayInformation> {
   const httpUrl = relayInfoHttpUrl(wsUrl);
-  const fetchImpl = opts?.fetch ?? defaultFetch();
+  const fetchImpl =
+    opts?.fetch ??
+    requireGlobalFetch(() => new Nip11Error("no fetch implementation available; pass opts.fetch"));
 
-  let res: { ok: boolean; status: number; json(): Promise<unknown> };
-  try {
-    res = await fetchImpl(httpUrl, {
-      headers: { Accept: ACCEPT },
-      signal: opts?.signal,
-      redirect: "manual",
-    });
-  } catch (cause) {
-    throw new Nip11Error(`relay information request failed: ${httpUrl}`, {
-      cause: cause instanceof Error ? cause : undefined,
-    });
-  }
+  const res = await fetchManual(
+    fetchImpl,
+    httpUrl,
+    { headers: { Accept: ACCEPT }, signal: opts?.signal },
+    (cause) =>
+      new Nip11Error(`relay information request failed: ${httpUrl}`, {
+        cause: cause instanceof Error ? cause : undefined,
+      }),
+  );
 
   if (!res.ok) {
     throw new Nip11Error(`relay information request failed: HTTP ${res.status}`);

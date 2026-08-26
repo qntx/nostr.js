@@ -31,28 +31,40 @@ describe("relayInfoHttpUrl", () => {
 });
 
 describe("fetchRelayInformation", () => {
+  function jsonResponse(status: number, body: unknown): Awaited<ReturnType<Nip11Fetch>> {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: () => null },
+      json: async () => body,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    };
+  }
+
+  function abortError(): Error {
+    const err = new Error("aborted");
+    err.name = "AbortError";
+    return err;
+  }
+
   test("GETs the rewritten URL with Accept and redirect: manual", async () => {
     let seenUrl: string | undefined;
     let seenInit: Parameters<Nip11Fetch>[1];
     const fetchImpl: Nip11Fetch = async (url, init) => {
       seenUrl = url;
       seenInit = init;
-      return { ok: true, status: 200, json: async () => ({ name: "Example" }) };
+      return jsonResponse(200, { name: "Example" });
     };
 
     const info = await fetchRelayInformation("wss://relay.example.com", { fetch: fetchImpl });
     expect(seenUrl).toBe("https://relay.example.com/");
     expect(seenInit?.headers?.Accept).toBe("application/nostr+json");
-    expect(seenInit?.redirect).toBe("manual");
+    expect((seenInit as { redirect?: string } | undefined)?.redirect).toBe("manual");
     expect(info).toEqual({ name: "Example" });
   });
 
   test("404 throws Nip11Error", async () => {
-    const fetchImpl: Nip11Fetch = async () => ({
-      ok: false,
-      status: 404,
-      json: async () => ({ name: "missing" }),
-    });
+    const fetchImpl: Nip11Fetch = async () => jsonResponse(404, { name: "missing" });
     await expect(
       fetchRelayInformation("wss://relay.example.com", { fetch: fetchImpl }),
     ).rejects.toThrow(Nip11Error);
@@ -62,21 +74,15 @@ describe("fetchRelayInformation", () => {
   });
 
   test("3xx throws Nip11Error", async () => {
-    const fetchImpl: Nip11Fetch = async () => ({
-      ok: false,
-      status: 302,
-      json: async () => ({ name: "redir" }),
-    });
+    const fetchImpl: Nip11Fetch = async () => jsonResponse(302, { name: "redir" });
     await expect(
       fetchRelayInformation("wss://relay.example.com", { fetch: fetchImpl }),
     ).rejects.toThrow(/HTTP 302/);
   });
 
   test("extra fields ignored and missing fields omitted", async () => {
-    const fetchImpl: Nip11Fetch = async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
+    const fetchImpl: Nip11Fetch = async () =>
+      jsonResponse(200, {
         name: "relay",
         unknown_field: "drop-me",
         tags: ["bitcoin", "nsfw"],
@@ -92,8 +98,7 @@ describe("fetchRelayInformation", () => {
           max_subid_length: 64,
         },
         fees: { admission: [] },
-      }),
-    });
+      });
 
     const info = await fetchRelayInformation("wss://relay.example.com", { fetch: fetchImpl });
     expect(info).toEqual({
@@ -115,15 +120,12 @@ describe("fetchRelayInformation", () => {
   });
 
   test("limitation omitted when only unknown keys are present", async () => {
-    const fetchImpl: Nip11Fetch = async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
+    const fetchImpl: Nip11Fetch = async () =>
+      jsonResponse(200, {
         name: "relay",
         tags: ["bitcoin"],
         limitation: { max_filters: 10, extra: true },
-      }),
-    });
+      });
 
     const info = await fetchRelayInformation("wss://relay.example.com", { fetch: fetchImpl });
     expect(info).toEqual({ name: "relay" });
@@ -132,13 +134,34 @@ describe("fetchRelayInformation", () => {
   });
 
   test("non-object JSON throws", async () => {
-    const fetchImpl: Nip11Fetch = async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ["not", "an", "object"],
-    });
+    const fetchImpl: Nip11Fetch = async () => jsonResponse(200, ["not", "an", "object"]);
     await expect(
       fetchRelayInformation("wss://relay.example.com", { fetch: fetchImpl }),
     ).rejects.toThrow(/must be a JSON object/);
+  });
+
+  test("network TypeError wraps Nip11Error", async () => {
+    const net = new TypeError("fetch failed");
+    const fetchImpl: Nip11Fetch = async () => {
+      throw net;
+    };
+    try {
+      await fetchRelayInformation("wss://relay.example.com", { fetch: fetchImpl });
+      throw new Error("expected reject");
+    } catch (err) {
+      expect(err).toBeInstanceOf(Nip11Error);
+      expect((err as Nip11Error).cause).toBe(net);
+      expect(err).not.toBe(net);
+    }
+  });
+
+  test("AbortError is not wrapped into Nip11Error", async () => {
+    const aborted = abortError();
+    const fetchImpl: Nip11Fetch = async () => {
+      throw aborted;
+    };
+    await expect(
+      fetchRelayInformation("wss://relay.example.com", { fetch: fetchImpl }),
+    ).rejects.toBe(aborted);
   });
 });

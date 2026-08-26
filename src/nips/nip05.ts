@@ -4,6 +4,7 @@
  */
 import { NostrError } from "../core/error.ts";
 import { isHex32 } from "../core/util.ts";
+import { fetchManual, requireGlobalFetch, type ManualFetch } from "./http.ts";
 import type { ProfilePointer } from "./nip19.ts";
 
 /** Root local-part (`_@domain` rendered as just the domain). */
@@ -41,17 +42,7 @@ export type Nip05Document = {
   nip46?: Nip05Nip46;
 };
 
-/**
- * Minimal fetch surface used by NIP-05.
- * Callers should use `redirect: "manual"` / no-follow semantics.
- */
-export type Nip05Fetch = (
-  url: string,
-  init?: { signal?: AbortSignal; redirect?: "manual" | "error" | "follow" },
-) => Promise<{
-  status: number;
-  json(): Promise<unknown>;
-}>;
+export type Nip05Fetch = ManualFetch;
 
 export class Nip05Error extends NostrError {
   constructor(message: string, options?: ErrorOptions) {
@@ -168,17 +159,11 @@ export function lookupFromDocument(
   return relays?.length ? { pubkey, relays: [...relays] } : { pubkey };
 }
 
-function defaultFetch(): Nip05Fetch {
-  if (typeof globalThis.fetch !== "function") {
-    throw new Nip05Error("no fetch implementation available; pass opts.fetch");
-  }
-  return globalThis.fetch.bind(globalThis) as Nip05Fetch;
-}
-
 /**
  * Fetch and parse `/.well-known/nostr.json`.
  * Returns `null` on network/parse failure (does not throw for those).
  * Rejects HTTP redirects (non-200) per NIP-05 security constraints.
+ * AbortError rethrows; it is not mapped to `null`.
  */
 export async function queryNip05Document(
   identifier: string,
@@ -192,15 +177,20 @@ export async function queryNip05Document(
   }
 
   const url = wellKnownUrl(address);
-  const fetchImpl = opts?.fetch ?? defaultFetch();
+  const fetchImpl =
+    opts?.fetch ??
+    requireGlobalFetch(() => new Nip05Error("no fetch implementation available; pass opts.fetch"));
 
   try {
-    const res = await fetchImpl(url, { signal: opts?.signal, redirect: "manual" });
+    const res = await fetchManual(fetchImpl, url, { signal: opts?.signal }, (err) =>
+      err instanceof Error ? err : new Error("NIP-05 request failed"),
+    );
     // Redirects and errors must not be trusted (NIP-05 security).
     if (res.status !== 200) return null;
     const json = await res.json();
     return { address, doc: parseNip05Document(json) };
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") throw err;
     return null;
   }
 }

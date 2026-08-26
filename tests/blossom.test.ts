@@ -153,7 +153,7 @@ describe("http", () => {
     expect(got).toEqual(desc);
     expect(seen?.url).toBe("https://cdn.example.com/upload");
     expect(seen?.init?.method).toBe("PUT");
-    expect(seen?.init?.redirect).toBe("manual");
+    expect((seen?.init as { redirect?: string } | undefined)?.redirect).toBe("manual");
     expect(seen?.init?.body).toBe(file);
     const headers = seen?.init?.headers as Record<string, string>;
     expect(headers.Authorization).toBe(encodeAuthorizationHeader(auth));
@@ -178,6 +178,31 @@ describe("http", () => {
     };
     await upload(servers[0]!, file, auth, { fetch: fetchImpl });
     expect(seen).toBe("https://cdn.example.com/v1/upload");
+  });
+
+  test("upload network TypeError is BlossomError; AbortError propagates", async () => {
+    const file = new Blob(["abc"]);
+    const auth = await createUploadAuth(async (t) => signAuth(t), file);
+    const net = new TypeError("fetch failed");
+    const fetchNet: BlossomFetch = async () => {
+      throw net;
+    };
+    try {
+      await upload("https://cdn.example.com", file, auth, { fetch: fetchNet });
+      throw new Error("expected reject");
+    } catch (err) {
+      expect(err).toBeInstanceOf(BlossomError);
+      expect((err as BlossomError).cause).toBe(net);
+      expect(err).not.toBe(net);
+    }
+
+    const aborted = abortError();
+    const fetchAbort: BlossomFetch = async () => {
+      throw aborted;
+    };
+    await expect(upload("https://cdn.example.com", file, auth, { fetch: fetchAbort })).rejects.toBe(
+      aborted,
+    );
   });
 
   test("upload rejects descriptor whose sha256 does not match the file", async () => {
@@ -214,7 +239,7 @@ describe("http", () => {
     const fetchImpl: BlossomFetch = async (input, init) => {
       expect(String(input)).toBe("https://cdn.example.com/upload");
       expect(init?.method).toBe("HEAD");
-      expect(init?.redirect).toBe("manual");
+      expect((init as { redirect?: string } | undefined)?.redirect).toBe("manual");
       const headers = init?.headers as Record<string, string>;
       expect(headers["X-SHA-256"]).toBe(ABC_SHA256);
       expect(headers["X-Content-Length"]).toBe(String(file.size));
@@ -248,7 +273,7 @@ describe("http", () => {
     const fetchImpl: BlossomFetch = async (input, init) => {
       expect(String(input)).toBe(`https://cdn.example.com/${ABC_SHA256}`);
       expect(init?.method).toBe("DELETE");
-      expect(init?.redirect).toBe("manual");
+      expect((init as { redirect?: string } | undefined)?.redirect).toBe("manual");
       return new Response(null, { status: 204 });
     };
     await deleteBlob("https://cdn.example.com", ABC_SHA256, auth, { fetch: fetchImpl });
@@ -267,7 +292,7 @@ describe("http", () => {
     const fetchImpl: BlossomFetch = async (input, init) => {
       expect(String(input)).toBe("https://cdn.example.com/mirror");
       expect(init?.method).toBe("PUT");
-      expect(init?.redirect).toBe("manual");
+      expect((init as { redirect?: string } | undefined)?.redirect).toBe("manual");
       expect(init?.body).toBe(JSON.stringify({ url: blob.url }));
       const headers = init?.headers as Record<string, string>;
       expect(headers.Authorization).toBe(encodeAuthorizationHeader(auth));
@@ -324,7 +349,7 @@ describe("blobExists", () => {
     const fetch200: BlossomFetch = async (input, init) => {
       expect(String(input)).toBe(`https://cdn.example.com/${ABC_SHA256}`);
       expect(init?.method).toBe("HEAD");
-      expect(init?.redirect).toBe("manual");
+      expect((init as { redirect?: string } | undefined)?.redirect).toBe("manual");
       return new Response(null, { status: 200 });
     };
     expect(await blobExists("https://cdn.example.com/", ABC_SHA256, { fetch: fetch200 })).toBe(
@@ -388,7 +413,7 @@ describe("getBlob", () => {
     const fetchImpl: BlossomFetch = async (input, init) => {
       expect(String(input)).toBe(`https://cdn.example.com/${ABC_SHA256}`);
       expect(init?.method).toBe("GET");
-      expect(init?.redirect).toBe("manual");
+      expect((init as { redirect?: string } | undefined)?.redirect).toBe("manual");
       return new Response(body, { status: 200 });
     };
     expect(await getBlob("https://cdn.example.com", ABC_SHA256, { fetch: fetchImpl })).toEqual(
@@ -451,7 +476,7 @@ describe("healBlobUrl", () => {
     const fetchImpl: BlossomFetch = async (input, init) => {
       seen.push(String(input));
       expect(init?.method).toBe("HEAD");
-      expect(init?.redirect).toBe("manual");
+      expect((init as { redirect?: string } | undefined)?.redirect).toBe("manual");
       if (String(input) === originalPng) {
         return new Response(null, {
           status: 302,
@@ -536,6 +561,15 @@ describe("healBlobUrl", () => {
         fetch: fetchImpl,
       }),
     ).toBe(originalPng);
+  });
+
+  test("HEAD network failure on original and candidates returns original URL, not BlossomError", async () => {
+    const fetchImpl: BlossomFetch = async () => {
+      throw new TypeError("fetch failed");
+    };
+    await expect(
+      healBlobUrl(originalPng, ["https://server.example"], { fetch: fetchImpl }),
+    ).resolves.toBe(originalPng);
   });
 
   test("original network error then server 200; invalid servers skipped", async () => {
