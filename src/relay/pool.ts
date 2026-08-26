@@ -1,5 +1,5 @@
 import type { Event, EventTemplate } from "../core/event.ts";
-import type { Filter } from "../core/filter.ts";
+import { canonicalizeFilters, type Filter } from "../core/filter.ts";
 import { assertSubscriptionId, type CountResult } from "../core/message.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayConnectionError, RelayPublishError } from "./error.ts";
@@ -196,6 +196,7 @@ export class Pool {
     opts: SubscribeOptions = {},
   ): { close: (reason?: string) => void } {
     if (opts.id !== undefined) assertSubscriptionId(opts.id);
+    filters = canonicalizeFilters(filters);
     return fanIn(this, [{ urls: relays, filters, id: opts.id }], {
       onevent: opts.onevent,
       oneose: opts.oneose,
@@ -215,7 +216,7 @@ export class Pool {
     filters: Filter[],
     opts?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<Event[]> {
-    return fetchRouted(this, [{ urls: relays, filters }], {
+    return fetchRouted(this, [{ urls: relays, filters: canonicalizeFilters(filters) }], {
       timeoutMs: opts?.timeoutMs,
       signal: opts?.signal,
       connectTimeoutMs: this.#opts.connectTimeoutMs,
@@ -273,6 +274,7 @@ export class Pool {
     filters: Filter[],
     opts?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<PoolCountResult[]> {
+    filters = canonicalizeFilters(filters);
     const results = await Promise.all(
       relays.map(async (url): Promise<PoolCountResult> => {
         try {

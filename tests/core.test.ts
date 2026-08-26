@@ -7,6 +7,8 @@ import {
   SUBSCRIPTION_ID_MAX_CHARS,
   SecretKey,
   assertSubscriptionId,
+  canonicalizeFilter,
+  canonicalizeFilters,
   classifyKind,
   createSubscriptionId,
   eventAddress,
@@ -305,6 +307,47 @@ describe("filter", () => {
       filterFingerprint([{ kinds: [1], "#t": [] }]),
     );
     expect(filterFingerprint([{ kinds: [1] }])).not.toBe(filterFingerprint([{ kinds: [1, 2] }]));
+  });
+
+  test("canonicalizeFilter lowercases hex lists, sorts every array, omits undefined", () => {
+    const id = "ab".repeat(32);
+    const pkA = "aa".repeat(32);
+    const pkB = "cd".repeat(32);
+    const filter: Filter = {
+      ids: [id.toUpperCase()],
+      authors: [pkB.toUpperCase(), pkA],
+      kinds: [2, 1],
+      "#e": [id.toUpperCase()],
+      "#p": [pkB.toUpperCase(), pkA],
+      "#t": ["b", "a"],
+    };
+    const withUndef = { ...filter, since: undefined } as Filter;
+    const out = canonicalizeFilter(filter);
+    expect(out.ids).toEqual([id]);
+    expect(out.authors).toEqual([pkA, pkB]);
+    expect(out.kinds).toEqual([1, 2]);
+    expect(out["#e"]).toEqual([id]);
+    expect(out["#p"]).toEqual([pkA, pkB]);
+    expect(out["#t"]).toEqual(["a", "b"]);
+    expect(canonicalizeFilter({ "#t": ["Nostr"] })["#t"]).toEqual(["Nostr"]);
+    expect("since" in canonicalizeFilter(withUndef)).toBe(false);
+    expect(canonicalizeFilter({ kinds: [1], authors: [] })).toEqual({ authors: [], kinds: [1] });
+    expect(canonicalizeFilter({ kinds: [1] })).toEqual({ kinds: [1] });
+    expect(filter.authors).toEqual([pkB.toUpperCase(), pkA]);
+    expect(filter.kinds).toEqual([2, 1]);
+  });
+
+  test("canonicalizeFilters maps each filter; fingerprint matches stored form", () => {
+    const filters: Filter[] = [
+      { kinds: [2, 1], authors: ["BB".repeat(32), "aa".repeat(32)] },
+      { "#t": ["z", "a"] },
+    ];
+    const canonical = canonicalizeFilters(filters);
+    expect(canonical).toEqual([
+      { authors: ["aa".repeat(32), "bb".repeat(32)], kinds: [1, 2] },
+      { "#t": ["a", "z"] },
+    ]);
+    expect(filterFingerprint(canonical)).toBe(filterFingerprint(filters));
   });
 });
 

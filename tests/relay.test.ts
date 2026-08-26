@@ -1848,10 +1848,22 @@ describe("live REQ coalescing", () => {
     const relay = await Relay.connect("wss://coal-authors.example");
     const pkA = "aa".repeat(32);
     const pkB = "bb".repeat(32);
-    const a = relay.subscribe([{ authors: [pkA.toUpperCase(), pkB] }]);
-    const b = relay.subscribe([{ authors: [pkB.toUpperCase(), pkA.toLowerCase()] }]);
+    const a = relay.subscribe([
+      { authors: [pkA.toUpperCase(), pkB], kinds: [2, 1], "#t": ["z", "a"] },
+    ]);
+    const b = relay.subscribe([
+      { authors: [pkB.toUpperCase(), pkA.toLowerCase()], kinds: [1, 2], "#t": ["a", "z"] },
+    ]);
     expect(b.id).toBe(a.id);
-    expect(framesOf(MockWebSocket.last(), "REQ")).toHaveLength(1);
+    const reqs = framesOf(MockWebSocket.last(), "REQ");
+    expect(reqs).toHaveLength(1);
+    const payload = reqs[0]![2] as { authors: string[]; kinds: number[]; "#t": string[] };
+    expect(payload.authors).toEqual([pkA, pkB]);
+    expect(payload.kinds).toEqual([1, 2]);
+    expect(payload["#t"]).toEqual(["a", "z"]);
+    expect(a.filters[0]?.authors).toEqual(payload.authors);
+    expect(a.filters[0]?.kinds).toEqual(payload.kinds);
+    expect(a.filters[0]?.["#t"]).toEqual(payload["#t"]);
     relay.close();
   });
 

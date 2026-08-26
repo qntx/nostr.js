@@ -1,5 +1,5 @@
 import type { Event, EventTemplate, UnsignedEvent } from "../core/event.ts";
-import type { Filter } from "../core/filter.ts";
+import { canonicalizeFilter, canonicalizeFilters, type Filter } from "../core/filter.ts";
 import { sortedEvents } from "../core/event.ts";
 import { NostrError } from "../core/error.ts";
 import { Kind } from "../core/kind.ts";
@@ -542,7 +542,7 @@ export class Client {
    */
   async fetchEvents(filter: Filter | Filter[], opts?: FetchEventsOptions): Promise<Event[]> {
     this.#assertAlive();
-    const filters = Array.isArray(filter) ? filter : [filter];
+    const filters = canonicalizeFilters(Array.isArray(filter) ? filter : [filter]);
     const shouldObserve = this.#wantObserve(opts?.observe);
     const byId = new Map<string, Event>();
 
@@ -587,7 +587,7 @@ export class Client {
    */
   async queryLocal(filter: Filter | Filter[]): Promise<Event[]> {
     this.#assertAlive();
-    const filters = Array.isArray(filter) ? filter : [filter];
+    const filters = canonicalizeFilters(Array.isArray(filter) ? filter : [filter]);
     return this.storage.query(filters);
   }
 
@@ -596,7 +596,7 @@ export class Client {
     opts?: SubscribeOptions,
   ): { close: (reason?: string) => void } {
     this.#assertAlive();
-    const filters = Array.isArray(filter) ? filter : [filter];
+    const filters = canonicalizeFilters(Array.isArray(filter) ? filter : [filter]);
     const shouldObserve = this.#wantObserve(opts?.observe);
 
     const wrapEvent = (event: Event) => {
@@ -823,6 +823,7 @@ export class Client {
     this.#assertAlive();
     this.#throwIfAborted(opts?.signal);
     const direction = opts?.direction ?? SyncDirection.Down;
+    filter = canonicalizeFilter(filter);
     const items = await this.storage.negentropyItems(filter);
     const storage: NegentropyStorageVector = storageFromItems(items);
     const relay = await this.pool.ensureRelay(url, { signal: opts?.signal });
