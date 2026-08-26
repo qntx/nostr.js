@@ -6,8 +6,8 @@ import { Kind } from "../core/kind.ts";
 import { normalizeURL } from "../core/util.ts";
 import type { Gossip } from "../gossip/gossip.ts";
 import type { Pool } from "../relay/pool.ts";
-import { toStorageError, type StorageError } from "../storage/error.ts";
-import type { EventStore, OutboxBound, PutResult } from "../storage/types.ts";
+import { toStorageError } from "../storage/error.ts";
+import type { EventStore, OutboxBound } from "../storage/types.ts";
 
 export type { OutboxBound } from "../storage/types.ts";
 
@@ -25,14 +25,15 @@ export type OutboxFeedOptions = {
   /** Max write-relays to use per author. Default 3. */
   maxRelaysPerAuthor?: number;
   fetchTimeoutMs?: number;
-  /** Called for every new event after persist/observe. */
+  /** Called for live events after observe, and for sync events returned by applySync. */
   onEvent?: (event: Event) => void;
-  /** Live ingest (e.g. `client.observe`). When set, startLive does not putMany. */
+  /** Live ingest (e.g. `client.observe`). StartLive never putManys. */
   observe?: (event: Event) => void;
-  /** Sync-path meta ingest (e.g. gossip/cache). Does not persist. */
-  ingestMeta?: (event: Event) => void;
-  /** Live `putMany` failure when `observe` is omitted. */
-  onStorageError?: (err: StorageError) => void;
+  /**
+   * Sync path only. Awaited. Return events that should advance bounds.
+   * Throw → sync throws, bounds unchanged.
+   */
+  applySync?: (events: readonly Event[]) => Promise<readonly Event[]>;
   /**
    * Load kind:10002 for authors before sync when routes are missing.
    * Requires a relay-list loader.
@@ -112,8 +113,7 @@ export class OutboxFeed {
   readonly #timeoutMs: number;
   readonly #onEvent: ((event: Event) => void) | undefined;
   readonly #observe: ((event: Event) => void) | undefined;
-  readonly #ingestMeta: ((event: Event) => void) | undefined;
-  readonly #onStorageError: ((err: StorageError) => void) | undefined;
+  readonly #applySync: ((events: readonly Event[]) => Promise<readonly Event[]>) | undefined;
   readonly #hydrate: ((pubkeys: readonly string[]) => Promise<void>) | undefined;
   readonly #bounds = new Map<string, OutboxBound>();
   #authors: string[];
@@ -131,8 +131,7 @@ export class OutboxFeed {
     this.#timeoutMs = opts.fetchTimeoutMs ?? 4400;
     this.#onEvent = opts.onEvent;
     this.#observe = opts.observe;
-    this.#ingestMeta = opts.ingestMeta;
-    this.#onStorageError = opts.onStorageError;
+    this.#applySync = opts.applySync;
     this.#hydrate = opts.hydrate;
   }
 
@@ -165,7 +164,7 @@ export class OutboxFeed {
   }
 
   /**
-   * One-shot history pull. Writes unique events once via putMany, then ingestMeta.
+   * One-shot history pull. Persistence is `applySync`; bounds move only for events it returns.
    */
   async sync(opts?: {
     limit?: number;
@@ -210,19 +209,16 @@ export class OutboxFeed {
     const unique = [...byId.values()];
     if (unique.length === 0) return [];
 
-    let results: PutResult[];
-    try {
-      results = await this.#storage.putMany(unique);
-    } catch (err) {
-      throw toStorageError(err);
+    let applied: readonly Event[] = [];
+    if (this.#applySync) {
+      try {
+        applied = await this.#applySync(unique);
+      } catch (err) {
+        throw toStorageError(err);
+      }
     }
-
     const dirty = new Set<string>();
-    for (let i = 0; i < unique.length; i++) {
-      const event = unique[i]!;
-      const result = results[i];
-      if (result === "rejected" || result === "ephemeral") continue;
-      this.#ingestMeta?.(event);
+    for (const event of applied) {
       this.#updateBounds(event);
       dirty.add(boundKey(event.pubkey, event.kind));
       this.#onEvent?.(event);
@@ -263,20 +259,7 @@ export class OutboxFeed {
           onevent: (event) => {
             if (seen.has(event.id)) return;
             seen.add(event.id);
-            if (this.#observe) {
-              this.#noteEvent(event);
-              return;
-            }
-            void this.#storage
-              .putMany([event])
-              .then((results) => {
-                const result = results[0];
-                if (result === "rejected" || result === "ephemeral") return;
-                this.#noteEvent(event);
-              })
-              .catch((err: unknown) => {
-                this.#onStorageError?.(toStorageError(err));
-              });
+            this.#noteEvent(event);
           },
         }),
       );

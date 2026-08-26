@@ -283,8 +283,10 @@ describe("Client NIP-17", () => {
     const forged = await wrapGift(new KeysSigner(malloryKeys), bobKeys.publicKey, forgedRumor);
     bus.seed(BOB_DM, [wrap, junk, forged]);
 
+    const { store, persistIds } = trackingStore();
     const bob = Client.builder()
       .signer(new KeysSigner(bobKeys))
+      .storage(store)
       .relays([IDX])
       .websocketImplementation(MockWebSocketCtor)
       .enableReconnect(false)
@@ -296,6 +298,11 @@ describe("Client NIP-17", () => {
     expect(inbox[0]!.rumor.content).toBe("hola");
     expect(inbox[0]!.rumor.pubkey).toBe(aliceKeys.publicKey);
     expect(giftWrapReqKinds(BOB_DM, bobKeys.publicKey)).toEqual([Kind.GiftWrap]);
+    await waitFor(() => persistIds.includes(wrap.id));
+    expect(persistIds.includes(junk.id)).toBe(false);
+    expect(persistIds.includes(forged.id)).toBe(false);
+    expect(await store.get(junk.id)).toBeUndefined();
+    expect(await store.get(forged.id)).toBeUndefined();
 
     await bob.shutdown();
   });
