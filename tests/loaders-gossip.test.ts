@@ -52,7 +52,7 @@ function respondReplaceables(
 }
 
 describe("Gossip", () => {
-  test("ingest NIP-65 and breakDownFilter by authors", () => {
+  test("ingest NIP-65 and route by authors", () => {
     const keys = Keys.fromSecretKey(SK);
     const list = relayListEventBuilder([
       { url: "wss://write.example", read: false, write: true },
@@ -68,24 +68,23 @@ describe("Gossip", () => {
     expect(gossip.inboxRelays(keys.publicKey).length).toBeGreaterThan(0);
     expect(gossip.dmRelays(keys.publicKey)).toEqual([]);
 
-    const broken = gossip.breakDownFilter({
+    const routed = gossip.route({
       kinds: [1],
       authors: [keys.publicKey],
     });
-    expect(broken.type).toBe("per-relay");
-    if (broken.type === "per-relay") {
-      expect(broken.fallback).toBeUndefined();
-      expect(broken.filters.size).toBeGreaterThan(0);
-      for (const filter of broken.filters.values()) {
-        expect(filter.authors).toEqual([keys.publicKey]);
-        expect(filter.kinds).toEqual([1]);
-      }
+    expect(routed.remainder).toBeUndefined();
+    expect(routed.perRelay.size).toBeGreaterThan(0);
+    for (const filter of routed.perRelay.values()) {
+      expect(filter.authors).toEqual([keys.publicKey]);
+      expect(filter.kinds).toEqual([1]);
     }
 
-    expect(gossip.breakDownFilter({ kinds: [1] }).type).toBe("generic");
+    const generic = gossip.route({ kinds: [1] });
+    expect(generic.perRelay.size).toBe(0);
+    expect(generic.remainder).toEqual({ kinds: [1] });
   });
 
-  test("breakDownFilter leftover authors become per-relay fallback", () => {
+  test("route leftover authors become remainder", () => {
     const a = Keys.fromSecretKey(SK);
     const b = Keys.fromSecretKey(SK2);
     const gossip = new Gossip();
@@ -95,23 +94,21 @@ describe("Gossip", () => {
         .signWithKeys(a),
     );
 
-    const broken = gossip.breakDownFilter({
+    const routed = gossip.route({
       kinds: [1],
       authors: [a.publicKey, b.publicKey],
     });
-    expect(broken.type).toBe("per-relay");
-    if (broken.type !== "per-relay") throw new Error("expected per-relay");
-    if (!broken.fallback) throw new Error("expected fallback");
-    expect(broken.fallback.authors).toEqual([b.publicKey]);
-    expect(broken.fallback.kinds).toEqual([1]);
-    expect(broken.filters.size).toBe(1);
-    const [url, filter] = [...broken.filters.entries()][0]!;
+    if (!routed.remainder) throw new Error("expected remainder");
+    expect(routed.remainder.authors).toEqual([b.publicKey]);
+    expect(routed.remainder.kinds).toEqual([1]);
+    expect(routed.perRelay.size).toBe(1);
+    const [url, filter] = [...routed.perRelay.entries()][0]!;
     expect(url.includes("out-a.example")).toBe(true);
     expect(filter.authors).toEqual([a.publicKey]);
     expect(filter.kinds).toEqual([1]);
   });
 
-  test("breakDownFilter leftover #p values become per-relay fallback", () => {
+  test("route leftover #p values become remainder", () => {
     const a = Keys.fromSecretKey(SK);
     const b = Keys.fromSecretKey(SK2);
     const gossip = new Gossip();
@@ -121,22 +118,20 @@ describe("Gossip", () => {
         .signWithKeys(a),
     );
 
-    const broken = gossip.breakDownFilter({
+    const routed = gossip.route({
       kinds: [1],
       "#p": [a.publicKey, b.publicKey],
     });
-    expect(broken.type).toBe("per-relay");
-    if (broken.type !== "per-relay") throw new Error("expected per-relay");
-    if (!broken.fallback) throw new Error("expected fallback");
-    expect(broken.fallback["#p"]).toEqual([b.publicKey]);
-    expect(broken.fallback.kinds).toEqual([1]);
-    expect(broken.filters.size).toBe(1);
-    const [url, filter] = [...broken.filters.entries()][0]!;
+    if (!routed.remainder) throw new Error("expected remainder");
+    expect(routed.remainder["#p"]).toEqual([b.publicKey]);
+    expect(routed.remainder.kinds).toEqual([1]);
+    expect(routed.perRelay.size).toBe(1);
+    const [url, filter] = [...routed.perRelay.entries()][0]!;
     expect(url.includes("in-a.example")).toBe(true);
     expect(filter["#p"]).toEqual([a.publicKey]);
   });
 
-  test("breakDownFilter authors+#p leftover keeps the original filter as fallback", () => {
+  test("route authors+#p leftover keeps the original filter as remainder", () => {
     const a = Keys.fromSecretKey(SK);
     const b = Keys.fromSecretKey(SK2);
     const gossip = new Gossip();
@@ -151,14 +146,12 @@ describe("Gossip", () => {
       authors: [a.publicKey, b.publicKey],
       "#p": [a.publicKey],
     };
-    const broken = gossip.breakDownFilter(filter);
-    expect(broken.type).toBe("per-relay");
-    if (broken.type !== "per-relay") throw new Error("expected per-relay");
-    expect(broken.fallback).toBe(filter);
-    expect(broken.filters.size).toBe(1);
-    const routed = [...broken.filters.values()][0]!;
-    expect(routed.authors).toEqual(filter.authors);
-    expect(routed["#p"]).toEqual(filter["#p"]);
+    const routed = gossip.route(filter);
+    expect(routed.remainder).toBe(filter);
+    expect(routed.perRelay.size).toBe(1);
+    const sub = [...routed.perRelay.values()][0]!;
+    expect(sub.authors).toEqual(filter.authors);
+    expect(sub["#p"]).toEqual(filter["#p"]);
   });
 
   test("ingest kind 10050 DM relays without clobbering NIP-65", () => {
@@ -192,9 +185,9 @@ describe("Gossip", () => {
     // NIP-65 still intact after dm update
     expect(gossip.getRoutes(keys.publicKey)?.updatedAt).toBe(10);
     expect(gossip.getRoutes(keys.publicKey)?.dmUpdatedAt).toBe(20);
-    expect(gossip.breakDownFilter({ authors: [Keys.fromSecretKey(SK2).publicKey] }).type).toBe(
-      "orphan",
-    );
+    const orphan = gossip.route({ authors: [Keys.fromSecretKey(SK2).publicKey] });
+    expect(orphan.perRelay.size).toBe(0);
+    expect(orphan.remainder?.authors).toEqual([Keys.fromSecretKey(SK2).publicKey]);
   });
 });
 

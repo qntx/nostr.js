@@ -71,21 +71,25 @@ export function groupAuthorsByOutboxRelay(
   maxRelaysPerAuthor = 3,
   prefer: readonly string[] = [],
 ): Map<string, string[]> {
-  const map = new Map<string, string[]>();
+  const leftover = new Set(
+    (gossip.route({ authors: authors.map((a) => a.toLowerCase()) }).remainder?.authors ?? []).map(
+      (a) => a.toLowerCase(),
+    ),
+  );
   const preferSet = new Set(canonicalRelayUrls(prefer));
   const discovery = canonicalRelayUrls(discoveryRelays);
+  const map = new Map<string, string[]>();
+
   for (const author of authors) {
     const pk = author.toLowerCase();
-    let relays = gossip.outboxRelays(pk);
-    if (relays.length === 0) relays = discovery;
+    const urls = leftover.has(pk) ? discovery : gossip.outboxRelays(pk);
     const preferred: string[] = [];
     const rest: string[] = [];
-    for (const url of relays) {
+    for (const url of urls) {
       if (preferSet.has(url)) preferred.push(url);
       else rest.push(url);
     }
-    relays = preferred.concat(rest).slice(0, maxRelaysPerAuthor);
-    for (const url of relays) {
+    for (const url of preferred.concat(rest).slice(0, maxRelaysPerAuthor)) {
       const list = map.get(url) ?? [];
       if (!list.includes(pk)) list.push(pk);
       map.set(url, list);

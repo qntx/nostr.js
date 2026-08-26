@@ -374,6 +374,41 @@ describe("Client", () => {
     await client.shutdown();
   });
 
+  test("gossip fetchEvents leftover skips a failed outbox relay", async () => {
+    MockWebSocket.autoConnect = false;
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.fromSecretKey(SK2);
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .connectTimeoutMs(40)
+      .build();
+    client.gossip.ingest(
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+
+    const noteB = EventBuilder.textNote("from-b").createdAt(2).signWithKeys(b);
+    const fetchP = client.fetchEvents(
+      { kinds: [1], authors: [a.publicKey, b.publicKey] },
+      { gossip: true, timeoutMs: 200 },
+    );
+    await waitUntil(() => Boolean(findWs("out-a.example") && findWs("default.example")));
+    const def = findWs("default.example")!;
+    def.open();
+    await waitUntil(() => reqReady("default.example"));
+    expect(reqAuthors(def)).toEqual([b.publicKey]);
+    def.receive(JSON.stringify(["EVENT", lastReqId(def), noteB]));
+    def.receive(JSON.stringify(["EOSE", lastReqId(def)]));
+
+    const notes = await fetchP;
+    expect(notes.map((n) => n.id)).toEqual([noteB.id]);
+    expect(findWs("out-a.example")!.readyState).not.toBe(MockWebSocket.OPEN);
+    await client.shutdown();
+  });
+
   test("gossip leftover with empty Client.relays throws before attach", async () => {
     const a = Keys.fromSecretKey(SK);
     const b = Keys.fromSecretKey(SK2);
@@ -723,6 +758,80 @@ describe("Client", () => {
     defB.receive(JSON.stringify(["CLOSED", lastReqId(defB), "bye-b"]));
     expect(closes).toBe(1);
     await client.shutdown();
+  });
+
+  test("gossip empty filters fire oneose without opening sockets", async () => {
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    let eose = 0;
+    let closed: string | undefined;
+    client.subscribe([], {
+      gossip: true,
+      oneose: () => {
+        eose += 1;
+      },
+      onclose: (reason) => {
+        closed = reason;
+      },
+    });
+    await waitUntil(() => eose === 1);
+    expect(eose).toBe(1);
+    expect(closed).toBeUndefined();
+    expect(MockWebSocket.instances).toHaveLength(0);
+    await client.shutdown();
+  });
+
+  test("gossip leftover and two generic filters do not forward caller id", async () => {
+    const a = Keys.fromSecretKey(SK);
+    const b = Keys.fromSecretKey(SK2);
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    client.gossip.ingest(
+      relayListEventBuilder([{ url: "wss://out-a.example", read: false, write: true }])
+        .createdAt(1)
+        .signWithKeys(a),
+    );
+
+    const leftover = client.subscribe(
+      { kinds: [1], authors: [a.publicKey, b.publicKey] },
+      { gossip: true, id: "caller-id" },
+    );
+    await waitUntil(() => reqReady("out-a.example") && reqReady("default.example"));
+    const leftoverIds = MockWebSocket.instances.flatMap((ws) =>
+      sentMessages(ws)
+        .filter((m) => m[0] === "REQ")
+        .map((m) => m[1] as string),
+    );
+    expect(leftoverIds.length).toBeGreaterThan(1);
+    expect(leftoverIds.every((id) => id !== "caller-id")).toBe(true);
+    leftover.close();
+    await client.shutdown();
+    MockWebSocket.reset();
+
+    const genericClient = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    const generics = genericClient.subscribe([{ kinds: [1] }, { kinds: [0] }], {
+      gossip: true,
+      id: "caller-id",
+    });
+    await waitUntil(() => reqReady("default.example"));
+    const genericIds = sentMessages(findWs("default.example")!)
+      .filter((m) => m[0] === "REQ")
+      .map((m) => m[1] as string);
+    expect(genericIds).toHaveLength(2);
+    expect(genericIds.every((id) => id !== "caller-id")).toBe(true);
+    expect(new Set(genericIds).size).toBe(2);
+    generics.close();
+    await genericClient.shutdown();
   });
 
   test("gossip close still CLOSEs inners when onclose throws", async () => {

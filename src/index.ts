@@ -385,4 +385,4 @@ export {
   type LoadStyle,
   type OutboxFeedOptions,
 } from "./loaders/index.ts";
-export { Gossip, type BrokenDownFilters, type PubkeyRoutes } from "./gossip/index.ts";
+export { Gossip, type RoutedFilter, type PubkeyRoutes } from "./gossip/index.ts";

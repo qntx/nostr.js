@@ -6,6 +6,7 @@ import { Kind } from "../core/kind.ts";
 import { normalizeURL } from "../core/util.ts";
 import { EventBuilder } from "../core/builder.ts";
 import type { NostrSigner } from "../signer/types.ts";
+import { fanIn, fetchRouted, type RoutedJob } from "../relay/fan-in.ts";
 import { Pool, type PoolPublishResult } from "../relay/pool.ts";
 import type { WebSocketConstructor } from "../relay/websocket.ts";
 import {
@@ -206,6 +207,23 @@ export type SubscribePrivateMessagesOptions = {
 
 /** Client lifecycle, configuration, or abort failure (not cryptographic). */
 export class ClientError extends NostrError {}
+
+/** Remainder is one job on defaults; throw before any REQ when defaults are empty. */
+function jobsForFilters(
+  gossip: Gossip,
+  filters: Filter[],
+  defaultRelays: () => string[],
+): RoutedJob[] {
+  const routed = filters.map((f) => gossip.route(f));
+  const needsDefaults = routed.some((r) => r.remainder !== undefined);
+  const defaults = needsDefaults ? defaultRelays() : undefined;
+  const jobs: RoutedJob[] = [];
+  for (const r of routed) {
+    for (const [url, sub] of r.perRelay) jobs.push({ urls: [url], filters: [sub] });
+    if (r.remainder) jobs.push({ urls: defaults!, filters: [r.remainder] });
+  }
+  return jobs;
+}
 
 /**
  * Layer-5 facade: signer + default relays + pool + loaders + gossip + event store.
@@ -502,7 +520,7 @@ export class Client {
   }
 
   /**
-   * Fetch events. With `gossip: true`, breaks filters by NIP-65 routes when possible.
+   * Fetch events. With `gossip: true`, routes filters by NIP-65 when possible.
    * With `localFirst: true`, merges storage hits with network results.
    */
   async fetchEvents(filter: Filter | Filter[], opts?: FetchEventsOptions): Promise<Event[]> {
@@ -528,49 +546,22 @@ export class Client {
     };
 
     if (!opts?.gossip || opts.relays) {
-      const remote = await this.pool.fetch(this.#defaultRelays(opts?.relays), filters, {
-        timeoutMs: opts?.timeoutMs,
-        signal: opts?.signal,
-      });
-      ingest(remote);
+      ingest(
+        await this.pool.fetch(this.#defaultRelays(opts?.relays), filters, {
+          timeoutMs: opts?.timeoutMs,
+          signal: opts?.signal,
+        }),
+      );
       return sortedEvents([...byId.values()]);
     }
 
-    const brokenList = filters.map((f) => this.gossip.breakDownFilter(f));
-    const needsDefaults = brokenList.some(
-      (b) => b.type !== "per-relay" || b.fallback !== undefined,
+    const jobs = jobsForFilters(this.gossip, filters, () => this.#defaultRelays());
+    ingest(
+      await fetchRouted(this.pool, jobs, {
+        timeoutMs: opts?.timeoutMs,
+        signal: opts?.signal,
+      }),
     );
-    if (needsDefaults) this.#defaultRelays();
-
-    for (let i = 0; i < filters.length; i++) {
-      const f = filters[i]!;
-      const broken = brokenList[i]!;
-      if (broken.type === "per-relay") {
-        const fetchInto = async (urls: string[], subFilters: Filter[]) => {
-          try {
-            ingest(
-              await this.pool.fetch(urls, subFilters, {
-                timeoutMs: opts?.timeoutMs,
-                signal: opts?.signal,
-              }),
-            );
-          } catch {
-            // skip failed relay
-          }
-        };
-        const jobs: Promise<void>[] = [...broken.filters.entries()].map(([url, subFilter]) =>
-          fetchInto([url], [subFilter]),
-        );
-        if (broken.fallback) jobs.push(fetchInto(this.#defaultRelays(), [broken.fallback]));
-        await Promise.all(jobs);
-      } else {
-        const batch = await this.pool.fetch(this.#defaultRelays(), [f], {
-          timeoutMs: opts?.timeoutMs,
-          signal: opts?.signal,
-        });
-        ingest(batch);
-      }
-    }
     return sortedEvents([...byId.values()]);
   }
 
@@ -607,110 +598,18 @@ export class Client {
       });
     }
 
-    const brokenList = filters.map((f) => this.gossip.breakDownFilter(f));
-    const needsDefaults = brokenList.some(
-      (b) => b.type !== "per-relay" || b.fallback !== undefined,
-    );
-    if (needsDefaults) this.#defaultRelays();
-
-    const seen = new Set<string>();
-    const closers: Array<{ close: (reason?: string) => void }> = [];
-    let pendingEose = 0;
-    let pendingClose = 0;
-    let eoseFired = false;
-    let closeFired = false;
-    let closed = false;
-    let eoseTimer: ReturnType<typeof setTimeout> | undefined;
-
-    const fireEose = () => {
-      if (closed || eoseFired) return;
-      eoseFired = true;
-      if (eoseTimer !== undefined) {
-        clearTimeout(eoseTimer);
-        eoseTimer = undefined;
-      }
-      opts?.oneose?.();
-    };
-
-    const maybeEose = () => {
-      pendingEose -= 1;
-      if (pendingEose <= 0) fireEose();
-    };
-
-    const fireClose = (reason: string) => {
-      if (closeFired) return;
-      closeFired = true;
-      opts?.onclose?.(reason);
-    };
-
-    const maybeClose = (reason: string) => {
-      pendingClose -= 1;
-      if (pendingClose <= 0) fireClose(reason);
-    };
-
-    const close = (reason?: string) => {
-      if (closed) return;
-      closed = true;
-      if (eoseTimer !== undefined) {
-        clearTimeout(eoseTimer);
-        eoseTimer = undefined;
-      }
-      const closeReason = reason ?? "closed by client";
-      const shouldNotify = !closeFired;
-      closeFired = true;
-      try {
-        for (const c of closers) c.close(reason);
-      } finally {
-        if (shouldNotify) opts?.onclose?.(closeReason);
-      }
-    };
-
-    if (opts.signal?.aborted) closed = true;
-    else opts.signal?.addEventListener("abort", () => close("aborted"), { once: true });
-
-    const attach = (urls: string[], subFilters: Filter[], id?: string) => {
-      pendingEose += 1;
-      pendingClose += 1;
-      closers.push(
-        this.pool.subscribe(urls, subFilters, {
-          signal: opts.signal,
-          id,
-          onevent: (event) => {
-            if (seen.has(event.id)) return;
-            seen.add(event.id);
-            wrapEvent(event);
-          },
-          oneose: maybeEose,
-          onclose: maybeClose,
-        }),
-      );
-    };
-
-    for (let i = 0; i < filters.length; i++) {
-      const f = filters[i]!;
-      const broken = brokenList[i]!;
-      if (broken.type === "per-relay") {
-        for (const [url, subFilter] of broken.filters) {
-          attach([url], [subFilter]);
-        }
-        if (broken.fallback) attach(this.#defaultRelays(), [broken.fallback]);
-      } else {
-        attach(this.#defaultRelays(), [f], opts.id);
-      }
+    const jobs = jobsForFilters(this.gossip, filters, () => this.#defaultRelays());
+    if (jobs.length === 0) {
+      queueMicrotask(() => opts?.oneose?.());
+      return { close: () => {} };
     }
-
-    if (pendingEose === 0) {
-      queueMicrotask(() => fireEose());
-    }
-
-    if (opts.eoseTimeoutMs !== undefined && !closed) {
-      eoseTimer = setTimeout(() => {
-        eoseTimer = undefined;
-        fireEose();
-      }, opts.eoseTimeoutMs);
-    }
-
-    return { close };
+    return fanIn(this.pool, jobs, {
+      onevent: wrapEvent,
+      oneose: opts?.oneose,
+      onclose: opts?.onclose,
+      signal: opts?.signal,
+      eoseTimeoutMs: opts?.eoseTimeoutMs,
+    });
   }
 
   #requireNip59Crypto(): Nip59Crypto {
