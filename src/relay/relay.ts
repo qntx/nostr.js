@@ -1,7 +1,7 @@
 import type { Event, EventTemplate } from "../core/event.ts";
 import { verifyEvent } from "../core/key.ts";
 import { canonicalizeFilter, canonicalizeFilters, type Filter } from "../core/filter.ts";
-import { WasmVerifyPoisonedError } from "../core/error.ts";
+import { MessageError, WasmVerifyPoisonedError } from "../core/error.ts";
 import {
   assertSubscriptionId,
   createSubscriptionId,
@@ -673,6 +673,7 @@ export class Relay {
 
   /** Low-level REQ with callbacks. Survives reconnect when enableReconnect is on. */
   subscribe(filters: Filter[], opts: SubscribeOptions = {}): Subscription {
+    if (filters.length === 0) throw new MessageError("REQ requires at least one filter");
     if (!this.#connected && !this.#enableReconnect) {
       throw new RelayClosedError("not connected", this.url);
     }
@@ -712,6 +713,7 @@ export class Relay {
     filters: Filter[],
     opts?: { timeoutMs?: number; signal?: AbortSignal; id?: string },
   ): Promise<Event[]> {
+    if (filters.length === 0) throw new MessageError("REQ requires at least one filter");
     filters = canonicalizeFilters(filters);
     if (!this.#connected) {
       await this.connect({ signal: opts?.signal });

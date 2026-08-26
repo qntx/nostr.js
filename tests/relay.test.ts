@@ -828,6 +828,52 @@ describe("Relay", () => {
     relay.close();
   });
 
+  test("subscribe empty filters throws MessageError before any socket send", async () => {
+    const relay = await Relay.connect("wss://empty-req.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const err = syncThrow(() => relay.subscribe([]));
+    expect(err).toBeInstanceOf(MessageError);
+    expect(err).not.toBeInstanceOf(RelayClosedError);
+    expect((err as Error).message).toBe("REQ requires at least one filter");
+    expect(sentMessages(MockWebSocket.last()).filter((m) => m[0] === "REQ")).toHaveLength(0);
+    relay.close();
+  });
+
+  test("disconnected subscribe empty filters is MessageError not RelayClosedError", () => {
+    const relay = new Relay("wss://empty-disconnected.example", {
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: false,
+    });
+    const err = syncThrow(() => relay.subscribe([]));
+    expect(err).toBeInstanceOf(MessageError);
+    expect(err).not.toBeInstanceOf(RelayClosedError);
+    expect((err as Error).message).toBe("REQ requires at least one filter");
+    expect(MockWebSocket.instances).toHaveLength(0);
+  });
+
+  test("fetch empty filters throws MessageError before connect", async () => {
+    const relay = new Relay("wss://empty-fetch.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    await expect(relay.fetch([])).rejects.toThrow(MessageError);
+    await expect(relay.fetch([])).rejects.toThrow("REQ requires at least one filter");
+    expect(MockWebSocket.instances).toHaveLength(0);
+  });
+
+  test("subscribe match-all and empty-ids filters are legal", async () => {
+    const relay = await Relay.connect("wss://empty-ids.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const a = relay.subscribe([{}]);
+    const b = relay.subscribe([{ ids: [] }]);
+    const reqs = sentMessages(MockWebSocket.last()).filter((m) => m[0] === "REQ");
+    expect(reqs).toHaveLength(2);
+    a.close();
+    b.close();
+    relay.close();
+  });
+
   test("subscribe uses a 64-char custom id on the REQ", async () => {
     const relay = await Relay.connect("wss://sub-id-ok.example", {
       websocketImplementation: MockWebSocketCtor,
@@ -1043,6 +1089,28 @@ describe("Pool", () => {
     expect(() => pool.subscribe(["wss://x"], [{ kinds: [1] }], { id: "" })).toThrow(MessageError);
     expect(MockWebSocket.instances.length).toBe(0);
     await Promise.resolve();
+    expect(MockWebSocket.instances.length).toBe(0);
+    pool.close();
+  });
+
+  test("subscribe empty filters throws before opening a socket", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    expect(() => pool.subscribe(["wss://empty-pool-sub.example"], [])).toThrow(MessageError);
+    expect(() => pool.subscribe(["wss://empty-pool-sub.example"], [])).toThrow(
+      "REQ requires at least one filter",
+    );
+    expect(MockWebSocket.instances.length).toBe(0);
+    await Promise.resolve();
+    expect(MockWebSocket.instances.length).toBe(0);
+    pool.close();
+  });
+
+  test("fetch empty filters throws and does not return []", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    await expect(pool.fetch(["wss://empty-pool-fetch.example"], [])).rejects.toThrow(MessageError);
+    await expect(pool.fetch(["wss://empty-pool-fetch.example"], [])).rejects.toThrow(
+      "REQ requires at least one filter",
+    );
     expect(MockWebSocket.instances.length).toBe(0);
     pool.close();
   });
@@ -1888,6 +1956,45 @@ describe("Pool aggregated EOSE", () => {
     expect(eose).toBe(1);
     expect(pool.listRelays()).toEqual([]);
     pool.close();
+  });
+
+  test("attach RelayClosedError after ensureRelay fires onclose(all relays failed)", async () => {
+    const pool = new Pool({
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: false,
+    });
+    const origEnsure = pool.ensureRelay.bind(pool);
+    pool.ensureRelay = async (url, opts) => {
+      const relay = await origEnsure(url, opts);
+      expect(relay.connected).toBe(true);
+      MockWebSocket.last().close();
+      expect(relay.connected).toBe(false);
+      return relay;
+    };
+
+    const rejections: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      rejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    let closed: string | undefined;
+    try {
+      pool.subscribe(["wss://attach-closed.example"], [{ kinds: [1] }], {
+        onclose: (reason) => {
+          closed = reason;
+        },
+      });
+      await waitUntil(() => closed !== undefined);
+      await sleep(20);
+      expect(closed).toBe("all relays failed");
+      expect(rejections).toEqual([]);
+      expect(
+        MockWebSocket.instances.every((ws) => !sentMessages(ws).some((m) => m[0] === "REQ")),
+      ).toBe(true);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      pool.close();
+    }
   });
 
   test("reconnect EOSE on one URL does not complete the set while the other is silent", async () => {

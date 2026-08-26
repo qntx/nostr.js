@@ -108,9 +108,7 @@ export function parseClientMessage(raw: string): ClientMessage {
       if (data.length < 3 || typeof data[1] !== "string") {
         throw new MessageError("invalid REQ client message");
       }
-      const filters = data.slice(2) as Filter[];
-      if (filters.length === 0) throw new MessageError("REQ requires at least one filter");
-      return ["REQ", data[1], ...filters];
+      return ["REQ", data[1], ...(data.slice(2) as Filter[])];
     }
     case "CLOSE": {
       if (data.length !== 2 || typeof data[1] !== "string") {

@@ -1,3 +1,4 @@
+import { MessageError } from "../core/error.ts";
 import type { Event, EventTemplate } from "../core/event.ts";
 import { canonicalizeFilters, type Filter } from "../core/filter.ts";
 import { assertSubscriptionId, type CountResult } from "../core/message.ts";
@@ -195,6 +196,7 @@ export class Pool {
     filters: Filter[],
     opts: SubscribeOptions = {},
   ): { close: (reason?: string) => void } {
+    if (filters.length === 0) throw new MessageError("REQ requires at least one filter");
     if (opts.id !== undefined) assertSubscriptionId(opts.id);
     filters = canonicalizeFilters(filters);
     return fanIn(this, [{ urls: relays, filters, id: opts.id }], {
@@ -216,6 +218,7 @@ export class Pool {
     filters: Filter[],
     opts?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<Event[]> {
+    if (filters.length === 0) throw new MessageError("REQ requires at least one filter");
     return fetchRouted(this, [{ urls: relays, filters: canonicalizeFilters(filters) }], {
       timeoutMs: opts?.timeoutMs,
       signal: opts?.signal,
