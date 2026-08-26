@@ -1,3 +1,4 @@
+/** REQ subscription runtime: exclusive one-shot, live coalescing, dispatch, reconnect replay. */
 import type { Event } from "../core/event.ts";
 import { filterFingerprint, type Filter } from "../core/filter.ts";
 import type { ClientMessage, SubscriptionId } from "../core/message.ts";

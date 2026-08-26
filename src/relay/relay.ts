@@ -28,7 +28,7 @@ import {
   subscribeLive,
   type LiveCtx,
   type LiveGroup,
-} from "./live.ts";
+} from "./subscribe.ts";
 import {
   createNegSession,
   failNegErr,
