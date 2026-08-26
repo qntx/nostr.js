@@ -2,10 +2,11 @@ import type { Event } from "../core/event.ts";
 import { isReplaceableWinner, itemCompare, sortEvents } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { matchFilter } from "../core/filter.ts";
-import { isEphemeralKind, Kind } from "../core/kind.ts";
-import { eventAddress } from "../core/tag.ts";
-import { coordinateRemovals, DeletionState, planDeletion, type DeletionPlan } from "./deletion.ts";
+import { Kind } from "../core/kind.ts";
+import { eventAddress, parseEventAddress } from "../core/tag.ts";
+import { DeletionState, planDeletion, type DeletionPlan } from "./deletion.ts";
 import { StorageError, toStorageError } from "./error.ts";
+import { decidePut, normalizeEvent, outboxBoundKey, type PutDecision } from "./put.ts";
 import type { EventStore, NegentropyItem, OutboxBound, PutResult } from "./types.ts";
 
 const IDB_VERSION = 4;
@@ -221,91 +222,63 @@ export class IndexedDbEventStore implements EventStore {
     }
   }
 
-  /** Sequential puts in one async function so the tx stays alive between events. */
+  /** Sequential awaits so the tx stays alive between events. */
   async #putAllInTx(tx: IDBTransactionLike, batch: readonly Event[]): Promise<PutResult[]> {
-    const events = tx.objectStore(EVENTS);
-    const tagRefs = tx.objectStore(TAG_REFS);
-    const addresses = tx.objectStore(ADDRESSES);
-    const tombstones = tx.objectStore(TOMBSTONES);
+    const eventsStore = tx.objectStore(EVENTS);
+    const addressesStore = tx.objectStore(ADDRESSES);
     const results: PutResult[] = [];
     for (const raw of batch) {
       const event = normalizeEvent(raw);
-
-      if (this.#deletion.ids.has(event.id)) {
-        results.push("duplicate");
-        continue;
-      }
-
-      const existing = await reqOf<Event | undefined>(events.get(event.id));
-      if (existing) {
-        results.push("duplicate");
-        continue;
-      }
-
+      const byId = new Map<string, Pick<Event, "id" | "pubkey" | "kind" | "created_at" | "tags">>();
+      const existing = await reqOf<Event | undefined>(eventsStore.get(event.id));
+      if (existing) byId.set(existing.id, existing);
       if (event.kind === Kind.EventDeletion) {
-        this.#deletion.pending.delete(event.id);
-        const byId = new Map<string, Event>();
         for (const tag of event.tags) {
           if (tag[0] !== "e" || tag[1] === undefined) continue;
-          const got = await reqOf<Event | undefined>(events.get(tag[1].toLowerCase()));
+          const got = await reqOf<Event | undefined>(eventsStore.get(tag[1].toLowerCase()));
           if (got) byId.set(got.id, got);
         }
-        const plan = planDeletion(event, (id) => byId.get(id));
-        const current = new Map<string, Pick<Event, "id" | "created_at">>();
-        for (const c of plan.coordinates) {
-          const row = await reqOf<AddressRow | undefined>(addresses.get(c.key));
-          if (row) current.set(c.key, row);
+      }
+      const addrRows = new Map<string, { id: string; created_at: number }>();
+      const ownAddr = eventAddress(event);
+      if (ownAddr) {
+        const row = await reqOf<AddressRow | undefined>(addressesStore.get(ownAddr));
+        if (row) addrRows.set(ownAddr, { id: row.id, created_at: row.created_at });
+      }
+      if (event.kind === Kind.EventDeletion) {
+        for (const tag of event.tags) {
+          if (tag[0] !== "a" || !tag[1]) continue;
+          const coord = parseEventAddress(tag[1]);
+          if (!coord) continue;
+          const key = `${coord.kind}:${coord.pubkey}:${coord.identifier}`;
+          if (addrRows.has(key)) continue;
+          const row = await reqOf<AddressRow | undefined>(addressesStore.get(key));
+          if (row) addrRows.set(key, { id: row.id, created_at: row.created_at });
         }
-        const coordIds = coordinateRemovals(plan.coordinates, (key) => current.get(key));
-        const remove = new Set([...plan.removeIds, ...coordIds]);
-        for (const id of remove) {
-          await this.#deleteEventRows(tx, id);
-        }
-        persistPlanTombstones(tombstones, plan, coordIds, this.#deletion);
-        this.#deletion.absorb(plan);
-        for (const id of coordIds) this.#deletion.ids.add(id);
-        events.put(event);
-        writeTagRefs(tagRefs, event);
-        results.push("deleted");
-        continue;
       }
-
-      if (this.#deletion.covers(event)) {
-        tombstones.put({ key: `id:${event.id}`, type: "id" } satisfies Tombstone);
-        tombstones.delete(`pending:${event.id}`);
-        this.#deletion.ids.add(event.id);
-        this.#deletion.pending.delete(event.id);
-        results.push("duplicate");
-        continue;
+      const d = decidePut(event, {
+        deletion: this.#deletion,
+        getById: (id) => byId.get(id),
+        getReplaceable: (address) => addrRows.get(address),
+      });
+      // Await row deletes in this loop so the next events.get runs in the IDB
+      // request continuation. `await` of a no-request promise auto-commits the tx.
+      if (d.action === "delete") {
+        const remove = new Set([...d.plan.removeIds, ...d.coordIds]);
+        for (const id of remove) await this.#deleteEventRows(tx, id);
+      } else if (d.action === "insert" && d.replaceId) {
+        await this.#deleteEventRows(tx, d.replaceId);
       }
-
-      if (isEphemeralKind(event.kind)) {
-        results.push("ephemeral");
-        continue;
-      }
-
-      const key = eventAddress(event);
-      if (key) {
-        const addrRow = await reqOf<AddressRow | undefined>(addresses.get(key));
-        if (addrRow) {
-          const prev = await reqOf<Event | undefined>(events.get(addrRow.id));
-          if (prev && !isReplaceableWinner(event, prev)) {
-            results.push("rejected");
-            continue;
-          }
-          if (prev) await this.#deleteEventRows(tx, prev.id);
-        }
-        events.put(event);
-        writeTagRefs(tagRefs, event);
-        addresses.put({ address: key, id: event.id, created_at: event.created_at });
-        this.#replaceable.set(key, event.id);
-        results.push(addrRow ? "replaced" : "accepted");
-        continue;
-      }
-
-      events.put(event);
-      writeTagRefs(tagRefs, event);
-      results.push("accepted");
+      results.push(
+        applyPutIndexedDb(
+          tx,
+          {
+            deletion: this.#deletion,
+            replaceable: this.#replaceable,
+          },
+          d,
+        ),
+      );
     }
     return results;
   }
@@ -856,15 +829,49 @@ function tagRefKey(name: string, value: string, id: string): string {
   return `${name}:${value.toLowerCase()}:${id.toLowerCase()}`;
 }
 
-function outboxBoundKey(pubkey: string, kind: number): string {
-  return `${pubkey.toLowerCase()}:${kind}`;
-}
-
-function normalizeEvent(event: Event): Event {
-  const id = event.id.toLowerCase();
-  const pubkey = event.pubkey.toLowerCase();
-  if (id === event.id && pubkey === event.pubkey) return event;
-  return { ...event, id, pubkey };
+function applyPutIndexedDb(
+  tx: IDBTransactionLike,
+  s: {
+    deletion: DeletionState;
+    replaceable: Map<string, string>;
+  },
+  d: PutDecision,
+): PutResult {
+  const events = tx.objectStore(EVENTS);
+  const tagRefs = tx.objectStore(TAG_REFS);
+  const addresses = tx.objectStore(ADDRESSES);
+  const tombstones = tx.objectStore(TOMBSTONES);
+  switch (d.action) {
+    case "skip":
+      return d.result;
+    case "tombstone":
+      tombstones.put({ key: `id:${d.event.id}`, type: "id" } satisfies Tombstone);
+      tombstones.delete(`pending:${d.event.id}`);
+      s.deletion.ids.add(d.event.id);
+      s.deletion.pending.delete(d.event.id);
+      return "duplicate";
+    case "delete": {
+      s.deletion.pending.delete(d.event.id);
+      persistPlanTombstones(tombstones, d.plan, d.coordIds, s.deletion);
+      s.deletion.absorb(d.plan);
+      for (const id of d.coordIds) s.deletion.ids.add(id);
+      events.put(d.event);
+      writeTagRefs(tagRefs, d.event);
+      return "deleted";
+    }
+    case "insert":
+      events.put(d.event);
+      writeTagRefs(tagRefs, d.event);
+      if (d.address) {
+        addresses.put({
+          address: d.address,
+          id: d.event.id,
+          created_at: d.event.created_at,
+        });
+        s.replaceable.set(d.address, d.event.id);
+      }
+      return d.result;
+  }
 }
 
 function deleteStoredEvent(tx: IDBTransactionLike, event: Event, addressRow?: AddressRow): void {

@@ -1,10 +1,10 @@
 import type { Event } from "../core/event.ts";
-import { isReplaceableWinner, itemCompare, sortEvents } from "../core/event.ts";
+import { itemCompare, sortEvents } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { matchFilter } from "../core/filter.ts";
-import { isEphemeralKind, Kind } from "../core/kind.ts";
 import { eventAddress } from "../core/tag.ts";
-import { coordinateRemovals, DeletionState, planDeletion } from "./deletion.ts";
+import { DeletionState } from "./deletion.ts";
+import { applyPutMemory, decidePut, outboxBoundKey, type PutLookup } from "./put.ts";
 import type { EventStore, NegentropyItem, OutboxBound, PutResult } from "./types.ts";
 
 /**
@@ -22,53 +22,23 @@ export class MemoryEventStore implements EventStore {
   #outboxBounds = new Map<string, OutboxBound>();
 
   async put(raw: Event): Promise<PutResult> {
-    const event = normalizeEvent(raw);
-    if (this.#deletion.ids.has(event.id) || this.#byId.has(event.id)) {
-      return "duplicate";
-    }
-
-    if (event.kind === Kind.EventDeletion) {
-      this.#deletion.pending.delete(event.id);
-      const plan = planDeletion(event, (id) => this.#byId.get(id));
-      this.#deletion.absorb(plan);
-      for (const id of plan.removeIds) {
-        this.#indexRemove(id);
-      }
-      for (const id of coordinateRemovals(plan.coordinates, (key) => {
-        const existingId = this.#replaceable.get(key);
-        return existingId ? this.#byId.get(existingId) : undefined;
-      })) {
-        this.#deletion.ids.add(id);
-        this.#indexRemove(id);
-      }
-      this.#indexInsert(event);
-      return "deleted";
-    }
-
-    if (this.#deletion.covers(event)) {
-      this.#deletion.ids.add(event.id);
-      this.#deletion.pending.delete(event.id);
-      return "duplicate";
-    }
-
-    if (isEphemeralKind(event.kind)) {
-      return "ephemeral";
-    }
-
-    const key = eventAddress(event);
-    if (key) {
-      const existingId = this.#replaceable.get(key);
-      if (existingId) {
-        const existing = this.#byId.get(existingId);
-        if (existing && !isReplaceableWinner(event, existing)) return "rejected";
-        this.#indexRemove(existingId);
-      }
-      this.#indexInsert(event);
-      return existingId ? "replaced" : "accepted";
-    }
-
-    this.#indexInsert(event);
-    return "accepted";
+    const lookup: PutLookup = {
+      deletion: this.#deletion,
+      getById: (id) => this.#byId.get(id),
+      getReplaceable: (addr) => {
+        const id = this.#replaceable.get(addr);
+        const ev = id ? this.#byId.get(id) : undefined;
+        return ev ? { id: ev.id, created_at: ev.created_at } : undefined;
+      },
+    };
+    return applyPutMemory(
+      {
+        deletion: this.#deletion,
+        indexInsert: (e) => this.#indexInsert(e),
+        indexRemove: (id) => this.#indexRemove(id),
+      },
+      decidePut(raw, lookup),
+    );
   }
 
   /** Sequential `put` in input order. No transaction: a throw leaves earlier events applied. */
@@ -295,17 +265,6 @@ export class MemoryEventStore implements EventStore {
     // store is extra put/remove amp; hashtag-only queries scan #byId.
     for (const event of this.#byId.values()) visit(event);
   }
-}
-
-function outboxBoundKey(pubkey: string, kind: number): string {
-  return `${pubkey.toLowerCase()}:${kind}`;
-}
-
-function normalizeEvent(event: Event): Event {
-  const id = event.id.toLowerCase();
-  const pubkey = event.pubkey.toLowerCase();
-  if (id === event.id && pubkey === event.pubkey) return event;
-  return { ...event, id, pubkey };
 }
 
 function visitEpTagIds(

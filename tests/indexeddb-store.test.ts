@@ -27,6 +27,47 @@ async function tickUntil(pred: () => boolean): Promise<void> {
   throw new Error("timed out waiting for IndexedDB mock");
 }
 
+function idbGet(dbName: string, storeName: string, key: string): Promise<unknown> {
+  type Req<T> = {
+    result: T;
+    error: Error | null;
+    onsuccess: ((ev: unknown) => void) | null;
+    onerror: ((ev: unknown) => void) | null;
+  };
+  const factory = (
+    globalThis as unknown as {
+      indexedDB: {
+        open(name: string): Req<{
+          transaction(
+            name: string,
+            mode?: "readonly",
+          ): {
+            objectStore(name: string): { get(key: string): Req<unknown> };
+          };
+          close(): void;
+        }>;
+      };
+    }
+  ).indexedDB;
+  return new Promise((resolve, reject) => {
+    const open = factory.open(dbName);
+    open.onerror = () => reject(open.error ?? new Error("idbGet open failed"));
+    open.onsuccess = () => {
+      const db = open.result;
+      const get = db.transaction(storeName, "readonly").objectStore(storeName).get(key);
+      get.onerror = () => {
+        db.close();
+        reject(get.error ?? new Error("idbGet failed"));
+      };
+      get.onsuccess = () => {
+        const value = get.result;
+        db.close();
+        resolve(value);
+      };
+    };
+  });
+}
+
 describe("IndexedDbEventStore", () => {
   let mock: IdbMock;
 
@@ -232,6 +273,34 @@ describe("IndexedDbEventStore", () => {
     await reopened.open();
     expect(await reopened.put(note)).toBe("duplicate");
     expect(await reopened.get(note.id)).toBeUndefined();
+    reopened.close();
+  });
+
+  test("pending kind 5 then target persists id tombstone across reopen", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const dbName = "pending-apply-tomb";
+    const store = new IndexedDbEventStore({ dbName });
+    await store.open();
+    const note = EventBuilder.textNote("late").createdAt(1).signWithKeys(keys);
+    const del = EventBuilder.deletion([note.id]).createdAt(2).signWithKeys(keys);
+    expect(await store.put(del)).toBe("deleted");
+    expect(await store.put(note)).toBe("duplicate");
+    expect(await store.get(note.id)).toBeUndefined();
+    expect(await idbGet(dbName, "tombstones", `id:${note.id}`)).toEqual({
+      key: `id:${note.id}`,
+      type: "id",
+    });
+    expect(await idbGet(dbName, "tombstones", `pending:${note.id}`)).toBeUndefined();
+    store.close();
+
+    const reopened = new IndexedDbEventStore({ dbName });
+    await reopened.open();
+    expect(await reopened.put(note)).toBe("duplicate");
+    expect(await reopened.get(note.id)).toBeUndefined();
+    expect(await idbGet(dbName, "tombstones", `id:${note.id}`)).toEqual({
+      key: `id:${note.id}`,
+      type: "id",
+    });
     reopened.close();
   });
 
