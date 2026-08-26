@@ -40,6 +40,7 @@ export type SyncSummary = {
   sent: string[];
   received: string[];
   sendFailures: Record<string, string>;
+  persistFailures: Record<string, string>;
 };
 
 export type ClientOptions = {
