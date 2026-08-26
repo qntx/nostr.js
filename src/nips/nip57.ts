@@ -10,7 +10,7 @@ import { EventValidationError } from "../core/error.ts";
 import { validateSignedEvent, type Event, type EventTemplate } from "../core/event.ts";
 import { verifyEvent } from "../core/key.ts";
 import { isAddressableKind, Kind } from "../core/kind.ts";
-import { eventAddress, getDTag, parseEventAddress, type Tag } from "../core/tag.ts";
+import { eventAddress, getDTag, parseEventAddress, Tag } from "../core/tag.ts";
 import { hexToBytes, utf8Encoder } from "../core/util.ts";
 
 export type ProfileZapRequest = {
@@ -38,14 +38,14 @@ export function makeZapRequest(params: ProfileZapRequest | EventZapRequest): Eve
 
   const recipient = "event" in params ? params.event.pubkey : params.pubkey;
   const tags: Tag[] = [
-    ["p", recipient],
+    Tag.p(recipient),
     ["amount", params.amount.toString()],
     ["relays", ...params.relays],
   ];
 
   if ("event" in params) {
     const { event } = params;
-    tags.push(["e", event.id]);
+    tags.push(Tag.e(event.id));
     if (isAddressableKind(event.kind)) {
       const d = getDTag(event.tags);
       if (d === undefined) throw new EventValidationError("d tag not found");

@@ -29,6 +29,7 @@ import {
   parseEventAddress,
   parseRelayMessage,
   serializeEvent,
+  Tag,
   validateEvent,
   verifyEvent,
   type Event,
@@ -211,6 +212,32 @@ describe("kinds", () => {
     expect(eventAddress({ kind: 1, pubkey: pk, tags: [] })).toBeUndefined();
     expect(eventAddress({ kind: 0, pubkey: pk, tags: [] })).toBe(`0:${pk}:`);
     expect(eventAddress({ kind: 30023, pubkey: pk, tags: [["d", "x"]] })).toBe(`30023:${pk}:x`);
+  });
+});
+
+describe("tags", () => {
+  const id = "ab".repeat(32);
+  const pk = "cd".repeat(32);
+
+  test("Tag.e lowercases hex slots and leaves relay URL and marker", () => {
+    expect(Tag.e(id.toUpperCase(), "wss://Relay.Example", "Root", pk.toUpperCase())).toEqual([
+      "e",
+      id,
+      "wss://Relay.Example",
+      "Root",
+      pk,
+    ]);
+    expect(Tag.e(id.toUpperCase())).toEqual(["e", id]);
+  });
+
+  test("Tag.p lowercases pubkey and leaves relay URL and petname", () => {
+    expect(Tag.p(pk.toUpperCase(), "wss://Relay.Example", "Alice")).toEqual([
+      "p",
+      pk,
+      "wss://Relay.Example",
+      "Alice",
+    ]);
+    expect(Tag.p(pk.toUpperCase())).toEqual(["p", pk]);
   });
 });
 

@@ -2,7 +2,7 @@ import { EventValidationError } from "./error.ts";
 import type { Event, EventTemplate, UnsignedEvent } from "./event.ts";
 import { Kind, isAddressableKind, isReplaceableKind } from "./kind.ts";
 import { Keys, finalizeEvent } from "./key.ts";
-import { Tag, getDTag } from "./tag.ts";
+import { Tag, formatEventAddress, getDTag } from "./tag.ts";
 import { normalizeURL } from "./util.ts";
 
 function hasProtectedTag(event: Event): boolean {
@@ -60,7 +60,7 @@ export class EventBuilder {
 
   static contacts(pubkeys: string[]): EventBuilder {
     const b = new EventBuilder(Kind.Contacts, "");
-    for (const pk of pubkeys) b.#tags.push(["p", pk]);
+    for (const pk of pubkeys) b.#tags.push(Tag.p(pk));
     return b;
   }
 
@@ -88,16 +88,16 @@ export class EventBuilder {
       if (d === undefined) {
         throw new EventValidationError("addressable event is missing d tag");
       }
-      coord = `${target.kind}:${target.pubkey}:${d}`;
+      coord = formatEventAddress(target.kind, target.pubkey, d);
     }
 
     const b = new EventBuilder(Kind.Reaction, content);
     // NIP-25 e is [e, id, relay, pubkey]; Tag.e third arg is a NIP-10 marker.
-    b.#tags.push(["e", target.id, hint ?? "", target.pubkey]);
-    b.#tags.push(hint === undefined ? ["p", target.pubkey] : ["p", target.pubkey, hint]);
+    b.#tags.push(["e", target.id.toLowerCase(), hint ?? "", target.pubkey.toLowerCase()]);
+    b.#tags.push(Tag.p(target.pubkey, hint));
     b.#tags.push(["k", String(target.kind)]);
     if (coord !== undefined) {
-      b.#tags.push(hint === undefined ? ["a", coord] : ["a", coord, hint]);
+      b.#tags.push(Tag.a(coord, hint));
     }
     return b;
   }
@@ -133,7 +133,7 @@ export class EventBuilder {
     b.#tags.push(Tag.p(opts?.pPubkey ?? target.pubkey));
     b.#tags.push(Tag.k(target.kind));
     if (replaceable || addressable) {
-      b.#tags.push(Tag.a(`${target.kind}:${target.pubkey}:${d ?? ""}`));
+      b.#tags.push(Tag.a(formatEventAddress(target.kind, target.pubkey, d ?? "")));
     }
     return b;
   }

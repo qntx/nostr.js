@@ -26,14 +26,14 @@ export function tagValue(tag: Tag): string | undefined {
 /** Construct common tags. */
 export const Tag = {
   e(id: string, relay?: string, marker?: string, pubkey?: string): Tag {
-    const t: string[] = ["e", id];
+    const t: string[] = ["e", id.toLowerCase()];
     if (relay !== undefined) t.push(relay);
     if (marker !== undefined) t.push(marker);
-    if (pubkey !== undefined) t.push(pubkey);
+    if (pubkey !== undefined) t.push(pubkey.toLowerCase());
     return t;
   },
   p(pubkey: string, relay?: string, petname?: string): Tag {
-    const t: string[] = ["p", pubkey];
+    const t: string[] = ["p", pubkey.toLowerCase()];
     if (relay !== undefined) t.push(relay);
     if (petname !== undefined) t.push(petname);
     return t;

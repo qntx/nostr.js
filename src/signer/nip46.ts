@@ -3,6 +3,7 @@ import { signedMatchesUnsigned, validateSignedEvent } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
 import { SecretKey, finalizeEvent, getPublicKey, verifyEvent } from "../core/key.ts";
+import { Tag } from "../core/tag.ts";
 import { isHex32 } from "../core/util.ts";
 import { decrypt, encrypt, getConversationKey } from "../nips/nip44.ts";
 import {
@@ -502,7 +503,7 @@ export class Nip46Signer implements NostrSigner {
     const event = finalizeEvent(
       {
         kind: Kind.NostrConnect,
-        tags: [["p", this.#pointer.pubkey]],
+        tags: [Tag.p(this.#pointer.pubkey)],
         content: encrypted,
         created_at: Math.floor(Date.now() / 1000),
       },

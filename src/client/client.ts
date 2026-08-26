@@ -479,7 +479,7 @@ export class Client {
     };
   }
 
-  /** Publish a public kind:10050 list (NIP-65 outbox / default relays, not DM relays). */
+  /** Publish a kind:10050 NIP-17 DM relay list (`relay` tags). Not kind 10002. */
   async setDmRelays(
     relays: readonly string[],
     opts?: PublishOptions,
