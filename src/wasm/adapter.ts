@@ -1,4 +1,4 @@
-import { NostrError } from "../core/error.ts";
+import { WasmVerifyPoisonedError } from "../core/error.ts";
 import type { Event } from "../core/event.ts";
 import {
   isMarkedFailed,
@@ -10,10 +10,7 @@ import {
 } from "../core/event.ts";
 import { hexToBytes, utf8Encoder } from "../core/util.ts";
 
-// Relay duck-types poison by name and must not import src/wasm.
-export class WasmVerifyPoisonedError extends NostrError {
-  override name = "WasmVerifyPoisonedError";
-}
+export { WasmVerifyPoisonedError };
 
 export type WasmSerializedVerify = {
   verifySerialized: (

@@ -13,6 +13,7 @@ export {
   MessageError,
   NostrError,
   UrlError,
+  WasmVerifyPoisonedError,
 } from "./error.ts";
 
 export {

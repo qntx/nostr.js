@@ -9,6 +9,7 @@ import {
   Keys,
   KeysSigner,
   LoaderError,
+  IndexedDbEventStore,
   MemoryEventStore,
   Nip19Error,
   NostrError,
@@ -17,13 +18,15 @@ import {
   Pool,
   RelayClosedError,
   RelayPublishError,
+  StorageError,
+  WasmVerifyPoisonedError,
   createLoaders,
   npubEncode,
   nsecEncode,
   useWebSocketImplementation,
 } from "../src/index.ts";
 import { subscriptionToAsyncIterable } from "../src/relay/subscription.ts";
-import { makeVerifyEvent, WasmVerifyPoisonedError } from "../src/wasm/adapter.ts";
+import { makeVerifyEvent } from "../src/wasm/adapter.ts";
 import { loadNostrWasm, resetNostrWasmForTests } from "../src/wasm/load.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 
@@ -224,6 +227,25 @@ describe("Pool.publishAny rejected OK", () => {
     expect(inner).toBeInstanceOf(RelayPublishError);
     expect((inner as RelayPublishError).message).toContain("blocked: spam");
     pool.close();
+  });
+});
+
+describe("IndexedDbEventStore missing IndexedDB", () => {
+  test("open throws StorageError not CryptoError", async () => {
+    const g = globalThis as { indexedDB?: unknown };
+    const prev = g.indexedDB;
+    delete g.indexedDB;
+    try {
+      expect(IndexedDbEventStore.isAvailable()).toBe(false);
+      const err = await captureError(new IndexedDbEventStore({ dbName: "taxonomy-no-idb" }).open());
+      expect(err).toBeInstanceOf(StorageError);
+      expect(err).not.toBeInstanceOf(CryptoError);
+      expect(err).toBeInstanceOf(NostrError);
+      expect((err as StorageError).message).toBe("IndexedDB is not available in this environment");
+    } finally {
+      if (prev !== undefined) g.indexedDB = prev;
+      else delete g.indexedDB;
+    }
   });
 });
 

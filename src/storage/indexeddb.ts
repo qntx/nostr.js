@@ -4,7 +4,6 @@ import type { Filter } from "../core/filter.ts";
 import { matchFilter } from "../core/filter.ts";
 import { isEphemeralKind, Kind } from "../core/kind.ts";
 import { eventAddress } from "../core/tag.ts";
-import { CryptoError } from "../core/error.ts";
 import { coordinateRemovals, DeletionState, planDeletion, type DeletionPlan } from "./deletion.ts";
 import { StorageError, toStorageError } from "./error.ts";
 import type { EventStore, NegentropyItem, OutboxBound, PutResult } from "./types.ts";
@@ -139,7 +138,7 @@ export class IndexedDbEventStore implements EventStore {
   async open(): Promise<void> {
     if (this.#db) return;
     if (!IndexedDbEventStore.isAvailable()) {
-      throw new CryptoError("IndexedDB is not available in this environment");
+      throw new StorageError("IndexedDB is not available in this environment");
     }
     this.#db = await openDb(this.#dbName);
     await this.#loadCaches();

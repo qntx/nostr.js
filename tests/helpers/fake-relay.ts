@@ -3,11 +3,10 @@ import type { Filter } from "../../src/core/filter.ts";
 import { matchFilters } from "../../src/core/filter.ts";
 import { bytesToHex } from "../../src/core/util.ts";
 import { normalizeURL } from "../../src/core/util.ts";
-import { PROTOCOL_VERSION, Responder, storageFromEvents } from "../../src/nips/nip77.ts";
+import { Negentropy, PROTOCOL_VERSION, storageFromEvents } from "../../src/nips/nip77.ts";
 import { MockWebSocket } from "./mock-ws.ts";
 
 type Sub = { id: string; filters: Filter[] };
-type NegHandle = { responder: Responder };
 
 export type FakeRelayBusOptions = {
   /**
@@ -29,7 +28,7 @@ export class FakeRelayBus {
   readonly #cursor = new WeakMap<MockWebSocket, number>();
   readonly #subs = new WeakMap<MockWebSocket, Map<string, Sub>>();
   readonly #authed = new WeakSet<MockWebSocket>();
-  readonly #neg = new WeakMap<MockWebSocket, Map<string, NegHandle>>();
+  readonly #neg = new WeakMap<MockWebSocket, Map<string, Negentropy>>();
   readonly #opts: FakeRelayBusOptions;
   #timer: ReturnType<typeof setInterval> | undefined;
 
@@ -186,9 +185,9 @@ export class FakeRelayBus {
         const filter = msg[2] as Filter;
         const hex = msg[3];
         const matched = store.filter((e) => matchFilters([filter], e));
-        const responder = new Responder(storageFromEvents(matched));
-        this.#neg.get(ws)?.set(id, { responder });
-        const out = responder.reconcile(hex);
+        const neg = new Negentropy(storageFromEvents(matched));
+        this.#neg.get(ws)?.set(id, neg);
+        const out = neg.reconcile(hex);
         ws.receive(
           JSON.stringify([
             "NEG-MSG",
@@ -205,7 +204,7 @@ export class FakeRelayBus {
           ws.receive(JSON.stringify(["NEG-ERR", msg[1], "closed: unknown subscription"]));
           return;
         }
-        const out = handle.responder.reconcile(msg[2]);
+        const out = handle.reconcile(msg[2]);
         if (out.nextMessage === null) {
           ws.receive(
             JSON.stringify(["NEG-MSG", msg[1], bytesToHex(new Uint8Array([PROTOCOL_VERSION]))]),

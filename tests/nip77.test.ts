@@ -4,17 +4,19 @@ import {
   EventBuilder,
   Gossip,
   Keys,
+  MAX_NEG_ROUNDS,
   MemoryEventStore,
   MessageError,
+  Negentropy,
   NegentropyStorageVector,
+  Nip77Error,
   PROTOCOL_VERSION,
-  Reconciliation,
   Relay,
-  Responder,
   SyncDirection,
   encodeClientMessage,
   parseClientMessage,
   parseRelayMessage,
+  runNegSession,
   storageFromEvents,
   useWebSocketImplementation,
   type Event,
@@ -51,8 +53,8 @@ function wrapEventStore(
 }
 
 function runUntilDone(
-  init: Reconciliation,
-  responder: Responder,
+  init: Negentropy,
+  responder: Negentropy,
 ): {
   have: string[];
   need: string[];
@@ -60,7 +62,8 @@ function runUntilDone(
 } {
   const have = new Set<string>();
   const need = new Set<string>();
-  let incoming = responder.reconcile(init.opening);
+  const opening = init.initiate();
+  let incoming = responder.reconcile(opening);
   let rounds = 1;
   if (incoming.nextMessage === null) {
     incoming = {
@@ -151,7 +154,7 @@ describe("Negentropy algorithm", () => {
     a.seal();
     const b = new NegentropyStorageVector();
     b.seal();
-    const { have, need } = runUntilDone(new Reconciliation(a), new Responder(b));
+    const { have, need } = runUntilDone(new Negentropy(a), new Negentropy(b));
     expect(have).toEqual([]);
     expect(need).toEqual([]);
   });
@@ -160,8 +163,8 @@ describe("Negentropy algorithm", () => {
     const shared = note(SK_A, "shared", 10);
     const onlyA = note(SK_A, "alice", 11);
     const onlyB = note(SK_B, "bob", 12);
-    const init = new Reconciliation(storageFromEvents([shared, onlyA]));
-    const resp = new Responder(storageFromEvents([shared, onlyB]));
+    const init = new Negentropy(storageFromEvents([shared, onlyA]));
+    const resp = new Negentropy(storageFromEvents([shared, onlyB]));
     const { have, need } = runUntilDone(init, resp);
     expect(have).toEqual([onlyA.id]);
     expect(need).toEqual([onlyB.id]);
@@ -183,11 +186,60 @@ describe("Negentropy algorithm", () => {
       .signWithKeys(Keys.fromSecretKey(SK_B));
     bob.push(extra);
     const { have, need } = runUntilDone(
-      new Reconciliation(storageFromEvents(alice)),
-      new Responder(storageFromEvents(bob)),
+      new Negentropy(storageFromEvents(alice)),
+      new Negentropy(storageFromEvents(bob)),
     );
     expect(have.sort()).toEqual([alice[7]!.id, alice[33]!.id].sort());
     expect(need).toEqual([extra.id]);
+  });
+
+  test("runNegSession collects have/need until nextMessage is null", async () => {
+    const shared = note(SK_A, "shared", 10);
+    const onlyA = note(SK_A, "alice", 11);
+    const onlyB = note(SK_B, "bob", 12);
+    const resp = new Negentropy(storageFromEvents([shared, onlyB]));
+    let incoming: string | undefined;
+    const { have, need } = await runNegSession({
+      storage: storageFromEvents([shared, onlyA]),
+      openingSend: (hex) => {
+        const out = resp.reconcile(hex);
+        incoming = out.nextMessage ?? PROTOCOL_VERSION.toString(16);
+      },
+      msgSend: (hex) => {
+        const out = resp.reconcile(hex);
+        incoming = out.nextMessage ?? PROTOCOL_VERSION.toString(16);
+      },
+      next: async () => {
+        if (incoming === undefined) throw new Error("missing incoming");
+        return incoming;
+      },
+    });
+    expect(have).toEqual([onlyA.id]);
+    expect(need).toEqual([onlyB.id]);
+  });
+
+  test("runNegSession throws after MAX_NEG_ROUNDS", async () => {
+    const storage = new NegentropyStorageVector();
+    storage.seal();
+    const mismatch = `61000001${"ff".repeat(16)}`;
+    let nextCalls = 0;
+    const err = await runNegSession({
+      storage,
+      openingSend: () => {},
+      msgSend: () => {},
+      next: async () => {
+        nextCalls += 1;
+        return mismatch;
+      },
+    }).then(
+      () => {
+        throw new Error("expected reject");
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(Nip77Error);
+    expect((err as Nip77Error).message).toBe("negentropy exceeded max rounds");
+    expect(nextCalls).toBe(MAX_NEG_ROUNDS);
   });
 });
 
