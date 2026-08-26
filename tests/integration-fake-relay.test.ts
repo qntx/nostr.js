@@ -96,26 +96,32 @@ describe("integration via FakeRelayBus", () => {
     bus.start();
 
     const keys = Keys.fromSecretKey(SK);
+    let authCalls = 0;
     const pool = new Pool({
       websocketImplementation: MockWebSocketCtor,
       enableReconnect: false,
-      automaticallyAuth: () => async (template) =>
-        EventBuilder.textNote("")
-          .kind(template.kind)
-          .tags(template.tags)
-          .content(template.content)
-          .createdAt(template.created_at)
-          .signWithKeys(keys),
+      automaticallyAuth: () => {
+        authCalls += 1;
+        return async (template) =>
+          EventBuilder.textNote("")
+            .kind(template.kind)
+            .tags(template.tags)
+            .content(template.content)
+            .createdAt(template.created_at)
+            .signWithKeys(keys);
+      },
     });
 
     const note = EventBuilder.textNote("authed").createdAt(3).signWithKeys(keys);
     // ensureRelay triggers connect → AUTH challenge → auto auth
     await pool.ensureRelay("wss://auth.example");
+    expect(authCalls).toBe(1);
     await new Promise((r) => setTimeout(r, 30));
 
     const results = await pool.publish(["wss://auth.example"], note);
     expect(results[0]?.result?.ok).toBe(true);
     expect(bus.eventsOn("wss://auth.example").some((e) => e.id === note.id)).toBe(true);
+    expect(authCalls).toBe(1);
 
     pool.close();
   });

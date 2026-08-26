@@ -36,12 +36,28 @@ function reqFilters(ws: MockWebSocket): Array<[string, string, ...Record<string,
   >;
 }
 
+class FailReqSocket extends MockWebSocket {
+  static failNextReq = false;
+  send(data: string): void {
+    const msg = JSON.parse(data) as unknown[];
+    if (FailReqSocket.failNextReq && msg[0] === "REQ") {
+      FailReqSocket.failNextReq = false;
+      throw new Error("forced REQ send failure");
+    }
+    super.send(data);
+  }
+}
+
+const FailReqCtor = FailReqSocket as unknown as typeof MockWebSocketCtor;
+
 beforeEach(() => {
   MockWebSocket.reset();
+  FailReqSocket.failNextReq = false;
   useWebSocketImplementation(MockWebSocketCtor);
 });
 
 afterEach(() => {
+  FailReqSocket.failNextReq = false;
   MockWebSocket.reset();
 });
 
@@ -397,6 +413,38 @@ describe("Relay reconnect", () => {
     expect(postAuth[1]).toBe(sub.id);
     expect(postAuth[2]!.since).toBe(42);
     expect(postAuth[2]!.since).not.toBe(43);
+    relay.close();
+  });
+
+  test("reconnect REQ send failure reschedules and a later socket REQs the live sub", async () => {
+    const relay = new Relay("wss://req-fail.example", {
+      enableReconnect: true,
+      reconnectBackoffMs: [5],
+      websocketImplementation: FailReqCtor,
+    });
+    await relay.connect();
+    const sub = relay.subscribe([{ kinds: [1] }]);
+    const first = MockWebSocket.last();
+    expect(reqFilters(first)[0]![1]).toBe(sub.id);
+
+    FailReqSocket.failNextReq = true;
+    first.close();
+    await waitUntil(() => MockWebSocket.instances.length >= 2);
+    const second = MockWebSocket.instances[1]!;
+    await waitUntil(
+      () =>
+        MockWebSocket.instances.some(
+          (ws) => ws !== first && ws !== second && reqFilters(ws).some((m) => m[1] === sub.id),
+        ),
+      1000,
+    );
+    const later = MockWebSocket.instances.find(
+      (ws) => ws !== first && ws !== second && reqFilters(ws).some((m) => m[1] === sub.id),
+    )!;
+    expect(sub.closed).toBe(false);
+    expect(reqFilters(second).some((m) => m[1] === sub.id)).toBe(false);
+    expect(reqFilters(later).some((m) => m[1] === sub.id)).toBe(true);
+    FailReqSocket.failNextReq = false;
     relay.close();
   });
 });

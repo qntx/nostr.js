@@ -341,6 +341,46 @@ describe("Relay", () => {
     relay.close();
   });
 
+  test("authSigner throw resolves publish as { ok: false }", async () => {
+    const boom = new Error("sign failed");
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://pub-auth-throw.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async () => {
+        throw boom;
+      },
+    });
+    const note = EventBuilder.textNote("auth-throw").createdAt(2).signWithKeys(keys);
+    const publishP = relay.publish(note, { timeoutMs: 200 });
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "throw-challenge"]));
+    ws.receive(JSON.stringify(["OK", note.id, false, "auth-required: login"]));
+    await expect(publishP).resolves.toEqual({ ok: false, message: "auth-required: login" });
+    relay.close();
+  });
+
+  test("authSigner throw drops the subscription", async () => {
+    const relay = await Relay.connect("wss://sub-auth-throw.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async () => {
+        throw new Error("sign failed");
+      },
+    });
+    const reasons: string[] = [];
+    const sub = relay.subscribe([{ kinds: [1] }], {
+      onclose: (reason) => {
+        reasons.push(reason);
+      },
+    });
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "throw-challenge"]));
+    ws.receive(JSON.stringify(["CLOSED", sub.id, "auth-required: login"]));
+    await waitUntil(() => reasons.length === 1);
+    expect(reasons).toEqual(["auth-required: login"]);
+    expect(sub.closed).toBe(true);
+    relay.close();
+  });
+
   test("fetch collects until eose", async () => {
     const relay = await Relay.connect("wss://relay.example.com");
     const keys = Keys.fromSecretKey(SK);
@@ -1592,6 +1632,32 @@ describe("Pool aggregated EOSE", () => {
     const ok = socketFor("ok.example");
     closer.close();
     expect(sentMessages(ok).some((m) => m[0] === "CLOSE")).toBe(true);
+    pool.close();
+  });
+
+  test("automaticallyAuth is invoked once and the same signer answers AUTH", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    let calls = 0;
+    const pool = new Pool({
+      websocketImplementation: MockWebSocketCtor,
+      automaticallyAuth: (url) => {
+        calls += 1;
+        expect(url).toContain("auth-once.example");
+        return async (template) =>
+          EventBuilder.textNote("")
+            .kind(template.kind)
+            .tags(template.tags)
+            .content(template.content)
+            .createdAt(template.created_at)
+            .signWithKeys(keys);
+      },
+    });
+    await pool.ensureRelay("wss://auth-once.example");
+    expect(calls).toBe(1);
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "once-challenge"]));
+    await waitUntil(() => sentMessages(ws).some((m) => m[0] === "AUTH"));
+    expect(calls).toBe(1);
     pool.close();
   });
 });

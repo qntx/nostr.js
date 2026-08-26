@@ -351,6 +351,28 @@ describe("Relay.count", () => {
     relay.close();
   });
 
+  test("authSigner throw rejects COUNT with the thrown Error", async () => {
+    const boom = new Error("sign failed");
+    const relay = await Relay.connect("wss://count-auth-throw.example", {
+      websocketImplementation: MockWebSocketCtor,
+      authSigner: async () => {
+        throw boom;
+      },
+    });
+    const first = relay.count([{ kinds: [1] }], { id: "count:throw", timeoutMs: 2000 });
+    await Promise.resolve();
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "throw-challenge"]));
+    ws.receive(JSON.stringify(["CLOSED", "count:throw", "auth-required: login"]));
+    await expect(first).rejects.toBe(boom);
+
+    const second = relay.count([{ kinds: [1] }], { id: "count:after-throw", timeoutMs: 2000 });
+    await Promise.resolve();
+    ws.receive(JSON.stringify(["COUNT", "count:after-throw", { count: 3 }]));
+    await expect(second).resolves.toEqual({ count: 3 });
+    relay.close();
+  });
+
   test("requires connection and non-empty filters", async () => {
     const relay = new Relay("wss://count.example", {
       websocketImplementation: MockWebSocketCtor,

@@ -590,7 +590,13 @@ export class Relay {
       try {
         this.#send(["REQ", sub.id, ...sub.replayFilters()]);
       } catch {
-        // not connected yet — ignore
+        // Failed REQ on this socket: reconnect instead of a silent live sub.
+        this.#connected = false;
+        this.#status = RelayStatus.Disconnected;
+        this.#detachSocketHandlers();
+        this.#teardownSocket();
+        this.#scheduleReconnect();
+        return;
       }
     }
   }
@@ -1149,19 +1155,19 @@ export class Relay {
     sub.handlers.onclose?.(reason);
   }
 
+  async #ensureAuthed(): Promise<boolean> {
+    const signer = this.#authSigner;
+    if (!signer || !this.#challenge) return false;
+    if (this.#authedChallenge === this.#challenge) return true;
+    const result = await this.auth(signer);
+    return result.ok;
+  }
+
   async #authThenResubscribe(sub: Subscription, reason: string): Promise<void> {
     try {
-      const signer = this.#authSigner;
-      if (!signer || !this.#challenge) {
+      if (!(await this.#ensureAuthed())) {
         this.#dropSubscription(sub, reason);
         return;
-      }
-      if (this.#authedChallenge !== this.#challenge) {
-        const result = await this.auth(signer);
-        if (!result.ok) {
-          this.#dropSubscription(sub, reason);
-          return;
-        }
       }
       if (sub.closed || !this.#connected) {
         this.#dropSubscription(sub, reason);
@@ -1187,18 +1193,9 @@ export class Relay {
       waiter.reject(new RelayClosedError(reason || "COUNT closed", this.url));
     };
     try {
-      const signer = this.#authSigner;
-      if (!signer || !this.#challenge) {
+      if (!(await this.#ensureAuthed())) {
         fail();
         return;
-      }
-      if (this.#authedChallenge !== this.#challenge) {
-        const result = await this.auth(signer);
-        if (!this.#counts.has(id)) return;
-        if (!result.ok) {
-          fail();
-          return;
-        }
       }
       if (!this.#counts.has(id)) return;
       if (!this.#connected) {
@@ -1228,19 +1225,13 @@ export class Relay {
       waiter.resolve(result);
     };
     try {
-      const signer = this.#authSigner;
-      const event = waiter.event;
-      if (!signer || !event || !this.#challenge) {
+      if (!waiter.event) {
         finish({ ok: false, message });
         return;
       }
-      if (this.#authedChallenge !== this.#challenge) {
-        const result = await this.auth(signer);
-        if (!this.#publishes.has(eventId)) return;
-        if (!result.ok) {
-          finish({ ok: false, message });
-          return;
-        }
+      if (!(await this.#ensureAuthed())) {
+        finish({ ok: false, message });
+        return;
       }
       if (!this.#publishes.has(eventId)) return;
       if (!this.#connected) {
@@ -1251,7 +1242,7 @@ export class Relay {
         this.#publishes.delete(eventId);
         waiter.reject(new RelayPublishError("publish timed out", this.url));
       }, waiter.timeoutMs);
-      this.#send(["EVENT", event]);
+      this.#send(["EVENT", waiter.event]);
     } catch {
       if (!this.#publishes.has(eventId)) return;
       finish({ ok: false, message });
