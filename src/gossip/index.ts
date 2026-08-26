@@ -1,1 +1,1 @@
-export { Gossip, type BrokenDownFilters, type GossipOptions, type PubkeyRoutes } from "./gossip.ts";
+export { Gossip, type RoutedFilter, type GossipOptions, type PubkeyRoutes } from "./gossip.ts";

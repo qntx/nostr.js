@@ -3,6 +3,7 @@ import type { Filter } from "../core/filter.ts";
 import { assertSubscriptionId, type CountResult } from "../core/message.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayConnectionError, RelayPublishError } from "./error.ts";
+import { fanIn, fetchRouted } from "./fan-in.ts";
 import { Relay, type PublishResult, type RelayOptions, type SubscribeOptions } from "./relay.ts";
 import { isInsecureRelayUrl } from "./url.ts";
 import type { WebSocketConstructor } from "./websocket.ts";
@@ -194,136 +195,18 @@ export class Pool {
     filters: Filter[],
     opts: SubscribeOptions = {},
   ): { close: (reason?: string) => void } {
-    const id = opts.id !== undefined ? assertSubscriptionId(opts.id) : undefined;
-    const seen = new Set<string>();
-    const closers: Array<{ close: (reason?: string) => void }> = [];
-    let closed = false;
-    let eoseFired = false;
-    let eoseTimer: ReturnType<typeof setTimeout> | undefined;
-    const eoseDone = new Set<string>();
-    let pendingEose = 0;
-
-    const fireEose = () => {
-      if (closed || eoseFired) return;
-      eoseFired = true;
-      if (eoseTimer !== undefined) {
-        clearTimeout(eoseTimer);
-        eoseTimer = undefined;
-      }
-      opts.oneose?.();
-    };
-
-    const markEose = (url: string) => {
-      if (eoseDone.has(url)) return;
-      eoseDone.add(url);
-      pendingEose -= 1;
-      if (pendingEose === 0) fireEose();
-    };
-
-    const settleClose = () => {
-      closed = true;
-      if (eoseTimer !== undefined) {
-        clearTimeout(eoseTimer);
-        eoseTimer = undefined;
-      }
-    };
-
-    const closeAll = (reason?: string) => {
-      if (closed) return;
-      settleClose();
-      for (const c of closers) c.close(reason);
-      opts.onclose?.(reason ?? "closed by client");
-    };
-
-    if (opts.signal?.aborted) {
-      closed = true;
-      opts.onclose?.("aborted");
-      return { close: closeAll };
-    }
-
-    opts.signal?.addEventListener("abort", () => closeAll("aborted"), { once: true });
-
-    const closeReasons: Array<{ url: string; reason: string }> = [];
-    let pending = 0;
-    const attempted = new Set<string>();
-
-    const attach = (relay: Relay): void => {
-      if (closed) return;
-      this.#touch(relay.url);
-      const sub = relay.subscribe(filters, {
-        id,
-        closeOnEose: opts.closeOnEose,
-        alreadyHaveEvent: (id) => Boolean(opts.alreadyHaveEvent?.(id) || seen.has(id)),
-        receivedEvent: (id) => {
-          opts.receivedEvent?.(id);
-        },
-        onevent: (event) => {
-          seen.add(event.id);
-          opts.onevent?.(event);
-        },
-        oneose: () => markEose(relay.url),
-        onclose: (reason) => {
-          closeReasons.push({ url: relay.url, reason });
-          markEose(relay.url);
-          pending -= 1;
-          if (pending <= 0 && !closed) {
-            settleClose();
-            // Aggregate close: tools passes per-relay reasons; we pass last reason for simplicity.
-            opts.onclose?.(reason);
-          }
-        },
-      });
-      closers.push(sub);
-    };
-
-    for (const url of relays) {
-      let key: string;
-      try {
-        key = normalizeURL(url);
-      } catch {
-        key = url;
-      }
-      pending += 1;
-      if (!attempted.has(key)) {
-        attempted.add(key);
-        pendingEose += 1;
-      }
-      void this.ensureRelay(url, {
-        signal: opts.signal,
-        timeoutMs: this.#opts.connectTimeoutMs,
-      })
-        .then(attach)
-        .catch(() => {
-          const relay = this.#relays.get(key);
-          if (this.#opts.enableReconnect && relay) {
-            attach(relay);
-            return;
-          }
-          markEose(key);
-          pending -= 1;
-          if (pending <= 0 && closers.length === 0 && !closed) {
-            settleClose();
-            opts.onclose?.("all relays failed");
-          }
-        });
-    }
-
-    if (opts.eoseTimeoutMs !== undefined && pending > 0) {
-      eoseTimer = setTimeout(() => {
-        eoseTimer = undefined;
-        fireEose();
-      }, opts.eoseTimeoutMs);
-    }
-
-    if (pending === 0) {
-      queueMicrotask(() => {
-        if (closed) return;
-        settleClose();
-        opts.onclose?.("no relays");
-      });
-    }
-
-    return { close: closeAll };
+    if (opts.id !== undefined) assertSubscriptionId(opts.id);
+    return fanIn(this, [{ urls: relays, filters, id: opts.id }], {
+      onevent: opts.onevent,
+      oneose: opts.oneose,
+      onclose: opts.onclose,
+      signal: opts.signal,
+      eoseTimeoutMs: opts.eoseTimeoutMs,
+      alreadyHaveEvent: opts.alreadyHaveEvent,
+      receivedEvent: opts.receivedEvent,
+      closeOnEose: opts.closeOnEose,
+      connectTimeoutMs: this.#opts.connectTimeoutMs,
+    });
   }
 
   /** Fetch events until each connected relay EOSE or timeout; dedupe by id. */
@@ -332,28 +215,11 @@ export class Pool {
     filters: Filter[],
     opts?: { timeoutMs?: number; signal?: AbortSignal },
   ): Promise<Event[]> {
-    const timeoutMs = opts?.timeoutMs ?? 4400;
-    const events = new Map<string, Event>();
-
-    await Promise.all(
-      relays.map(async (url) => {
-        try {
-          const relay = await this.ensureRelay(url, {
-            signal: opts?.signal,
-            timeoutMs: this.#opts.connectTimeoutMs,
-          });
-          this.#touch(relay.url);
-          const batch = await relay.fetch(filters, { timeoutMs, signal: opts?.signal });
-          for (const event of batch) {
-            if (!events.has(event.id)) events.set(event.id, event);
-          }
-        } catch {
-          // skip failed relays
-        }
-      }),
-    );
-
-    return [...events.values()];
+    return fetchRouted(this, [{ urls: relays, filters }], {
+      timeoutMs: opts?.timeoutMs,
+      signal: opts?.signal,
+      connectTimeoutMs: this.#opts.connectTimeoutMs,
+    });
   }
 
   /** Publish to all listed relays; returns per-relay outcomes. */
@@ -435,6 +301,15 @@ export class Pool {
 
   listRelays(): string[] {
     return [...this.#relays.keys()];
+  }
+
+  /** Lookup a pooled relay, including disconnected reconnecting entries. */
+  getRelay(url: string): Relay | undefined {
+    try {
+      return this.#relays.get(normalizeURL(url));
+    } catch {
+      return this.#relays.get(url);
+    }
   }
 
   /** Currently connected URLs. Unlike listRelays(), excludes reconnecting/disconnected entries. */

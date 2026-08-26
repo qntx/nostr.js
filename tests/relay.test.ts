@@ -1557,6 +1557,29 @@ describe("Pool aggregated EOSE", () => {
     pool.close();
   });
 
+  test("all connect failures fire onclose(all relays failed)", async () => {
+    MockWebSocket.failConnect = true;
+    const pool = new Pool({
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: false,
+    });
+    let eose = 0;
+    let closed: string | undefined;
+    pool.subscribe(["wss://fail-a.example", "wss://fail-b.example"], [{ kinds: [1] }], {
+      oneose: () => {
+        eose += 1;
+      },
+      onclose: (reason) => {
+        closed = reason;
+      },
+    });
+    await waitUntil(() => closed !== undefined);
+    expect(closed).toBe("all relays failed");
+    expect(eose).toBe(1);
+    expect(pool.listRelays()).toEqual([]);
+    pool.close();
+  });
+
   test("reconnect EOSE on one URL does not complete the set while the other is silent", async () => {
     const pool = new Pool({
       websocketImplementation: MockWebSocketCtor,

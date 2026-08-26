@@ -241,6 +241,18 @@ describe("groupAuthorsByOutboxRelay", () => {
     expect([...withoutSlash.keys()][0]).toBe(normalizeURL("wss://d.example"));
     expect([...withoutSlash.keys()]).toEqual(slashed);
   });
+
+  test("empty discovery omits leftover authors", () => {
+    const gossip = new Gossip();
+    const a = Keys.fromSecretKey(SK_A);
+    const b = Keys.fromSecretKey(SK_B);
+    gossip.setRoutes(a.publicKey, [{ url: "wss://a.example", read: true, write: true }]);
+
+    const map = groupAuthorsByOutboxRelay([a.publicKey, b.publicKey], gossip, [], 3);
+    expect([...map.keys()].some((u) => u.includes("a.example"))).toBe(true);
+    expect([...map.values()].flat().includes(a.publicKey)).toBe(true);
+    expect([...map.values()].flat().includes(b.publicKey)).toBe(false);
+  });
 });
 
 describe("OutboxFeed", () => {

@@ -23,10 +23,18 @@ export type PubkeyRoutes = {
   dmListId?: string;
 };
 
-export type BrokenDownFilters =
-  | { type: "per-relay"; filters: Map<string, Filter>; fallback?: Filter }
-  | { type: "orphan"; filter: Filter }
-  | { type: "generic"; filter: Filter };
+export type RoutedFilter = {
+  /** url → already-narrowed filter. Empty when nothing routed. */
+  perRelay: Map<string, Filter>;
+  /**
+   * Unrouted work for the caller:
+   * - no authors and no #p: original filter (today's "generic")
+   * - authors/#p all unrouted: original filter (today's "orphan")
+   * - mixed: narrowed leftover (today's fallback)
+   * - all routed: undefined
+   */
+  remainder?: Filter;
+};
 
 export type GossipOptions = {
   /** Max relays to keep per direction when ranking. Default 4. */
@@ -45,7 +53,7 @@ function emptyRoutes(): PubkeyRoutes {
 
 /**
  * Routing table for NIP-65 (10002) and NIP-17 DM relays (10050).
- * Ingest replaceable list events, then break filters into per-relay REQs.
+ * Ingest replaceable list events, then route filters into per-relay REQs.
  */
 export class Gossip {
   readonly #routes = new Map<string, PubkeyRoutes>();
@@ -200,19 +208,18 @@ export class Gossip {
   }
 
   /**
-   * Break a user-facing filter into per-relay sub-filters.
+   * Route a user-facing filter into per-relay sub-filters plus leftover.
    * - authors → outbox relays, filter narrowed per relay's authors
    * - #p only → inbox relays of those pubkeys
-   * - neither → generic (caller uses default pool)
-   * - authors known but no routes → orphan
-   * - some routed → per-relay; unrouted authors/#p go on `fallback`
+   * - neither / all unrouted → remainder is the original filter
+   * - mixed → remainder is the narrowed leftover; all routed → no remainder
    */
-  breakDownFilter(filter: Filter): BrokenDownFilters {
+  route(filter: Filter): RoutedFilter {
     const authors = filter.authors?.map((a) => a.toLowerCase());
     const pTags = filter["#p"]?.map((p) => p.toLowerCase());
 
     if ((!authors || authors.length === 0) && (!pTags || pTags.length === 0)) {
-      return { type: "generic", filter };
+      return { perRelay: new Map(), remainder: filter };
     }
 
     if (authors && authors.length > 0 && (!pTags || pTags.length === 0)) {
@@ -241,12 +248,10 @@ export class Gossip {
       }
       for (const u of urls) relays.add(u);
     }
-    if (relays.size === 0) return { type: "orphan", filter };
+    if (relays.size === 0) return { perRelay: new Map(), remainder: filter };
     const map = new Map<string, Filter>();
     for (const url of relays) map.set(url, { ...filter });
-    return anyUnrouted
-      ? { type: "per-relay", filters: map, fallback: filter }
-      : { type: "per-relay", filters: map };
+    return anyUnrouted ? { perRelay: map, remainder: filter } : { perRelay: map };
   }
 
   #breakAuthors(
@@ -257,7 +262,7 @@ export class Gossip {
       ...base,
       authors: pks,
     }),
-  ): BrokenDownFilters {
+  ): RoutedFilter {
     const perRelay = new Map<string, string[]>();
     const unrouted: string[] = [];
     let anyRoute = false;
@@ -277,14 +282,14 @@ export class Gossip {
       }
     }
 
-    if (!anyRoute) return { type: "orphan", filter };
+    if (!anyRoute) return { perRelay: new Map(), remainder: filter };
 
     const map = new Map<string, Filter>();
     for (const [url, pks] of perRelay) {
       map.set(url, narrow(filter, pks));
     }
     return unrouted.length > 0
-      ? { type: "per-relay", filters: map, fallback: narrow(filter, unrouted) }
-      : { type: "per-relay", filters: map };
+      ? { perRelay: map, remainder: narrow(filter, unrouted) }
+      : { perRelay: map };
   }
 }
