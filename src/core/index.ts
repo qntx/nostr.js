@@ -49,7 +49,7 @@ export {
   tagName,
   tagValue,
 } from "./tag.ts";
-export type { EventAddress, Tag as TagTuple, TagInput } from "./tag.ts";
+export type { EventAddress, TagInput } from "./tag.ts";
 
 export {
   getEventHash,
@@ -94,6 +94,7 @@ export {
 } from "./filter.ts";
 
 export {
+  assertSubscriptionId,
   createSubscriptionId,
   encodeClientMessage,
   encodeRelayMessage,

@@ -4,8 +4,8 @@ import {
   EventValidationError,
   Keys,
   Kind,
+  Tag,
   buildReplyTags,
-  eTag,
   isNostrURI,
   npubEncode,
   nsecEncode,
@@ -192,7 +192,7 @@ describe("nip10", () => {
     expect(qTags).toEqual([["q", "66".repeat(32)]]);
   });
 
-  test("replyTo requires kind 1 when parent kind is present", () => {
+  test("replyTo requires kind 1", () => {
     const parent = signedNote(keysA, "hi");
     const kind6 = { ...parent, kind: Kind.Repost };
     expect(kind6.kind).toBe(Kind.Repost);
@@ -204,11 +204,18 @@ describe("nip10", () => {
     const { id, pubkey, tags } = parent;
     const stripped = { id, pubkey, tags };
     expect("kind" in stripped).toBe(false);
-    const builder = replyTo(stripped, "hello back");
-    expect(builder.currentKind).toBe(Kind.TextNote);
-    expect(builder.currentTags.some((t) => t[0] === "e" && t[1] === id && t[3] === "root")).toBe(
-      true,
-    );
+    expect(() =>
+      // @ts-expect-error ReplyParent.kind is required
+      replyTo(stripped, "hello back"),
+    ).toThrow(EventValidationError);
+    expect(() =>
+      // @ts-expect-error ReplyParent.kind is required
+      replyTo(stripped, "hello back"),
+    ).toThrow(/kind 1/);
+    expect(() =>
+      // @ts-expect-error ReplyParent.kind is required
+      buildReplyTags({ parent: stripped }),
+    ).toThrow(EventValidationError);
 
     const kind1 = replyTo({ id, pubkey, tags, kind: Kind.TextNote }, "also");
     expect(kind1.currentKind).toBe(Kind.TextNote);
@@ -341,10 +348,14 @@ describe("nip10", () => {
     expect(tags.some((t) => t[0] === "p" && t[1] === hexId)).toBe(false);
   });
 
-  test("eTag and replyTo builder", () => {
-    expect(
-      eTag("aa".repeat(32), { marker: "root", relay: "wss://x", author: keysA.publicKey }),
-    ).toEqual(["e", "aa".repeat(32), "wss://x", "root", keysA.publicKey]);
+  test("Tag.e and replyTo builder", () => {
+    expect(Tag.e("aa".repeat(32), "wss://x", "root", keysA.publicKey)).toEqual([
+      "e",
+      "aa".repeat(32),
+      "wss://x",
+      "root",
+      keysA.publicKey,
+    ]);
 
     const parent = signedNote(keysA, "hi");
     const builder = replyTo(parent, "hello back", { relayHint: "wss://r" });

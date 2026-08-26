@@ -23,7 +23,7 @@ export type ThreadReferences = {
   profiles: ProfilePointer[];
 };
 
-type ReplyParent = Pick<Event, "id" | "pubkey" | "tags"> & { kind?: number };
+type ReplyParent = Pick<Event, "id" | "pubkey" | "tags" | "kind">;
 type QuoteInput = string | EventPointer | AddressPointer;
 
 function eventPointerFromETag(tag: readonly string[]): EventPointer | undefined {
@@ -86,7 +86,7 @@ function quoteToTag(quote: QuoteInput): { tag: Tag; author?: string; relay?: str
 
 function assertKind1Parent(parent: ReplyParent): void {
   // NIP-10 is kind 1 only; comments are NIP-22.
-  if (parent.kind !== undefined && parent.kind !== Kind.TextNote) {
+  if (parent.kind !== Kind.TextNote) {
     throw new EventValidationError("NIP-10 replyTo is for kind 1");
   }
 }
@@ -200,14 +200,14 @@ export function buildReplyTags(opts: ReplyTagsOptions): Tag[] {
   tags.push(
     ["e", root.id, rootRelay, "root", root.author ?? opts.parent.pubkey].filter(
       (x, i) => i < 4 || Boolean(x),
-    ) as unknown as Tag,
+    ),
   );
 
   if (!parentIsRoot) {
     tags.push(
       ["e", opts.parent.id, opts.relayHint ?? "", "reply", opts.parent.pubkey].filter(
         (x, i) => i < 4 || Boolean(x),
-      ) as unknown as Tag,
+      ),
     );
   }
 
@@ -217,7 +217,7 @@ export function buildReplyTags(opts: ReplyTagsOptions): Tag[] {
     const key = pk.toLowerCase();
     if (pSeen.has(key)) return;
     pSeen.add(key);
-    tags.push(relay ? (["p", key, relay] as Tag) : (["p", key] as Tag));
+    tags.push(relay ? ["p", key, relay] : ["p", key]);
   };
   if (root.author) addP(root.author, root.relays?.[0]);
   addP(opts.parent.pubkey, opts.relayHint);
@@ -233,22 +233,6 @@ export function buildReplyTags(opts: ReplyTagsOptions): Tag[] {
   tags.push(...qTags);
 
   return tags;
-}
-
-/** Convenience: e-tag with optional NIP-10 marker (`root` / `reply`). */
-export function eTag(
-  id: string,
-  opts?: { relay?: string; marker?: "root" | "reply"; author?: string },
-): Tag {
-  const t: string[] = ["e", id.toLowerCase()];
-  if (opts?.relay !== undefined || opts?.marker || opts?.author) {
-    t.push(opts?.relay ?? "");
-  }
-  if (opts?.marker !== undefined || opts?.author) {
-    t.push(opts?.marker ?? "");
-  }
-  if (opts?.author) t.push(opts.author.toLowerCase());
-  return t as unknown as Tag;
 }
 
 /**

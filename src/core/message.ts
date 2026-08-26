@@ -7,13 +7,15 @@ import { bytesToHex, hexToBytes } from "./util.ts";
 
 export type SubscriptionId = string;
 
-export function createSubscriptionId(id?: string): SubscriptionId {
-  if (id !== undefined) {
-    if (id.length === 0 || id.length > SUBSCRIPTION_ID_MAX_CHARS) {
-      throw new MessageError(`subscription id length must be 1..${SUBSCRIPTION_ID_MAX_CHARS}`);
-    }
-    return id;
+export function assertSubscriptionId(id: string): SubscriptionId {
+  if (id.length === 0 || id.length > SUBSCRIPTION_ID_MAX_CHARS) {
+    throw new MessageError(`subscription id length must be 1..${SUBSCRIPTION_ID_MAX_CHARS}`);
   }
+  return id;
+}
+
+export function createSubscriptionId(id?: string): SubscriptionId {
+  if (id !== undefined) return assertSubscriptionId(id);
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");

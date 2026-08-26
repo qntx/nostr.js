@@ -3,7 +3,10 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 import {
   Kind,
   Keys,
+  MessageError,
+  SUBSCRIPTION_ID_MAX_CHARS,
   SecretKey,
+  assertSubscriptionId,
   classifyKind,
   createSubscriptionId,
   eventAddress,
@@ -333,5 +336,29 @@ describe("messages", () => {
     const raw = encodeClientMessage(["REQ", "abc", filter]);
     const msg = parseClientMessage(raw);
     expect(msg[0]).toBe("REQ");
+  });
+
+  test("assertSubscriptionId accepts 1..max and rejects empty/too long", () => {
+    expect(assertSubscriptionId("a")).toBe("a");
+    expect(assertSubscriptionId("x".repeat(SUBSCRIPTION_ID_MAX_CHARS))).toBe(
+      "x".repeat(SUBSCRIPTION_ID_MAX_CHARS),
+    );
+    expect(() => assertSubscriptionId("")).toThrow(MessageError);
+    expect(() => assertSubscriptionId("")).toThrow(/1\.\./);
+    expect(() => assertSubscriptionId("x".repeat(SUBSCRIPTION_ID_MAX_CHARS + 1))).toThrow(
+      MessageError,
+    );
+    expect(() => assertSubscriptionId("x".repeat(SUBSCRIPTION_ID_MAX_CHARS + 1))).toThrow(/1\.\./);
+  });
+
+  test("createSubscriptionId validates or generates 8-byte hex", () => {
+    expect(createSubscriptionId("sub1")).toBe("sub1");
+    expect(() => createSubscriptionId("")).toThrow(MessageError);
+    expect(() => createSubscriptionId("x".repeat(SUBSCRIPTION_ID_MAX_CHARS + 1))).toThrow(
+      MessageError,
+    );
+    const generated = createSubscriptionId();
+    expect(generated).toMatch(/^[0-9a-f]{16}$/);
+    expect(generated).not.toBe(createSubscriptionId());
   });
 });

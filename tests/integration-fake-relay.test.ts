@@ -6,6 +6,7 @@ import {
   Keys,
   KeysSigner,
   MemoryEventStore,
+  relayListEventBuilder,
   Pool,
   useWebSocketImplementation,
 } from "../src/index.ts";
@@ -123,7 +124,7 @@ describe("integration via FakeRelayBus", () => {
     const a = Keys.fromSecretKey(SK);
     const b = Keys.fromSecretKey(SK_B);
     const note = EventBuilder.textNote("from outbox").createdAt(99).signWithKeys(a);
-    const list = EventBuilder.relayList([{ url: "wss://out.example", read: false, write: true }])
+    const list = relayListEventBuilder([{ url: "wss://out.example", read: false, write: true }])
       .createdAt(1)
       .signWithKeys(a);
 

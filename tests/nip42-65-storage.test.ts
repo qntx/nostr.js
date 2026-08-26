@@ -11,6 +11,7 @@ import {
   makeAuthEvent,
   parseRelayList,
   readRelays,
+  relayListEventBuilder,
   relayListToTags,
   useWebSocketImplementation,
   writeRelays,
@@ -120,8 +121,8 @@ describe("nip42", () => {
 describe("nip65", () => {
   test("parse and encode relay list", () => {
     const keys = Keys.fromSecretKey(SK);
-    const event = EventBuilder.relayList([
-      { url: "wss://a.example" },
+    const event = relayListEventBuilder([
+      { url: "wss://a.example", read: true, write: true },
       { url: "wss://b.example", read: true, write: false },
       { url: "wss://c.example", read: false, write: true },
     ]).signWithKeys(keys);
@@ -144,6 +145,21 @@ describe("nip65", () => {
       ["r", "wss://x.example"],
       ["r", "wss://y.example", "read"],
     ]);
+  });
+
+  test("relayListToTags both-false emits bare r (readwrite)", () => {
+    expect(relayListToTags([{ url: "wss://z.example", read: false, write: false }])).toEqual([
+      ["r", "wss://z.example"],
+    ]);
+    expect(relayListToTags([{ url: "wss://z.example", read: true, write: true }])).toEqual([
+      ["r", "wss://z.example"],
+    ]);
+    const keys = Keys.fromSecretKey(SK);
+    const event = relayListEventBuilder([
+      { url: "wss://z.example", read: false, write: false },
+    ]).signWithKeys(keys);
+    expect(event.tags).toEqual([["r", "wss://z.example"]]);
+    expect(parseRelayList(event)).toEqual([{ url: "wss://z.example/", read: true, write: true }]);
   });
 });
 
@@ -250,10 +266,10 @@ describe("MemoryEventStore", () => {
     expect(await store.put(meta1)).toBe("accepted");
     expect(await store.put(meta2)).toBe("replaced");
 
-    const list1 = EventBuilder.relayList([{ url: "wss://a.example" }])
+    const list1 = relayListEventBuilder([{ url: "wss://a.example", read: true, write: true }])
       .createdAt(10)
       .signWithKeys(keys);
-    const list2 = EventBuilder.relayList([{ url: "wss://b.example" }])
+    const list2 = relayListEventBuilder([{ url: "wss://b.example", read: true, write: true }])
       .createdAt(20)
       .signWithKeys(keys);
     expect(await store.put(list1)).toBe("accepted");

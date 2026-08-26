@@ -1,6 +1,6 @@
 import type { Event, EventTemplate } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
-import { createSubscriptionId, type CountResult } from "../core/message.ts";
+import { assertSubscriptionId, type CountResult } from "../core/message.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayConnectionError, RelayPublishError } from "./error.ts";
 import { Relay, type PublishResult, type RelayOptions, type SubscribeOptions } from "./relay.ts";
@@ -43,11 +43,6 @@ export type PoolCountResult = {
   approximate?: boolean;
   hll?: string;
   error?: string;
-};
-
-export type PoolSubscribeOptions = SubscribeOptions & {
-  /** Max ms to wait for each relay connection. */
-  connectionTimeoutMs?: number;
 };
 
 /**
@@ -200,9 +195,9 @@ export class Pool {
   subscribe(
     relays: string[],
     filters: Filter[],
-    opts: PoolSubscribeOptions = {},
+    opts: SubscribeOptions = {},
   ): { close: (reason?: string) => void } {
-    if (opts.id !== undefined) createSubscriptionId(opts.id);
+    const id = opts.id !== undefined ? assertSubscriptionId(opts.id) : undefined;
     const seen = new Set<string>();
     const closers: Array<{ close: (reason?: string) => void }> = [];
     let closed = false;
@@ -259,7 +254,7 @@ export class Pool {
       if (closed) return;
       this.#touch(relay.url);
       const sub = relay.subscribe(filters, {
-        id: opts.id,
+        id,
         closeOnEose: opts.closeOnEose,
         alreadyHaveEvent: (id) => Boolean(opts.alreadyHaveEvent?.(id) || seen.has(id)),
         receivedEvent: (id) => {
@@ -298,7 +293,7 @@ export class Pool {
       }
       void this.ensureRelay(url, {
         signal: opts.signal,
-        timeoutMs: opts.connectionTimeoutMs ?? this.#opts.connectTimeoutMs,
+        timeoutMs: this.#opts.connectTimeoutMs,
       })
         .then(attach)
         .catch(() => {

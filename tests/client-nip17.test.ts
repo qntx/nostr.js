@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   Client,
-  EventBuilder,
   Kind,
   Keys,
   KeysSigner,
@@ -11,6 +10,7 @@ import {
   createRumor,
   createSeal,
   dmRelayListEventBuilder,
+  relayListEventBuilder,
   encryptToPubkey,
   eventToJson,
   finalizeEvent,
@@ -35,7 +35,7 @@ const BOB_DM = "wss://bob-dm.example";
 const ALICE_OUT = "wss://alice-out.example";
 
 function seedLists(bus: FakeRelayBus, alice: Keys, bob: Keys): void {
-  const aliceOut = EventBuilder.relayList([{ url: ALICE_OUT, read: false, write: true }])
+  const aliceOut = relayListEventBuilder([{ url: ALICE_OUT, read: false, write: true }])
     .createdAt(1)
     .signWithKeys(alice);
   const aliceDm = dmRelayListEventBuilder([ALICE_DM]).createdAt(2).signWithKeys(alice);
@@ -704,7 +704,7 @@ describe("Client NIP-17", () => {
 
   test("setDmRelays publishes kind 10050 to outbox, not to peer DM relays", async () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
-    const aliceOut = EventBuilder.relayList([{ url: ALICE_OUT, read: false, write: true }])
+    const aliceOut = relayListEventBuilder([{ url: ALICE_OUT, read: false, write: true }])
       .createdAt(1)
       .signWithKeys(aliceKeys);
     bus.seed(IDX, [aliceOut]);

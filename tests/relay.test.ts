@@ -7,6 +7,7 @@ import {
   Relay,
   RelayClosedError,
   RelayStatus,
+  SUBSCRIPTION_ID_MAX_CHARS,
   isInsecureRelayUrl,
   useWebSocketImplementation,
   verifyEvent,
@@ -579,12 +580,25 @@ describe("Pool", () => {
       websocketImplementation: MockWebSocketCtor,
       enableReconnect: true,
     });
-    expect(() => pool.subscribe(["wss://x"], [{ kinds: [1] }], { id: "a".repeat(65) })).toThrow(
-      MessageError,
-    );
+    expect(() =>
+      pool.subscribe(["wss://x"], [{ kinds: [1] }], {
+        id: "a".repeat(SUBSCRIPTION_ID_MAX_CHARS + 1),
+      }),
+    ).toThrow(MessageError);
     expect(MockWebSocket.instances.length).toBe(0);
     await Promise.resolve();
     expect(MockWebSocket.instances.length).toBe(0);
+    pool.close();
+  });
+
+  test("subscribe uses caller id on REQ", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    const closer = pool.subscribe(["wss://id.example"], [{ kinds: [1] }], { id: "my-sub" });
+    await waitUntil(() =>
+      MockWebSocket.instances.some((ws) => sentMessages(ws).some((m) => m[0] === "REQ")),
+    );
+    expect(reqId(socketFor("id.example"))).toBe("my-sub");
+    closer.close();
     pool.close();
   });
 });
@@ -1294,10 +1308,12 @@ describe("Pool aggregated EOSE", () => {
 
   test("connect failure plus EOSE fires oneose once", async () => {
     MockWebSocket.autoConnect = false;
-    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    const pool = new Pool({
+      websocketImplementation: MockWebSocketCtor,
+      connectTimeoutMs: 40,
+    });
     let eose = 0;
     const closer = pool.subscribe(["wss://ok.example", "wss://fail.example"], [{ kinds: [1] }], {
-      connectionTimeoutMs: 40,
       oneose: () => {
         eose += 1;
       },

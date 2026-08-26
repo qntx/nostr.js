@@ -7,6 +7,7 @@ import {
   Keys,
   KeysSigner,
   MemoryEventStore,
+  relayListEventBuilder,
   StorageError,
   useWebSocketImplementation,
   type EventStore,
@@ -133,7 +134,7 @@ describe("Client storage + observe", () => {
 
   test("hydrateGossip ingests relay list into gossip", async () => {
     const keys = Keys.fromSecretKey(SK);
-    const list = EventBuilder.relayList([{ url: "wss://out.example" }])
+    const list = relayListEventBuilder([{ url: "wss://out.example", read: true, write: true }])
       .createdAt(3)
       .signWithKeys(keys);
 
@@ -362,7 +363,7 @@ describe("Client storage + observe", () => {
 
   test("ingestMeta runs before persist completes", async () => {
     const keys = Keys.fromSecretKey(SK);
-    const list = EventBuilder.relayList([{ url: "wss://out.example" }])
+    const list = relayListEventBuilder([{ url: "wss://out.example", read: true, write: true }])
       .createdAt(3)
       .signWithKeys(keys);
     const gossip = new Gossip();
