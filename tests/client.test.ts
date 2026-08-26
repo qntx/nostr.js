@@ -5,6 +5,7 @@ import {
   Kind,
   Keys,
   KeysSigner,
+  MessageError,
   relayListEventBuilder,
   useWebSocketImplementation,
 } from "../src/index.ts";
@@ -780,6 +781,43 @@ describe("Client", () => {
     await waitUntil(() => eose === 1);
     expect(eose).toBe(1);
     expect(closed).toBeUndefined();
+    expect(MockWebSocket.instances).toHaveLength(0);
+    await client.shutdown();
+  });
+
+  test("subscribe empty filters without gossip throws via Pool", async () => {
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    expect(() => client.subscribe([])).toThrow(MessageError);
+    expect(() => client.subscribe([])).toThrow("REQ requires at least one filter");
+    expect(MockWebSocket.instances).toHaveLength(0);
+    await Promise.resolve();
+    expect(MockWebSocket.instances).toHaveLength(0);
+    await client.shutdown();
+  });
+
+  test("fetchEvents empty filters without gossip throws via Pool.fetch", async () => {
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    await expect(client.fetchEvents([])).rejects.toThrow(MessageError);
+    await expect(client.fetchEvents([])).rejects.toThrow("REQ requires at least one filter");
+    expect(MockWebSocket.instances).toHaveLength(0);
+    await client.shutdown();
+  });
+
+  test("fetchEvents empty filters with gossip stays []", async () => {
+    const client = Client.builder()
+      .relays(["wss://default.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    await expect(client.fetchEvents([], { gossip: true })).resolves.toEqual([]);
     expect(MockWebSocket.instances).toHaveLength(0);
     await client.shutdown();
   });

@@ -408,6 +408,13 @@ describe("messages", () => {
     expect(msg[0]).toBe("REQ");
   });
 
+  test("REQ with no filters is invalid REQ client message", () => {
+    expect(() => parseClientMessage(JSON.stringify(["REQ", "abc"]))).toThrow(MessageError);
+    expect(() => parseClientMessage(JSON.stringify(["REQ", "abc"]))).toThrow(
+      "invalid REQ client message",
+    );
+  });
+
   test("assertSubscriptionId accepts 1..max and rejects empty/too long", () => {
     expect(assertSubscriptionId("a")).toBe("a");
     expect(assertSubscriptionId("x".repeat(SUBSCRIPTION_ID_MAX_CHARS))).toBe(

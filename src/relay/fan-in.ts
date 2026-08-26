@@ -1,6 +1,7 @@
 import type { Event } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { normalizeURL } from "../core/util.ts";
+import { RelayClosedError } from "./error.ts";
 import type { Pool } from "./pool.ts";
 import type { Relay } from "./relay.ts";
 
@@ -124,23 +125,40 @@ export function fanIn(
         eoseAttempted.add(eoseKey);
         pendingEose += 1;
       }
-      void pool
-        .ensureRelay(url, { signal: opts.signal, timeoutMs: opts.connectTimeoutMs })
-        .then((relay) => attach(relay, job, jobIndex))
-        .catch(() => {
-          // Presence after failed ensureRelay means reconnect kept the entry.
-          const relay = pool.getRelay(key);
-          if (relay) {
-            attach(relay, job, jobIndex);
+
+      const failUrl = (): void => {
+        markEose(jobIndex, key);
+        pending -= 1;
+        if (pending <= 0 && closers.length === 0 && !closed) {
+          settleClose();
+          opts.onclose?.("all relays failed");
+        }
+      };
+
+      const tryAttach = (relay: Relay): void => {
+        try {
+          attach(relay, job, jobIndex);
+        } catch (err) {
+          if (err instanceof RelayClosedError) {
+            failUrl();
             return;
           }
-          markEose(jobIndex, key);
-          pending -= 1;
-          if (pending <= 0 && closers.length === 0 && !closed) {
-            settleClose();
-            opts.onclose?.("all relays failed");
+          throw err;
+        }
+      };
+
+      void pool.ensureRelay(url, { signal: opts.signal, timeoutMs: opts.connectTimeoutMs }).then(
+        (relay) => tryAttach(relay),
+        () => {
+          // ensureRelay rejected only — not tryAttach throws (those must not look like connect failure).
+          const relay = pool.getRelay(key);
+          if (relay) {
+            tryAttach(relay);
+            return;
           }
-        });
+          failUrl();
+        },
+      );
     }
   }
 
