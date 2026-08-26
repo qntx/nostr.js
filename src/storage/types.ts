@@ -21,7 +21,10 @@ export type OutboxBound = { oldest: number; newest: number };
  */
 export interface EventStore {
   put(event: Event): Promise<PutResult>;
-  /** Persist events in input order. IndexedDB applies the batch in one transaction. */
+  /**
+   * Persist in input order. IndexedDB: one transaction, abort rolls the batch back.
+   * Memory: sequential; put does not throw, so a rejected item does not undo earlier accepts.
+   */
   putMany(events: readonly Event[]): Promise<PutResult[]>;
   get(id: string): Promise<Event | undefined>;
   query(filters: Filter[]): Promise<Event[]>;
