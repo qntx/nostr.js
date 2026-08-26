@@ -2,7 +2,6 @@ import type { Event } from "../core/event.ts";
 import { isHex32 } from "../core/util.ts";
 import { decode, Nip19Error, type AddressPointer, type EventPointer } from "../nips/nip19.ts";
 import type { LoaderContext } from "./context.ts";
-import { DataLoader } from "./dataloader.ts";
 
 export type EventRef = string | EventPointer | AddressPointer;
 
@@ -62,35 +61,31 @@ function parseRef(ref: EventRef): {
 }
 
 export function createEventLoader(ctx: LoaderContext) {
-  type Key = { ref: EventRef; parsed: ReturnType<typeof parseRef> };
-
-  const loader = new DataLoader<Key, Event | undefined, string>(
-    (keys) =>
-      Promise.all(
-        keys.map(async (key) => {
-          const relays = [...new Set([...key.parsed.hints, ...ctx.relays])];
-          if (relays.length === 0) return undefined;
-          const events = await ctx.pool.fetch(relays, [key.parsed.filter], {
-            timeoutMs: ctx.fetchTimeoutMs,
-          });
-          // pool.fetch does not sort
-          let best: Event | undefined;
-          for (const e of events) {
-            if (!best || e.created_at > best.created_at) best = e;
-          }
-          return best;
-        }),
-      ),
-    { cacheKeyFn: (k) => k.parsed.cacheKey },
-  );
-
+  const inflight = new Map<string, Promise<Event | undefined>>();
+  const cache = new Map<string, Event | undefined>();
   return {
     load(ref: EventRef): Promise<Event | undefined> {
       const parsed = parseRef(ref);
-      return loader.load({ ref, parsed });
+      if (cache.has(parsed.cacheKey)) return Promise.resolve(cache.get(parsed.cacheKey));
+      const hit = inflight.get(parsed.cacheKey);
+      if (hit) return hit;
+      const p = (async () => {
+        const relays = [...new Set([...parsed.hints, ...ctx.relays])];
+        if (relays.length === 0) return undefined;
+        const events = await ctx.pool.fetch(relays, [parsed.filter], {
+          timeoutMs: ctx.fetchTimeoutMs,
+        });
+        let best: Event | undefined;
+        for (const e of events) if (!best || e.created_at > best.created_at) best = e;
+        cache.set(parsed.cacheKey, best);
+        return best;
+      })().finally(() => inflight.delete(parsed.cacheKey));
+      inflight.set(parsed.cacheKey, p);
+      return p;
     },
     clearAll() {
-      loader.clearAll();
+      inflight.clear();
+      cache.clear();
     },
   };
 }

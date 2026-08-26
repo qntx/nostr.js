@@ -36,7 +36,7 @@ function idsOf(filters: Filter[]): string[] {
   return [...ids];
 }
 
-describe("createEventLoader batch fetches", () => {
+describe("createEventLoader overlapping fetches", () => {
   test("two distinct ids load()ed in one tick overlap fetches", async () => {
     expect(ID1).not.toBe(ID2);
     const pool = new Pool();
@@ -79,6 +79,76 @@ describe("createEventLoader batch fetches", () => {
     release();
     expect(await Promise.all([p1, p2])).toEqual([undefined, undefined]);
     expect(inflight).toBe(0);
+  });
+
+  test("same id load()ed twice in one tick shares one fetch", async () => {
+    const pool = new Pool();
+    let inflight = 0;
+    let maxInflight = 0;
+    const calls: string[][] = [];
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    pool.fetch = async (_relays, filters) => {
+      inflight += 1;
+      maxInflight = Math.max(maxInflight, inflight);
+      calls.push(idsOf(filters));
+      try {
+        await hold;
+        return [];
+      } finally {
+        inflight -= 1;
+      }
+    };
+    const loader = createEventLoader(
+      new LoaderContext({ pool, relays: [RELAY], fetchTimeoutMs: FETCH_TIMEOUT_MS }),
+    );
+
+    const p1 = loader.load(ID1);
+    const p2 = loader.load({ id: ID1, relays: ["wss://hint.example"] });
+    await waitUntil(() => inflight === 1);
+    expect(maxInflight).toBe(1);
+    expect(calls).toEqual([[ID1]]);
+
+    release();
+    expect(await Promise.all([p1, p2])).toEqual([undefined, undefined]);
+    expect(inflight).toBe(0);
+  });
+
+  test("hints change relay URLs not cache identity", async () => {
+    const pool = new Pool();
+    const seen: string[][] = [];
+    let fetchCalls = 0;
+    pool.fetch = async (relays) => {
+      fetchCalls += 1;
+      seen.push([...relays]);
+      return [];
+    };
+    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
+    const hint = "wss://hint.example";
+    expect(await loader.load({ id: ID1, relays: [hint] })).toBeUndefined();
+    expect(fetchCalls).toBe(1);
+    expect(seen).toEqual([[hint, RELAY]]);
+    expect(await loader.load(ID1)).toBeUndefined();
+    expect(fetchCalls).toBe(1);
+  });
+
+  test("resolved miss is cached; clearAll fetches again", async () => {
+    const pool = new Pool();
+    let fetchCalls = 0;
+    pool.fetch = async () => {
+      fetchCalls += 1;
+      return [];
+    };
+    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
+    expect(await loader.load(ID1)).toBeUndefined();
+    expect(fetchCalls).toBe(1);
+    expect(await loader.load(ID1)).toBeUndefined();
+    expect(fetchCalls).toBe(1);
+    loader.clearAll();
+    expect(await loader.load(ID1)).toBeUndefined();
+    expect(fetchCalls).toBe(2);
   });
 
   test("serial load() fetches keep maxInflight at 1", async () => {
@@ -178,5 +248,8 @@ describe("createEventLoader batch fetches", () => {
     const err = await captureError(loader.load(ID1));
     expect(fetchCalls).toBe(1);
     expect(err).toBe(boom);
+    const err2 = await captureError(loader.load(ID1));
+    expect(fetchCalls).toBe(2);
+    expect(err2).toBe(boom);
   });
 });
