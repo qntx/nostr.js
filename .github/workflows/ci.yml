@@ -6,9 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   ci:
-    uses: qntx/workflows/.github/workflows/ci-bun.yml@main
+    uses: qntx/workflows/.github/workflows/ci-bun.yml@v2
+    permissions:
+      contents: read
     # bun run build → vp pack (no Rust)
     # bun test → tests/**/*.test.ts only (wasm-tests/*.ts is not *.test.ts)
 
