@@ -173,7 +173,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
-    "bumpp": "^12.2.1",
+    "bumpp": "^12.2.2",
     "typescript": "^7.0.2",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.2.9",
     "vite-plus": "^0.2.9"
