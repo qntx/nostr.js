@@ -166,7 +166,7 @@
     "prepare": "vp config"
   },
   "dependencies": {
-    "@noble/ciphers": "2.3.0",
+    "@noble/ciphers": "2.4.0",
     "@noble/curves": "2.3.0",
     "@noble/hashes": "2.3.0",
     "@scure/base": "2.4.0"
