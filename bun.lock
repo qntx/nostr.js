@@ -12,7 +12,7 @@
       },
       "devDependencies": {
         "@types/node": "^26.2.0",
-        "bumpp": "^12.2.1",
+        "bumpp": "^12.2.2",
         "typescript": "^7.0.2",
         "vite": "npm:@voidzero-dev/vite-plus-core@0.2.9",
         "vite-plus": "^0.2.9",
@@ -293,7 +293,7 @@
 
     "assertion-error": ["assertion-error@2.0.1", "", {}, "sha512-Izi8RQcffqCeNVgFigKli1ssklIbpHnCYc6AknXGYoB6grJqyeby7jv12JUQgmTAnIDnbck1uxksT4dzN3PWBA=="],
 
-    "bumpp": ["bumpp@12.2.1", "", { "dependencies": { "args-tokenizer": "^0.3.0", "cac": "^7.0.0", "jsonc-parser": "^3.3.1", "package-manager-detector": "^1.8.0", "tinyexec": "^1.3.0", "tinyglobby": "^0.2.17", "unconfig": "^7.5.0", "verkit": "^0.3.2", "yaml": "^2.9.0" }, "bin": { "bumpp": "bin/bumpp.mjs" } }, "sha512-8inGPx8PC/BaEOWhzfxrNHGj/x5Srt0EeJatAcTJ9N7AZpQG/HlH4kGp5JWbEL8zffYXI5iBkMjG8SHnJ9e/6g=="],
+    "bumpp": ["bumpp@12.2.2", "", { "dependencies": { "args-tokenizer": "^0.3.0", "cac": "^7.0.0", "jsonc-parser": "^3.3.1", "package-manager-detector": "^1.8.0", "tinyexec": "^1.3.0", "tinyglobby": "^0.2.17", "unconfig": "^7.5.0", "verkit": "^0.3.2", "yaml": "^2.9.0" }, "bin": { "bumpp": "bin/bumpp.mjs" } }, "sha512-tS7KZs+e1mRpN+N9mQU2greqHbqMLZrjBA0iQ4qVS/UB8yFPUgcvQHps4dVvRe37AEMNSOyNlnGuhnoklKlacg=="],
 
     "cac": ["cac@7.0.0", "", {}, "sha512-tixWYgm5ZoOD+3g6UTea91eow5z6AAHaho3g0V9CNSNb45gM8SmflpAc+GRd1InC4AqN/07Unrgp56Y94N9hJQ=="],
 
