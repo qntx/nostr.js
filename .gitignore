@@ -15,7 +15,9 @@ dist
 3rdparty
 
 # Internal documentation (kept locally, not published)
-docs
+docs/*
+!docs/index.mdx
+!docs/meta.json
 
 # Rust / wasm artifacts (built by scripts/build-wasm.sh, not committed)
 /target
