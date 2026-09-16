@@ -15,7 +15,7 @@
     "url": "https://github.com/qntx/nostr.js/issues"
   },
   "license": "MIT",
-  "author": "QuantX <x@qntx.fun>",
+  "author": "QuantX <x@qntx.org>",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/qntx/nostr.js.git"
