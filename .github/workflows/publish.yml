@@ -1,7 +1,6 @@
 # Caller owns on:. Pin at @v2.
 # OIDC. Do not pass NPM_TOKEN. Do not set environment, runs-on, or steps.
 # Required check-run on a tag: publish / publish.
-# @v2 does not contain ci-wasm / wasm publish until qntx/workflows Self / Retag after that PR merges.
 name: Publish
 
 on:
