@@ -163,6 +163,8 @@
     "bench:wasm": "WASM_TEST=1 vp test wasm-tests/bench.ts",
     "check": "vp check",
     "prepublishOnly": "bun run build:wasm",
+    "pack:local": "vp pack && bun pm pack",
+    "release": "bumpp --commit --tag --push",
     "prepare": "vp config"
   },
   "dependencies": {
@@ -193,7 +195,7 @@
     "packageManager": {
       "name": "bun",
       "version": "1.4.0",
-      "onFail": "download"
+      "onFail": "ignore"
     }
   },
   "engines": {
