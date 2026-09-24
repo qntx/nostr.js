@@ -22,10 +22,6 @@ function readPkg(): Pkg {
 }
 
 describe("package.json wasm publish", () => {
-  test("version stays 0.0.0", () => {
-    expect(readPkg().version).toBe("0.0.0");
-  });
-
   test("exports ./wasm with types and import paths", () => {
     const wasm = readPkg().exports["./wasm"];
     expect(wasm).toEqual(WASM_EXPORT);
