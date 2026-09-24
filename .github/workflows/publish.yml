@@ -1,8 +1,11 @@
-name: Publish to npm
+# Caller owns on:. Pin at @v2.
+# OIDC. Do not pass NPM_TOKEN. Do not set environment, runs-on, or steps.
+# Required check-run on a tag: publish / publish.
+name: Publish
 
 on:
   push:
-    tags: ["v*.*.*"]
+    tags: ['v*.*.*']
 
 permissions:
   contents: read
@@ -10,45 +13,11 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    uses: qntx/workflows/.github/workflows/publish-npm.yml@v2
     permissions:
       contents: read
       id-token: write
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: clang / lld / llvm for secp256k1-sys
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld llvm
-
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.94"
-          targets: wasm32-unknown-unknown
-
-      - name: wasm-bindgen-cli == Cargo.lock
-        run: cargo install wasm-bindgen-cli --version 0.2.122 --locked
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.0"
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          registry-url: https://registry.npmjs.org
-
-      - name: bun install
-        run: bun install --frozen-lockfile
-
-      - name: build wasm + pack
-        env:
-          CC_wasm32_unknown_unknown: clang
-          AR_wasm32_unknown_unknown: llvm-ar
-          CFLAGS_wasm32_unknown_unknown: "--target=wasm32-unknown-unknown -Wno-implicit-function-declaration"
-        run: bun run build:wasm
-
-      - name: publish
-        run: npm publish --access public --provenance --ignore-scripts
+    with:
+      package-manager: bun
+      wasm: true
+      timeout-minutes: 30
