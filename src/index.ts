@@ -195,6 +195,7 @@ export {
   type OutboxBound,
   type IndexedDbEventStoreOptions,
 } from "./storage/index.ts";
+export { ReactiveEventStore, type ReactiveEventStoreOptions, type Watch } from "./store/index.ts";
 export {
   createLoaders,
   createOutboxFeed,

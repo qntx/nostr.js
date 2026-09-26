@@ -4,6 +4,7 @@ import type { WebSocketConstructor } from "../relay/websocket.ts";
 import type { NostrSigner } from "../signer/types.ts";
 import type { StorageError } from "../storage/error.ts";
 import type { EventStore } from "../storage/types.ts";
+import type { ReactiveEventStore } from "../store/reactive.ts";
 import { Client } from "./client.ts";
 import type { ClientOptions } from "./types.ts";
 
@@ -77,6 +78,15 @@ export class ClientBuilder {
    */
   storage(store: EventStore): this {
     this.#opts = { ...this.#opts, storage: store };
+    return this;
+  }
+
+  /**
+   * Synchronous reactive index mirroring ingested events.
+   * Defaults to a new {@link ReactiveEventStore}.
+   */
+  index(index: ReactiveEventStore): this {
+    this.#opts = { ...this.#opts, index };
     return this;
   }
 

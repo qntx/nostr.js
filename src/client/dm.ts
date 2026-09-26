@@ -26,7 +26,7 @@ export type DmDeps = {
   pool: Pool;
   gossip: Gossip;
   hydrateGossip: (pubkeys: readonly string[]) => Promise<void>;
-  observe: (event: Event) => void;
+  observe: (event: Event, relayUrl?: string) => void;
   assertAlive: () => void;
   requireNip59Crypto: () => Nip59Crypto;
   throwIfAborted: (signal?: AbortSignal) => void;
@@ -137,7 +137,7 @@ export async function fetchPrivateMessages(
   for (const wrap of events) {
     try {
       const rumor = await unwrap(crypto, wrap);
-      if (deps.wantObserve(opts?.observe)) deps.observe(wrap);
+      if (deps.wantObserve(opts?.observe)) deps.observe(wrap, urls.get(wrap.id));
       byRumor.set(rumor.id, { wrap, rumor, relayUrl: urls.get(wrap.id) });
     } catch {
       // junk / forgery / key mismatch — not stored
@@ -195,7 +195,7 @@ export async function subscribePrivateMessages(
               if (closed) return;
               if (seen.has(rumor.id)) return;
               seen.add(rumor.id);
-              if (deps.wantObserve(opts?.observe)) deps.observe(wrap);
+              if (deps.wantObserve(opts?.observe)) deps.observe(wrap, relayUrl);
               opts?.onevent?.({ wrap, rumor, relayUrl });
             } catch {
               // junk / forgery — not stored
