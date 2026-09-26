@@ -7,8 +7,6 @@ import {
   MemoryEventStore,
   relayListEventBuilder,
   finalizeEvent,
-  normalizeURL,
-  useWebSocketImplementation,
   type Event,
   type EventStore,
   type Filter,
@@ -17,8 +15,7 @@ import {
 import { Nip17Error, dmRelayListEventBuilder } from "../src/nips/nip17.ts";
 import { encryptToPubkey } from "../src/nips/nip44.ts";
 import { createGiftWrap, createRumor, createSeal, eventToJson, wrap } from "../src/nips/nip59.ts";
-import { FakeRelayBus } from "./helpers/fake-relay.ts";
-import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
+import { createFakeRelayNetwork, type FakeRelayNetwork } from "../src/testing/index.ts";
 
 const ALICE_SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
 const BOB_SK = "0000000000000000000000000000000000000000000000000000000000000001";
@@ -29,26 +26,19 @@ const ALICE_DM = "wss://alice-dm.example";
 const BOB_DM = "wss://bob-dm.example";
 const ALICE_OUT = "wss://alice-out.example";
 
-function seedLists(bus: FakeRelayBus, alice: Keys, bob: Keys): void {
+let net: FakeRelayNetwork;
+
+function seedLists(net: FakeRelayNetwork, alice: Keys, bob: Keys): void {
   const aliceOut = relayListEventBuilder([{ url: ALICE_OUT, read: false, write: true }])
     .createdAt(1)
     .signWithKeys(alice);
   const aliceDm = dmRelayListEventBuilder([ALICE_DM]).createdAt(2).signWithKeys(alice);
   const bobDm = dmRelayListEventBuilder([BOB_DM]).createdAt(3).signWithKeys(bob);
-  bus.seed(IDX, [aliceOut, aliceDm, bobDm]);
+  net.relay(IDX).seed([aliceOut, aliceDm, bobDm]);
 }
 
 function clientFrames(url: string): unknown[][] {
-  const key = normalizeURL(url);
-  const frames: unknown[][] = [];
-  for (const ws of MockWebSocket.instances) {
-    if (normalizeURL(ws.url) !== key) continue;
-    for (const raw of ws.sent) {
-      const parsed: unknown = JSON.parse(raw);
-      if (Array.isArray(parsed)) frames.push(parsed as unknown[]);
-    }
-  }
-  return frames;
+  return net.relay(url).clientMessages().filter(Array.isArray) as unknown[][];
 }
 
 function reqFilters(url: string): Filter[] {
@@ -93,20 +83,8 @@ async function waitQuiet(check: () => boolean | Promise<boolean>, timeoutMs = 30
   }
 }
 
-function wsFor(url: string): MockWebSocket {
-  const key = normalizeURL(url);
-  const ws = MockWebSocket.instances.find((w) => normalizeURL(w.url) === key);
-  if (!ws) throw new Error(`no websocket for ${url}`);
-  return ws;
-}
-
-function lastReqId(url: string): string {
-  let id: string | undefined;
-  for (const msg of clientFrames(url)) {
-    if (msg[0] === "REQ" && typeof msg[1] === "string") id = msg[1];
-  }
-  if (id === undefined) throw new Error(`no REQ on ${url}`);
-  return id;
+function deliver(url: string, event: Event): void {
+  net.relay(url).inject(event);
 }
 
 function trackingStore(inner = new MemoryEventStore()): {
@@ -162,29 +140,23 @@ async function wrapKind21059(
 }
 
 describe("Client NIP-17", () => {
-  let bus: FakeRelayBus;
-
   beforeEach(() => {
-    MockWebSocket.reset();
-    useWebSocketImplementation(MockWebSocketCtor);
-    bus = new FakeRelayBus();
-    bus.start();
+    net = createFakeRelayNetwork();
   });
 
   afterEach(() => {
-    bus.stop();
-    MockWebSocket.reset();
+    net.close();
   });
 
   test("sendPrivateMessage publishes wraps only to each target's 10050", async () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
-    seedLists(bus, aliceKeys, bobKeys);
+    seedLists(net, aliceKeys, bobKeys);
 
     const alice = Client.builder()
       .signer(new KeysSigner(aliceKeys))
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await alice.connect();
@@ -193,13 +165,29 @@ describe("Client NIP-17", () => {
     expect(sent.rumor.content).toBe("hola");
     expect(sent.wraps).toHaveLength(2);
 
-    const onBob = bus.eventsOn(BOB_DM).filter((e) => e.kind === Kind.GiftWrap);
-    const onAlice = bus.eventsOn(ALICE_DM).filter((e) => e.kind === Kind.GiftWrap);
+    const onBob = net
+      .relay(BOB_DM)
+      .events()
+      .filter((e) => e.kind === Kind.GiftWrap);
+    const onAlice = net
+      .relay(ALICE_DM)
+      .events()
+      .filter((e) => e.kind === Kind.GiftWrap);
     expect(onBob).toHaveLength(1);
     expect(onAlice).toHaveLength(1);
     expect(sent.wraps.every((w) => w.wrap.kind === Kind.GiftWrap)).toBe(true);
-    expect(bus.eventsOn(ALICE_OUT).some((e) => e.kind === Kind.GiftWrap)).toBe(false);
-    expect(bus.eventsOn(IDX).some((e) => e.kind === Kind.GiftWrap)).toBe(false);
+    expect(
+      net
+        .relay(ALICE_OUT)
+        .events()
+        .some((e) => e.kind === Kind.GiftWrap),
+    ).toBe(false);
+    expect(
+      net
+        .relay(IDX)
+        .events()
+        .some((e) => e.kind === Kind.GiftWrap),
+    ).toBe(false);
 
     await alice.shutdown();
   });
@@ -208,19 +196,29 @@ describe("Client NIP-17", () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
     const aliceDm = dmRelayListEventBuilder([ALICE_DM]).createdAt(2).signWithKeys(aliceKeys);
-    bus.seed(IDX, [aliceDm]);
+    net.relay(IDX).seed([aliceDm]);
 
     const alice = Client.builder()
       .signer(new KeysSigner(aliceKeys))
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await alice.connect();
 
     await expect(alice.sendPrivateMessage(bobKeys.publicKey, "hola")).rejects.toThrow(/not ready/);
-    expect(bus.eventsOn(ALICE_DM).some((e) => e.kind === Kind.GiftWrap)).toBe(false);
-    expect(bus.eventsOn(IDX).some((e) => e.kind === Kind.GiftWrap)).toBe(false);
+    expect(
+      net
+        .relay(ALICE_DM)
+        .events()
+        .some((e) => e.kind === Kind.GiftWrap),
+    ).toBe(false);
+    expect(
+      net
+        .relay(IDX)
+        .events()
+        .some((e) => e.kind === Kind.GiftWrap),
+    ).toBe(false);
 
     await alice.shutdown();
   });
@@ -229,18 +227,23 @@ describe("Client NIP-17", () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
     const bobDm = dmRelayListEventBuilder([BOB_DM]).createdAt(3).signWithKeys(bobKeys);
-    bus.seed(IDX, [bobDm]);
+    net.relay(IDX).seed([bobDm]);
 
     const alice = Client.builder()
       .signer(new KeysSigner(aliceKeys))
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await alice.connect();
 
     await expect(alice.sendPrivateMessage(bobKeys.publicKey, "hola")).rejects.toThrow(/not ready/);
-    expect(bus.eventsOn(BOB_DM).some((e) => e.kind === Kind.GiftWrap)).toBe(false);
+    expect(
+      net
+        .relay(BOB_DM)
+        .events()
+        .some((e) => e.kind === Kind.GiftWrap),
+    ).toBe(false);
 
     await alice.shutdown();
   });
@@ -249,7 +252,7 @@ describe("Client NIP-17", () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
     const malloryKeys = Keys.fromSecretKey(MALLORY_SK);
-    seedLists(bus, aliceKeys, bobKeys);
+    seedLists(net, aliceKeys, bobKeys);
 
     const alice = new KeysSigner(aliceKeys);
     const gift = await wrap(
@@ -276,14 +279,14 @@ describe("Client NIP-17", () => {
       content: "i am alice",
     });
     const forged = await wrap(new KeysSigner(malloryKeys), bobKeys.publicKey, forgedRumor);
-    bus.seed(BOB_DM, [gift, junk, forged]);
+    net.relay(BOB_DM).seed([gift, junk, forged]);
 
     const { store, persistIds } = trackingStore();
     const bob = Client.builder()
       .signer(new KeysSigner(bobKeys))
       .storage(store)
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await bob.connect();
@@ -305,7 +308,7 @@ describe("Client NIP-17", () => {
   test("fetchPrivateMessages REQ kinds are 1059 only and skip seeded 21059", async () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
-    seedLists(bus, aliceKeys, bobKeys);
+    seedLists(net, aliceKeys, bobKeys);
 
     const alice = new KeysSigner(aliceKeys);
     const gift = await wrap(
@@ -326,12 +329,12 @@ describe("Client NIP-17", () => {
     );
     expect(storedKind).toBe(Kind.GiftWrap);
     expect(ephemeral.kind).toBe(Kind.GiftWrapEphemeral);
-    bus.seed(BOB_DM, [gift, ephemeral]);
+    net.relay(BOB_DM).seed([gift, ephemeral]);
 
     const bob = Client.builder()
       .signer(new KeysSigner(bobKeys))
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await bob.connect();
@@ -350,18 +353,18 @@ describe("Client NIP-17", () => {
   test("subscribePrivateMessages delivers a wrap published after subscribe", async () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
-    seedLists(bus, aliceKeys, bobKeys);
+    seedLists(net, aliceKeys, bobKeys);
 
     const alice = Client.builder()
       .signer(new KeysSigner(aliceKeys))
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     const bob = Client.builder()
       .signer(new KeysSigner(bobKeys))
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await alice.connect();
@@ -387,12 +390,12 @@ describe("Client NIP-17", () => {
   test("subscribePrivateMessages REQ kinds include 1059 and 21059", async () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
-    seedLists(bus, aliceKeys, bobKeys);
+    seedLists(net, aliceKeys, bobKeys);
 
     const bob = Client.builder()
       .signer(new KeysSigner(bobKeys))
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await bob.connect();
@@ -411,18 +414,18 @@ describe("Client NIP-17", () => {
   test("subscribePrivateMessages delivers kind 21059 and does not store it", async () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
-    seedLists(bus, aliceKeys, bobKeys);
+    seedLists(net, aliceKeys, bobKeys);
 
     const alice = Client.builder()
       .signer(new KeysSigner(aliceKeys))
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     const bob = Client.builder()
       .signer(new KeysSigner(bobKeys))
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     const junk = finalizeEvent(
@@ -434,7 +437,7 @@ describe("Client NIP-17", () => {
       },
       Keys.generate().secretKey,
     );
-    bus.seed(BOB_DM, [junk]);
+    net.relay(BOB_DM).seed([junk]);
 
     await alice.connect();
     await bob.connect();
@@ -493,7 +496,7 @@ describe("Client NIP-17", () => {
   test("subscribePrivateMessages close same turn as deliver skips persist and onevent", async () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
-    seedLists(bus, aliceKeys, bobKeys);
+    seedLists(net, aliceKeys, bobKeys);
     const gift = await wrap(
       new KeysSigner(aliceKeys),
       bobKeys.publicKey,
@@ -516,7 +519,7 @@ describe("Client NIP-17", () => {
       .signer(signer)
       .storage(store)
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await bob.connect();
@@ -527,7 +530,7 @@ describe("Client NIP-17", () => {
       },
     });
     await waitFor(() => reqFilters(BOB_DM).some((f) => Array.isArray(f["#p"])));
-    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), gift]));
+    deliver(BOB_DM, gift);
     sub.close();
     await waitQuiet(() => got.length > 0 || persistIds.includes(gift.id) || decrypts > 0);
     expect(got).toEqual([]);
@@ -540,7 +543,7 @@ describe("Client NIP-17", () => {
   test("subscribePrivateMessages close during decrypt skips persist and onevent", async () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
-    seedLists(bus, aliceKeys, bobKeys);
+    seedLists(net, aliceKeys, bobKeys);
     const gift = await wrap(
       new KeysSigner(aliceKeys),
       bobKeys.publicKey,
@@ -577,7 +580,7 @@ describe("Client NIP-17", () => {
       .signer(signer)
       .storage(store)
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await bob.connect();
@@ -588,7 +591,7 @@ describe("Client NIP-17", () => {
       },
     });
     await waitFor(() => reqFilters(BOB_DM).some((f) => Array.isArray(f["#p"])));
-    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), gift]));
+    deliver(BOB_DM, gift);
     await waitFor(() => decryptEntered === 1);
     sub.close();
     release();
@@ -603,7 +606,7 @@ describe("Client NIP-17", () => {
   test("subscribePrivateMessages abort during decrypt skips persist and onevent", async () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
-    seedLists(bus, aliceKeys, bobKeys);
+    seedLists(net, aliceKeys, bobKeys);
     const gift = await wrap(
       new KeysSigner(aliceKeys),
       bobKeys.publicKey,
@@ -640,7 +643,7 @@ describe("Client NIP-17", () => {
       .signer(signer)
       .storage(store)
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await bob.connect();
@@ -653,7 +656,7 @@ describe("Client NIP-17", () => {
       },
     });
     await waitFor(() => reqFilters(BOB_DM).some((f) => Array.isArray(f["#p"])));
-    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), gift]));
+    deliver(BOB_DM, gift);
     await waitFor(() => decryptEntered === 1);
     ac.abort();
     release();
@@ -669,7 +672,7 @@ describe("Client NIP-17", () => {
   test("subscribePrivateMessages junk wrap is not stored", async () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
-    seedLists(bus, aliceKeys, bobKeys);
+    seedLists(net, aliceKeys, bobKeys);
     const junk = finalizeEvent(
       {
         kind: Kind.GiftWrap,
@@ -684,7 +687,7 @@ describe("Client NIP-17", () => {
       .signer(new KeysSigner(bobKeys))
       .storage(store)
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await bob.connect();
@@ -695,7 +698,7 @@ describe("Client NIP-17", () => {
       },
     });
     await waitFor(() => reqFilters(BOB_DM).some((f) => Array.isArray(f["#p"])));
-    wsFor(BOB_DM).receive(JSON.stringify(["EVENT", lastReqId(BOB_DM), junk]));
+    deliver(BOB_DM, junk);
     await waitQuiet(() => got.length > 0 || persistIds.includes(junk.id));
     expect(got).toEqual([]);
     expect(persistIds.includes(junk.id)).toBe(false);
@@ -709,12 +712,12 @@ describe("Client NIP-17", () => {
     const aliceOut = relayListEventBuilder([{ url: ALICE_OUT, read: false, write: true }])
       .createdAt(1)
       .signWithKeys(aliceKeys);
-    bus.seed(IDX, [aliceOut]);
+    net.relay(IDX).seed([aliceOut]);
 
     const alice = Client.builder()
       .signer(new KeysSigner(aliceKeys))
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await alice.connect();
@@ -722,8 +725,18 @@ describe("Client NIP-17", () => {
 
     const results = await alice.setDmRelays([ALICE_DM]);
     expect(results.some((r) => r.result?.ok)).toBe(true);
-    expect(bus.eventsOn(ALICE_OUT).some((e) => e.kind === Kind.DirectMessageRelaysList)).toBe(true);
-    expect(bus.eventsOn(BOB_DM).some((e) => e.kind === Kind.DirectMessageRelaysList)).toBe(false);
+    expect(
+      net
+        .relay(ALICE_OUT)
+        .events()
+        .some((e) => e.kind === Kind.DirectMessageRelaysList),
+    ).toBe(true);
+    expect(
+      net
+        .relay(BOB_DM)
+        .events()
+        .some((e) => e.kind === Kind.DirectMessageRelaysList),
+    ).toBe(false);
     expect(alice.gossip.dmRelays(aliceKeys.publicKey).some((u) => u.includes("alice-dm"))).toBe(
       true,
     );
@@ -734,12 +747,12 @@ describe("Client NIP-17", () => {
   test("publish(wrap) without relays never hits default relays", async () => {
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
-    seedLists(bus, aliceKeys, bobKeys);
+    seedLists(net, aliceKeys, bobKeys);
 
     const alice = Client.builder()
       .signer(new KeysSigner(aliceKeys))
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await alice.connect();
@@ -751,8 +764,18 @@ describe("Client NIP-17", () => {
       createRumor(aliceKeys.publicKey, { kind: 14, content: "x" }),
     );
     await alice.publish(gift);
-    expect(bus.eventsOn(BOB_DM).some((e) => e.id === gift.id)).toBe(true);
-    expect(bus.eventsOn(IDX).some((e) => e.id === gift.id)).toBe(false);
+    expect(
+      net
+        .relay(BOB_DM)
+        .events()
+        .some((e) => e.id === gift.id),
+    ).toBe(true);
+    expect(
+      net
+        .relay(IDX)
+        .events()
+        .some((e) => e.id === gift.id),
+    ).toBe(false);
 
     alice.gossip.clear();
     const wrap2 = await wrap(
@@ -762,27 +785,37 @@ describe("Client NIP-17", () => {
     );
     await expect(alice.publish(wrap2)).rejects.toThrow(Nip17Error);
     await expect(alice.publish(wrap2)).rejects.toThrow(/no kind 10050 in gossip/);
-    expect(bus.eventsOn(IDX).some((e) => e.id === wrap2.id)).toBe(false);
+    expect(
+      net
+        .relay(IDX)
+        .events()
+        .some((e) => e.id === wrap2.id),
+    ).toBe(false);
 
     await alice.publish(wrap2, { relays: [IDX] });
-    expect(bus.eventsOn(IDX).some((e) => e.id === wrap2.id)).toBe(true);
+    expect(
+      net
+        .relay(IDX)
+        .events()
+        .some((e) => e.id === wrap2.id),
+    ).toBe(true);
 
     await alice.shutdown();
   });
 
   test("AUTH-gated DM relay accepts wrap after automaticAuth", async () => {
-    bus.stop();
-    bus = new FakeRelayBus({ authChallenge: "c", requireAuth: true });
-    bus.start();
+    for (const url of [IDX, ALICE_OUT, ALICE_DM, BOB_DM]) {
+      net.relay(url, { auth: { challenge: "c", writes: true } });
+    }
 
     const aliceKeys = Keys.fromSecretKey(ALICE_SK);
     const bobKeys = Keys.fromSecretKey(BOB_SK);
-    seedLists(bus, aliceKeys, bobKeys);
+    seedLists(net, aliceKeys, bobKeys);
 
     const alice = Client.builder()
       .signer(new KeysSigner(aliceKeys))
       .relays([IDX])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await alice.connect();

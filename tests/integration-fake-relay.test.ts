@@ -8,27 +8,21 @@ import {
   MemoryEventStore,
   relayListEventBuilder,
   Pool,
-  useWebSocketImplementation,
 } from "../src/index.ts";
-import { FakeRelayBus } from "./helpers/fake-relay.ts";
-import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
+import { createFakeRelayNetwork, type FakeRelayNetwork } from "../src/testing/index.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
 const SK_B = "0000000000000000000000000000000000000000000000000000000000000001";
 
-describe("integration via FakeRelayBus", () => {
-  let bus: FakeRelayBus;
+describe("integration via createFakeRelayNetwork", () => {
+  let net: FakeRelayNetwork;
 
   beforeEach(() => {
-    MockWebSocket.reset();
-    useWebSocketImplementation(MockWebSocketCtor);
-    bus = new FakeRelayBus();
-    bus.start();
+    net = createFakeRelayNetwork();
   });
 
   afterEach(() => {
-    bus.stop();
-    MockWebSocket.reset();
+    net.close();
   });
 
   test("Client publish + fetch + local storage observe", async () => {
@@ -38,7 +32,7 @@ describe("integration via FakeRelayBus", () => {
       .signer(new KeysSigner(keys))
       .storage(store)
       .relays(["wss://a.example", "wss://b.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
 
@@ -64,11 +58,11 @@ describe("integration via FakeRelayBus", () => {
   test("Pool publishAny + multi-relay fetch dedupe", async () => {
     const keys = Keys.fromSecretKey(SK);
     const note = EventBuilder.textNote("shared").createdAt(1).signWithKeys(keys);
-    bus.seed("wss://a.example", [note]);
-    bus.seed("wss://b.example", [note]);
+    net.relay("wss://a.example").seed([note]);
+    net.relay("wss://b.example").seed([note]);
 
     const pool = new Pool({
-      websocketImplementation: MockWebSocketCtor,
+      websocketImplementation: net.websocketImplementation,
       enableReconnect: false,
     });
 
@@ -81,24 +75,31 @@ describe("integration via FakeRelayBus", () => {
     const other = EventBuilder.textNote("fan").createdAt(2).signWithKeys(keys);
     const pub = await pool.publish(["wss://a.example", "wss://b.example"], other);
     expect(pub.every((r) => r.result?.ok)).toBe(true);
-    expect(bus.eventsOn("wss://a.example").some((e) => e.id === other.id)).toBe(true);
-    expect(bus.eventsOn("wss://b.example").some((e) => e.id === other.id)).toBe(true);
+    expect(
+      net
+        .relay("wss://a.example")
+        .events()
+        .some((e) => e.id === other.id),
+    ).toBe(true);
+    expect(
+      net
+        .relay("wss://b.example")
+        .events()
+        .some((e) => e.id === other.id),
+    ).toBe(true);
 
     pool.close();
   });
 
   test("Pool automaticallyAuth answers AUTH challenge", async () => {
-    bus.stop();
-    bus = new FakeRelayBus({
-      authChallenge: "chal-xyz",
-      requireAuth: true,
+    net.relay("wss://auth.example", {
+      auth: { challenge: "chal-xyz", writes: true },
     });
-    bus.start();
 
     const keys = Keys.fromSecretKey(SK);
     let authCalls = 0;
     const pool = new Pool({
-      websocketImplementation: MockWebSocketCtor,
+      websocketImplementation: net.websocketImplementation,
       enableReconnect: false,
       automaticallyAuth: () => {
         authCalls += 1;
@@ -120,7 +121,12 @@ describe("integration via FakeRelayBus", () => {
 
     const results = await pool.publish(["wss://auth.example"], note);
     expect(results[0]?.result?.ok).toBe(true);
-    expect(bus.eventsOn("wss://auth.example").some((e) => e.id === note.id)).toBe(true);
+    expect(
+      net
+        .relay("wss://auth.example")
+        .events()
+        .some((e) => e.id === note.id),
+    ).toBe(true);
     expect(authCalls).toBe(1);
 
     pool.close();
@@ -134,13 +140,13 @@ describe("integration via FakeRelayBus", () => {
       .createdAt(1)
       .signWithKeys(a);
 
-    bus.seed("wss://out.example", [note]);
+    net.relay("wss://out.example").seed([note]);
 
     const store = new MemoryEventStore();
     const client = Client.builder()
       .storage(store)
       .relays(["wss://discovery.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
 

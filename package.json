@@ -145,6 +145,10 @@
       "types": "./dist/storage.d.mts",
       "import": "./dist/storage.mjs"
     },
+    "./testing": {
+      "types": "./dist/testing.d.mts",
+      "import": "./dist/testing.mjs"
+    },
     "./package.json": "./package.json",
     "./wasm": {
       "types": "./dist/wasm.d.mts",
@@ -175,10 +179,12 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
+    "@types/ws": "8.18.1",
     "bumpp": "^12.3.0",
     "typescript": "^7.0.2",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.2.9",
-    "vite-plus": "^0.3.0"
+    "vite-plus": "^0.3.0",
+    "ws": "8.21.3"
   },
   "peerDependencies": {
     "ws": "^8.18.0"

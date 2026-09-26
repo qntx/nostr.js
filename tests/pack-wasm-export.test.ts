@@ -125,3 +125,34 @@ describe("vite pack.entry.wasm gate", () => {
     expect(src.match(/wasm: "src\/wasm\/index\.ts"/g)).toEqual(['wasm: "src/wasm/index.ts"']);
   });
 });
+
+describe("package.json testing publish", () => {
+  test("exports ./testing with types and import paths", () => {
+    const testing = readPkg().exports["./testing"];
+    expect(testing).toEqual({
+      types: "./dist/testing.d.mts",
+      import: "./dist/testing.mjs",
+    });
+  });
+
+  test("applyPackExports maps ./testing mjs to types/import", () => {
+    const out = applyPackExports({ "./testing": "./dist/testing.mjs" });
+    expect(out["./testing"]).toEqual({
+      types: "./dist/testing.d.mts",
+      import: "./dist/testing.mjs",
+    });
+  });
+
+  test("vite pack entries include src/testing/index.ts", () => {
+    const src = readFileSync(join(root, "vite.config.ts"), "utf8");
+    expect(src).toContain('testing: "src/testing/index.ts"');
+  });
+
+  test("testing entry keeps ws behind a dynamic import", () => {
+    const serve = readFileSync(join(root, "src/testing/serve.ts"), "utf8");
+    const index = readFileSync(join(root, "src/testing/index.ts"), "utf8");
+    expect(serve).toContain('await import("ws")');
+    expect(serve).not.toMatch(/^import .*from "ws"/m);
+    expect(index).not.toMatch(/from "ws"/);
+  });
+});

@@ -1,40 +1,46 @@
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
-import {
-  EventBuilder,
-  Nip46Signer,
-  Pool,
-  getPublicKey,
-  useWebSocketImplementation,
-  verifyEvent,
-} from "../src/index.ts";
+import { EventBuilder, Nip46Signer, Pool, getPublicKey, verifyEvent } from "../src/index.ts";
 import {
   createNostrConnectURI,
   parseBunkerURL,
   parseNostrConnectURI,
   toBunkerURL,
 } from "../src/nips/nip46.ts";
-import { armBunkerResponder, publishNostrConnectAck } from "./helpers/nip46-bunker.ts";
-import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
+import {
+  createFakeNip46Signer,
+  createFakeRelayNetwork,
+  type FakeRelayNetwork,
+} from "../src/testing/index.ts";
 
 const BUNKER_SK = "0000000000000000000000000000000000000000000000000000000000000001";
 const CLIENT_SK = "0000000000000000000000000000000000000000000000000000000000000002";
 const USER_SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
 
+let net: FakeRelayNetwork;
+
 function testPool() {
   return new Pool({
-    websocketImplementation: MockWebSocketCtor,
+    websocketImplementation: net.websocketImplementation,
     enableReconnect: true,
   });
 }
 
 beforeEach(() => {
-  MockWebSocket.reset();
-  useWebSocketImplementation(MockWebSocketCtor);
+  net = createFakeRelayNetwork();
 });
 
 afterEach(() => {
-  MockWebSocket.reset();
+  net.close();
 });
+
+async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await check()) return;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  throw new Error("timed out");
+}
 
 describe("nip46 protocol", () => {
   test("bunker URL round-trip", () => {
@@ -102,7 +108,9 @@ describe("Nip46Signer", () => {
     });
 
     const requests: Array<{ method: string; params: string[] }> = [];
-    const stop = armBunkerResponder({
+    const remote = createFakeNip46Signer({
+      network: net,
+      relayUrl: "wss://bunker.example",
       bunkerSk: BUNKER_SK,
       userSk: USER_SK,
       clientPubkey: clientPk,
@@ -129,7 +137,7 @@ describe("Nip46Signer", () => {
 
       await signer.close();
     } finally {
-      stop();
+      remote.close();
     }
   });
 
@@ -154,7 +162,9 @@ describe("Nip46Signer", () => {
     });
 
     const authUrls: string[] = [];
-    const stop = armBunkerResponder({
+    const remote = createFakeNip46Signer({
+      network: net,
+      relayUrl: "wss://bunker.example",
       bunkerSk: BUNKER_SK,
       userSk: USER_SK,
       clientPubkey: clientPk,
@@ -173,7 +183,7 @@ describe("Nip46Signer", () => {
       expect(await signer.getPublicKey()).toBe(getPublicKey(USER_SK));
       await signer.close();
     } finally {
-      stop();
+      remote.close();
     }
   });
 
@@ -230,13 +240,11 @@ describe("Nip46Signer", () => {
       },
     );
 
-    await new Promise((r) => setTimeout(r, 40));
-    expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(1);
-    const frames = MockWebSocket.instances.flatMap((ws) =>
-      ws.sent.map((raw) => JSON.parse(raw) as unknown[]),
-    );
-    expect(frames.some((m) => m[0] === "REQ")).toBe(true);
-    expect(frames.some((m) => m[0] === "EVENT")).toBe(false);
+    await waitFor(() => net.relay("wss://bunker.example").clientMessages().length > 0);
+    await new Promise((r) => setTimeout(r, 20));
+    const frames = net.relay("wss://bunker.example").clientMessages();
+    expect(frames.some((m) => (m as unknown[])[0] === "REQ")).toBe(true);
+    expect(frames.some((m) => (m as unknown[])[0] === "EVENT")).toBe(false);
 
     await signer.close();
   });
@@ -258,7 +266,9 @@ describe("Nip46Signer", () => {
     const bunkerPk = getPublicKey(BUNKER_SK);
     const clientPk = getPublicKey(CLIENT_SK);
     const secret = "tok";
-    const stop = armBunkerResponder({
+    const remote = createFakeNip46Signer({
+      network: net,
+      relayUrl: "wss://bunker.example",
       bunkerSk: BUNKER_SK,
       userSk: USER_SK,
       clientPubkey: clientPk,
@@ -272,14 +282,16 @@ describe("Nip46Signer", () => {
       expect(await signer.getPublicKey()).toBe(getPublicKey(USER_SK));
       await signer.close();
     } finally {
-      stop();
+      remote.close();
     }
   });
 
   test("connectRemote rejects a connect result that is not ack or secret", async () => {
     const bunkerPk = getPublicKey(BUNKER_SK);
     const clientPk = getPublicKey(CLIENT_SK);
-    const stop = armBunkerResponder({
+    const remote = createFakeNip46Signer({
+      network: net,
+      relayUrl: "wss://bunker.example",
       bunkerSk: BUNKER_SK,
       userSk: USER_SK,
       clientPubkey: clientPk,
@@ -293,14 +305,16 @@ describe("Nip46Signer", () => {
         ),
       ).rejects.toThrow(/connect result is not ack or secret: ok/);
     } finally {
-      stop();
+      remote.close();
     }
   });
 
   test("connectRemote rejects a mismatched secret", async () => {
     const bunkerPk = getPublicKey(BUNKER_SK);
     const clientPk = getPublicKey(CLIENT_SK);
-    const stop = armBunkerResponder({
+    const remote = createFakeNip46Signer({
+      network: net,
+      relayUrl: "wss://bunker.example",
       bunkerSk: BUNKER_SK,
       userSk: USER_SK,
       clientPubkey: clientPk,
@@ -314,14 +328,16 @@ describe("Nip46Signer", () => {
         ),
       ).rejects.toThrow(/connect result is not ack or secret: other-secret/);
     } finally {
-      stop();
+      remote.close();
     }
   });
 
   test("connectRemote without a pointer secret rejects a non-ack result", async () => {
     const bunkerPk = getPublicKey(BUNKER_SK);
     const clientPk = getPublicKey(CLIENT_SK);
-    const stop = armBunkerResponder({
+    const remote = createFakeNip46Signer({
+      network: net,
+      relayUrl: "wss://bunker.example",
       bunkerSk: BUNKER_SK,
       userSk: USER_SK,
       clientPubkey: clientPk,
@@ -335,7 +351,7 @@ describe("Nip46Signer", () => {
         ),
       ).rejects.toThrow(/connect result is not ack or secret: tok/);
     } finally {
-      stop();
+      remote.close();
     }
   });
 
@@ -379,7 +395,9 @@ describe("Nip46Signer", () => {
       secret,
     });
 
-    const stop = armBunkerResponder({
+    const remote = createFakeNip46Signer({
+      network: net,
+      relayUrl: "wss://nc.example",
       bunkerSk: BUNKER_SK,
       userSk: USER_SK,
       clientPubkey: clientPk,
@@ -392,14 +410,13 @@ describe("Nip46Signer", () => {
         timeoutMs: 3000,
       });
 
-      await new Promise((r) => setTimeout(r, 25));
-      expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(1);
-      publishNostrConnectAck({
-        bunkerSk: BUNKER_SK,
-        clientPubkey: clientPk,
-        secret,
-        ws: MockWebSocket.instances[0]!,
-      });
+      await waitFor(() =>
+        net
+          .relay("wss://nc.example")
+          .clientMessages()
+          .some((m) => (m as unknown[])[0] === "REQ"),
+      );
+      remote.confirmHandshake(secret);
 
       const signer = await handshake;
       expect(signer.bunker.pubkey).toBe(getPublicKey(BUNKER_SK));
@@ -407,7 +424,7 @@ describe("Nip46Signer", () => {
       expect(await signer.getPublicKey()).toBe(getPublicKey(USER_SK));
       await signer.close();
     } finally {
-      stop();
+      remote.close();
     }
   });
 
@@ -415,7 +432,9 @@ describe("Nip46Signer", () => {
     const bunkerPk = getPublicKey(BUNKER_SK);
     const clientPk = getPublicKey(CLIENT_SK);
     const requests: Array<{ method: string; params: string[] }> = [];
-    const stop = armBunkerResponder({
+    const remote = createFakeNip46Signer({
+      network: net,
+      relayUrl: "wss://bunker.example",
       bunkerSk: BUNKER_SK,
       userSk: USER_SK,
       clientPubkey: clientPk,
@@ -441,19 +460,22 @@ describe("Nip46Signer", () => {
       ]);
       await signer.close();
     } finally {
-      stop();
+      remote.close();
     }
   });
 
   test("switchRelays updates bunker relays; logout acks and closes", async () => {
     const bunkerPk = getPublicKey(BUNKER_SK);
     const clientPk = getPublicKey(CLIENT_SK);
-    const stop = armBunkerResponder({
+    const remote = createFakeNip46Signer({
+      network: net,
+      relayUrl: "wss://bunker.example",
       bunkerSk: BUNKER_SK,
       userSk: USER_SK,
       clientPubkey: clientPk,
       switchRelays: ["wss://new.example"],
     });
+    remote.attach("wss://new.example");
     try {
       const signer = await Nip46Signer.connect(
         toBunkerURL({ pubkey: bunkerPk, relays: ["wss://bunker.example"], secret: "tok" }),
@@ -462,7 +484,7 @@ describe("Nip46Signer", () => {
       expect(signer.bunker.relays).toEqual(["wss://new.example"]);
       await signer.logout();
     } finally {
-      stop();
+      remote.close();
     }
   });
 });

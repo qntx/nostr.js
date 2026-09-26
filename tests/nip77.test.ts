@@ -11,7 +11,6 @@ import {
   encodeClientMessage,
   parseClientMessage,
   parseRelayMessage,
-  useWebSocketImplementation,
   type Event,
   type EventStore,
   type Filter,
@@ -26,8 +25,7 @@ import {
   runNegSession,
   storageFromEvents,
 } from "../src/nips/nip77.ts";
-import { FakeRelayBus } from "./helpers/fake-relay.ts";
-import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
+import { createFakeRelayNetwork, type FakeRelayNetwork } from "../src/testing/index.ts";
 
 const SK_A = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
 const SK_B = "0000000000000000000000000000000000000000000000000000000000000001";
@@ -246,28 +244,24 @@ describe("Negentropy algorithm", () => {
 });
 
 describe("Relay.negReconcile + Client.sync", () => {
-  let bus: FakeRelayBus;
+  let net: FakeRelayNetwork;
 
   beforeEach(() => {
-    MockWebSocket.reset();
-    useWebSocketImplementation(MockWebSocketCtor);
-    bus = new FakeRelayBus();
-    bus.start();
+    net = createFakeRelayNetwork();
   });
 
   afterEach(() => {
-    bus.stop();
-    MockWebSocket.reset();
+    net.close();
   });
 
   test("Relay.negReconcile reports have/need against seeded relay", async () => {
     const localOnly = note(SK_A, "local", 1);
     const remoteOnly = note(SK_B, "remote", 2);
     const shared = note(SK_A, "shared", 3);
-    bus.seed("wss://neg.example", [remoteOnly, shared]);
+    net.relay("wss://neg.example").seed([remoteOnly, shared]);
 
     const relay = await Relay.connect("wss://neg.example", {
-      websocketImplementation: MockWebSocketCtor,
+      websocketImplementation: net.websocketImplementation,
       enableReconnect: false,
     });
     const storage = storageFromEvents([localOnly, shared]);
@@ -279,12 +273,12 @@ describe("Relay.negReconcile + Client.sync", () => {
 
   test("Client.sync down downloads remote-only events", async () => {
     const remote = note(SK_B, "from-relay", 20);
-    bus.seed("wss://neg.example", [remote]);
+    net.relay("wss://neg.example").seed([remote]);
     const store = new MemoryEventStore();
     const client = Client.builder()
       .storage(store)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await client.connect();
@@ -306,7 +300,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await client.connect();
@@ -317,7 +311,12 @@ describe("Relay.negReconcile + Client.sync", () => {
     expect(summary.local).toEqual([local.id]);
     expect(summary.sent).toEqual([local.id]);
     expect(summary.persistFailures).toEqual({});
-    expect(bus.eventsOn("wss://neg.example").some((e) => e.id === local.id)).toBe(true);
+    expect(
+      net
+        .relay("wss://neg.example")
+        .events()
+        .some((e) => e.id === local.id),
+    ).toBe(true);
     await client.shutdown();
   });
 
@@ -342,7 +341,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .persistEvents(false)
       .build();
@@ -366,7 +365,7 @@ describe("Relay.negReconcile + Client.sync", () => {
 
   test("Client.syncToRelay up skips query when have is empty", async () => {
     const shared = note(SK_A, "shared", 1);
-    bus.seed("wss://neg.example", [shared]);
+    net.relay("wss://neg.example").seed([shared]);
     const inner = new MemoryEventStore();
     await inner.put(shared);
     let getCount = 0;
@@ -384,7 +383,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .persistEvents(false)
       .build();
@@ -413,7 +412,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await client.connect();
@@ -465,7 +464,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .persistEvents(false)
       .build();
@@ -499,7 +498,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await client.connect();
@@ -524,12 +523,12 @@ describe("Relay.negReconcile + Client.sync", () => {
 
   test("Client.sync dryRun does not exchange events", async () => {
     const remote = note(SK_B, "stay", 22);
-    bus.seed("wss://neg.example", [remote]);
+    net.relay("wss://neg.example").seed([remote]);
     const store = new MemoryEventStore();
     const client = Client.builder()
       .storage(store)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     await client.connect();
@@ -547,7 +546,7 @@ describe("Relay.negReconcile + Client.sync", () => {
   test("Client.syncToRelay dryRun uses negentropyItems not query", async () => {
     const remote = note(SK_B, "stay", 22);
     const local = note(SK_A, "mine", 21);
-    bus.seed("wss://neg.example", [remote]);
+    net.relay("wss://neg.example").seed([remote]);
     const inner = new MemoryEventStore();
     await inner.put(local);
     const store: EventStore = {
@@ -571,7 +570,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .persistEvents(false)
       .build();
@@ -591,7 +590,7 @@ describe("Relay.negReconcile + Client.sync", () => {
 
   test("Client.sync down observe false never putMany and still lists received", async () => {
     const remote = note(SK_B, "unsaved", 23);
-    bus.seed("wss://neg.example", [remote]);
+    net.relay("wss://neg.example").seed([remote]);
     let method = "";
     const store: EventStore = {
       async put(_event: Event): Promise<PutResult> {
@@ -624,7 +623,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .persistEvents(true)
       .build();
@@ -643,7 +642,7 @@ describe("Relay.negReconcile + Client.sync", () => {
 
   test("Client.sync down does not list received when store.putMany throws", async () => {
     const remote = note(SK_B, "unsaved-default", 23);
-    bus.seed("wss://neg.example", [remote]);
+    net.relay("wss://neg.example").seed([remote]);
     let method = "";
     const store: EventStore = {
       async put(_event: Event): Promise<PutResult> {
@@ -676,7 +675,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .persistEvents(true)
       .build();
@@ -697,7 +696,7 @@ describe("Relay.negReconcile + Client.sync", () => {
   test("Client.sync down putMany throw does not fetch remaining need batches", async () => {
     const remotes: Event[] = [];
     for (let i = 0; i < 200; i++) remotes.push(note(SK_B, `batch-${i}`, 1000 + i));
-    bus.seed("wss://neg.example", remotes);
+    net.relay("wss://neg.example").seed(remotes);
     const inner = new MemoryEventStore();
     let putManyCalls = 0;
     const store = wrapEventStore(inner, {
@@ -709,7 +708,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .persistEvents(true)
       .build();
@@ -746,8 +745,8 @@ describe("Relay.negReconcile + Client.sync", () => {
   test("Client.sync merges persistFailures from a throwing relay with received from a successful relay", async () => {
     const failRemote = note(SK_B, "fail-persist", 40);
     const okRemote = note(SK_A, "ok-persist", 41);
-    bus.seed("wss://neg-fail.example", [failRemote]);
-    bus.seed("wss://neg-ok.example", [okRemote]);
+    net.relay("wss://neg-fail.example").seed([failRemote]);
+    net.relay("wss://neg-ok.example").seed([okRemote]);
     const inner = new MemoryEventStore();
     const store = wrapEventStore(inner, {
       putMany: async (events) => {
@@ -758,7 +757,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://neg-fail.example", "wss://neg-ok.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .persistEvents(true)
       .build();
@@ -778,7 +777,7 @@ describe("Relay.negReconcile + Client.sync", () => {
 
   test("Client.sync down persistEvents false skips putMany and still ingestMeta", async () => {
     const remote = note(SK_B, "once", 24);
-    bus.seed("wss://neg.example", [remote]);
+    net.relay("wss://neg.example").seed([remote]);
     const inner = new MemoryEventStore();
     const persistCalls: string[] = [];
     let ingested = 0;
@@ -812,7 +811,7 @@ describe("Relay.negReconcile + Client.sync", () => {
       .storage(store)
       .gossip(gossip)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .persistEvents(false)
       .build();
@@ -831,7 +830,7 @@ describe("Relay.negReconcile + Client.sync", () => {
 
   test("Client.sync down persistEvents true writes once via putMany then ingestMeta", async () => {
     const remote = note(SK_B, "once-persist", 24);
-    bus.seed("wss://neg.example", [remote]);
+    net.relay("wss://neg.example").seed([remote]);
     const inner = new MemoryEventStore();
     const persistCalls: string[] = [];
     let ingested = 0;
@@ -865,7 +864,7 @@ describe("Relay.negReconcile + Client.sync", () => {
       .storage(store)
       .gossip(gossip)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .persistEvents(true)
       .build();
@@ -884,7 +883,7 @@ describe("Relay.negReconcile + Client.sync", () => {
 
   test("Client.sync down observe false skips putMany and ingestMeta", async () => {
     const remote = note(SK_B, "no-meta", 25);
-    bus.seed("wss://neg.example", [remote]);
+    net.relay("wss://neg.example").seed([remote]);
     const inner = new MemoryEventStore();
     const persistCalls: string[] = [];
     let ingested = 0;
@@ -918,7 +917,7 @@ describe("Relay.negReconcile + Client.sync", () => {
       .storage(store)
       .gossip(gossip)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .persistEvents(true)
       .build();
@@ -937,7 +936,7 @@ describe("Relay.negReconcile + Client.sync", () => {
 
   test("Client.sync down skipped rejected putMany results", async () => {
     const remote = note(SK_B, "rej", 26);
-    bus.seed("wss://neg.example", [remote]);
+    net.relay("wss://neg.example").seed([remote]);
     let ingested = 0;
     const gossip = new Gossip();
     gossip.ingest = () => {
@@ -974,7 +973,7 @@ describe("Relay.negReconcile + Client.sync", () => {
       .storage(store)
       .gossip(gossip)
       .relays(["wss://neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .persistEvents(true)
       .build();
@@ -992,11 +991,11 @@ describe("Relay.negReconcile + Client.sync", () => {
 
   test("Client.sync mixed success does not throw; merges the good relay", async () => {
     const remote = note(SK_B, "from-good", 30);
-    bus.seed("wss://neg.example", [remote]);
+    net.relay("wss://neg.example").seed([remote]);
 
-    class SwallowSilent extends MockWebSocket {
+    class SwallowSilent extends net.websocketImplementation {
       send(data: string): void {
-        if (this.url.includes("silent-neg.example")) return;
+        if ((this as { url?: string }).url?.includes("silent-neg.example")) return;
         super.send(data);
       }
     }
@@ -1005,7 +1004,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://silent-neg.example", "wss://neg.example"])
-      .websocketImplementation(SwallowSilent as unknown as typeof MockWebSocketCtor)
+      .websocketImplementation(SwallowSilent)
       .enableReconnect(false)
       .build();
     await client.connect();
@@ -1022,12 +1021,25 @@ describe("Relay.negReconcile + Client.sync", () => {
 });
 
 describe("Negentropy session timeout", () => {
+  let net: FakeRelayNetwork;
+
+  // Relay exists but never answers NEG-OPEN/NEG-MSG.
+  const silentWs = (): typeof net.websocketImplementation => {
+    const FakeWS = net.websocketImplementation;
+    return class extends FakeWS {
+      send(data: string): void {
+        const msg = JSON.parse(data) as unknown[];
+        if (typeof msg[0] === "string" && msg[0].startsWith("NEG-")) return;
+        super.send(data);
+      }
+    };
+  };
+
   beforeEach(() => {
-    MockWebSocket.reset();
-    useWebSocketImplementation(MockWebSocketCtor);
+    net = createFakeRelayNetwork();
   });
   afterEach(() => {
-    MockWebSocket.reset();
+    net.close();
   });
 
   test("Client.sync rejects on session deadline when the relay never sends NEG-MSG", async () => {
@@ -1035,7 +1047,7 @@ describe("Negentropy session timeout", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://silent-neg.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(silentWs())
       .enableReconnect(false)
       .build();
     await client.connect();
@@ -1054,7 +1066,7 @@ describe("Negentropy session timeout", () => {
     const client = Client.builder()
       .storage(store)
       .relays(["wss://silent-a.example", "wss://silent-b.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(silentWs())
       .enableReconnect(false)
       .build();
     await client.connect();
