@@ -303,9 +303,8 @@ export class Negentropy {
       throw new Nip77Error("invalid negentropy protocol version byte");
     }
     if (protocolVersion !== PROTOCOL_VERSION) {
-      throw new Nip77Error(
-        `unsupported negentropy protocol version requested: ${protocolVersion - 0x60}`,
-      );
+      // NIP-77: reply with the highest supported version so the peer can downgrade.
+      return { have, need, nextMessage: bytesToHex(fullOutput.unwrap()) };
     }
 
     const storageSize = this.#storage.size();

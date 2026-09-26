@@ -233,7 +233,11 @@ export function decode(code: string): DecodedResult {
 export function decodeNostrURI(nip19code: string): DecodedResult | { type: "invalid"; data: null } {
   try {
     let code = nip19code;
-    if (code.startsWith("nostr:")) code = code.slice(6);
+    if (code.startsWith("nostr:")) {
+      code = code.slice(6);
+      // NIP-21 excludes nsec from nostr: identifiers.
+      if (code.startsWith("nsec1")) return { type: "invalid", data: null };
+    }
     return decode(code);
   } catch {
     return { type: "invalid", data: null };

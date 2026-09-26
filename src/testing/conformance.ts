@@ -139,7 +139,7 @@ export const eventStoreConformanceCases: ReadonlyArray<EventStoreConformanceCase
       const target = addressable(alice(), 30001, "z", "target", 1);
       await store.put(target);
       const coord = `30001:${alice().publicKey}:z`;
-      const del = EventBuilder.deletion([], "", { addresses: [coord] })
+      const del = EventBuilder.deletion([{ address: coord }], "")
         .createdAt(2)
         .signWithKeys(alice());
       eq(await store.put(del), "deleted", "a-tag deletion");

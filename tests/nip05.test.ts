@@ -33,6 +33,28 @@ describe("nip05 parse", () => {
     expect(() => parseNip05("not an id")).toThrow(/invalid NIP-05/);
   });
 
+  test("isNip05 and parseNip05 agree on local-part validity", () => {
+    const cases: Array<[string, boolean]> = [
+      ["bob@example.com", true],
+      ["Bob.Smith-99@EXAMPLE.com", true],
+      ["_@example.com", true],
+      ["example.com", true],
+      ["a+b@example.com", false],
+      ["a b@example.com", false],
+      ["a%b@example.com", false],
+      ["a/b@example.com", false],
+      ["日本語@example.com", false],
+    ];
+    for (const [input, valid] of cases) {
+      expect(isNip05(input)).toBe(valid);
+      if (valid) {
+        expect(() => parseNip05(input)).not.toThrow();
+      } else {
+        expect(() => parseNip05(input)).toThrow();
+      }
+    }
+  });
+
   test("wellKnownUrl", () => {
     expect(wellKnownUrl({ local: "bob", domain: "example.com" })).toBe(
       "https://example.com/.well-known/nostr.json?name=bob",

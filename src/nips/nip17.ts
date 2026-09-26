@@ -86,9 +86,13 @@ export function dmRelayListToTags(relays: readonly string[]): Tag[] {
   return tags;
 }
 
-/** Build an unsigned kind:10050 EventBuilder. */
+/** Build an unsigned kind:10050 EventBuilder. NIP-17 requires ≥1 relay tag. */
 export function dmRelayListEventBuilder(relays: readonly string[]): EventBuilder {
-  return new EventBuilder(Kind.DirectMessageRelaysList, "").tags(dmRelayListToTags(relays));
+  const tags = dmRelayListToTags(relays);
+  if (tags.length === 0) {
+    throw new Nip17Error("DM relay list requires at least one relay");
+  }
+  return new EventBuilder(Kind.DirectMessageRelaysList, "").tags(tags);
 }
 
 function asRecipientList(

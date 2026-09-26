@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vite-plus/test";
 import { bech32 } from "@scure/base";
+import { hexToBytes } from "@noble/hashes/utils.js";
+import { bytesToHex } from "../src/core/util.ts";
 import {
   decodeNostrURI,
   getPublicKey,
@@ -80,6 +82,45 @@ describe("nip19", () => {
     const ok = decodeNostrURI(`nostr:${npub}`);
     expect(ok.type).toBe("npub");
     expect(decodeNostrURI("not-a-code").type).toBe("invalid");
+  });
+
+  test("decodeNostrURI rejects nostr:nsec but bare nsec still decodes", () => {
+    const sk = SecretKey.generate();
+    const nsec = nsecEncode(sk.bytes);
+    expect(decodeNostrURI(`nostr:${nsec}`)).toEqual({ type: "invalid", data: null });
+    const bare = nip19Decode(nsec);
+    expect(bare.type).toBe("nsec");
+  });
+});
+
+describe("nip19 spec examples", () => {
+  test("npub / nsec examples decode and re-encode", () => {
+    const npub = "npub10elfcs4fr0l0r8af98jlmgdh9c8tcxjvz9qkw038js35mp4dma8qzvjptg";
+    const pk = "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e";
+    expect(nip19Decode(npub)).toEqual({ type: "npub", data: pk });
+    expect(npubEncode(pk)).toBe(npub);
+
+    const nsec = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
+    const sk = "67dea2ed018072d675f5415ecfaed7d2597555e202d85b3d65ea4e58d2d92ffa";
+    const decoded = nip19Decode(nsec);
+    expect(decoded.type).toBe("nsec");
+    if (decoded.type === "nsec") {
+      expect(bytesToHex(decoded.data)).toBe(sk);
+    }
+    expect(nsecEncode(hexToBytes(sk))).toBe(nsec);
+  });
+
+  test("nprofile example decodes pubkey and both relays", () => {
+    const nprofile =
+      "nprofile1qqsrhuxx8l9ex335q7he0f09aej04zpazpl0ne2cgukyawd24mayt8gpp4mhxue69uhhytnc9e3k7mgpz4mhxue69uhkg6nzv9ejuumpv34kytnrdaksjlyr9p";
+    const decoded = nip19Decode(nprofile);
+    expect(decoded.type).toBe("nprofile");
+    if (decoded.type === "nprofile") {
+      expect(decoded.data.pubkey).toBe(
+        "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+      );
+      expect(decoded.data.relays).toEqual(["wss://r.x.com", "wss://djbas.sadkb.com"]);
+    }
   });
 });
 

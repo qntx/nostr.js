@@ -198,7 +198,7 @@ export function buildReplyTags(opts: ReplyTagsOptions): Tag[] {
 
   const tags: Tag[] = [];
   const rootRelay = root.relays?.[0] ?? opts.relayHint ?? "";
-  tags.push(Tag.e(root.id, rootRelay, "root", root.author ?? opts.parent.pubkey));
+  tags.push(Tag.e(root.id, rootRelay, "root", root.author));
 
   if (!parentIsRoot) {
     tags.push(Tag.e(opts.parent.id, opts.relayHint ?? "", "reply", opts.parent.pubkey));

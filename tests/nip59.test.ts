@@ -228,6 +228,43 @@ describe("nip59", () => {
     await expect(unwrap(bob, wrap)).rejects.toThrow(/seal tags must be empty/);
   });
 
+  test("unwrap accepts a seal whose only tag is expiration", async () => {
+    const { alice, bob, aliceKeys, bobKeys } = pair();
+    const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "ephemeral dm" });
+    const rumorJson = await alice.nip44Encrypt!(bobKeys.publicKey, JSON.stringify(rumor));
+    const seal = finalizeEvent(
+      {
+        kind: Kind.Seal,
+        content: rumorJson,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["expiration", "1893456000"]],
+      },
+      aliceKeys.secretKey,
+    );
+    expect(seal.tags).toEqual([["expiration", "1893456000"]]);
+    const wrap = createGiftWrap(seal, bobKeys.publicKey);
+    const inner = await unwrap(bob, wrap);
+    expect(inner.content).toBe("ephemeral dm");
+    expect(inner.pubkey).toBe(aliceKeys.publicKey);
+  });
+
+  test("unwrap rejects a seal expiration tag with a non-numeric value", async () => {
+    const { alice, bob, aliceKeys, bobKeys } = pair();
+    const rumor = createRumor(aliceKeys.publicKey, { kind: 14, content: "bad exp" });
+    const rumorJson = await alice.nip44Encrypt!(bobKeys.publicKey, JSON.stringify(rumor));
+    const seal = finalizeEvent(
+      {
+        kind: Kind.Seal,
+        content: rumorJson,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["expiration", "soon"]],
+      },
+      aliceKeys.secretKey,
+    );
+    const wrap = createGiftWrap(seal, bobKeys.publicKey);
+    await expect(unwrap(bob, wrap)).rejects.toThrow(/seal tags must be empty/);
+  });
+
   test("wrap extraTags land only on the wrap; seal tags stay empty", async () => {
     const { alice, bob, aliceKeys, bobKeys } = pair();
     const malloryKeys = Keys.fromSecretKey(MALLORY_SK);

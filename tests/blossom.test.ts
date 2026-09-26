@@ -123,6 +123,22 @@ describe("auth", () => {
     expect(template.tags.some((t) => t[1] === "mirror")).toBe(false);
   });
 
+  test("createAuthTemplate defaults content to a per-verb human-readable string", () => {
+    expect(createAuthTemplate("upload").content).toBe("Upload Blob");
+    expect(createAuthTemplate("delete").content).toBe("Delete Blob");
+    expect(createAuthTemplate("list").content).toBe("List Blobs");
+    expect(createAuthTemplate("get").content).toBe("Get Blob");
+    expect(createAuthTemplate("media").content).toBe("Upload Media");
+    expect(createAuthTemplate("upload", { message: "custom" }).content).toBe("custom");
+  });
+
+  test("createAuthTemplate rejects an explicitly empty message", () => {
+    for (const verb of ["upload", "delete", "list", "get", "media"] as const) {
+      expect(() => createAuthTemplate(verb, { message: "" })).toThrow(BlossomError);
+      expect(() => createAuthTemplate(verb, { message: "   " })).toThrow(/must not be empty/);
+    }
+  });
+
   test("createUploadAuth hashes the file and signs kind 24242", async () => {
     const file = new Blob(["abc"], { type: "text/plain" });
     const event = await createUploadAuth(async (t) => signAuth(t), file, {
@@ -337,6 +353,13 @@ describe("kind 10063", () => {
     expect(() => parseBlossomServerList({ kind: Kind.TextNote, tags: event.tags })).toThrow(
       EventValidationError,
     );
+  });
+
+  test("blossomServerListEventBuilder throws without a valid server URL", () => {
+    expect(() => blossomServerListEventBuilder([])).toThrow(BlossomError);
+    expect(() => blossomServerListEventBuilder([])).toThrow(/at least one valid/);
+    expect(() => blossomServerListEventBuilder(["wss://not-http.example"])).toThrow(BlossomError);
+    expect(() => blossomServerListEventBuilder(["not a url"])).toThrow(BlossomError);
   });
 });
 

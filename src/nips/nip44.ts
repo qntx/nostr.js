@@ -19,6 +19,16 @@ const minPlaintextSize = 0x0001;
 const maxPlaintextSize = 0xffffffff;
 const extendedPrefixThreshold = 0x10000;
 
+/**
+ * Default decode-side payload cap: the base64 length of a payload carrying
+ * exactly 1 MiB (0x100000 bytes) of plaintext — version(1) + nonce(32) +
+ * extended prefix(6) + calcPaddedLen(1 MiB) + mac(32) bytes. NIP-44 asks
+ * implementations to enforce their own maximum payload size; relays cap
+ * events far below this. Raise it via `opts.maxPayloadChars` in `decrypt`/
+ * `decryptFromPubkey` for large local payloads.
+ */
+export const DEFAULT_MAX_PAYLOAD_CHARS = Math.ceil((71 + calcPaddedLen(0x100000)) / 3) * 4;
+
 function assert32(bytes: Uint8Array, label: string): void {
   if (bytes.length !== 32) throw new CryptoError(`${label} must be 32 bytes`);
 }
@@ -32,7 +42,8 @@ export function getConversationKey(privkeyA: Uint8Array, pubkeyB: string): Uint8
   return hkdf_extract(sha256, sharedX, utf8Encoder.encode("nip44-v2"));
 }
 
-function getMessageKeys(
+/** NIP-44 `get_message_keys`: HKDF-expand the 76-byte key material. */
+export function getMessageKeys(
   conversationKey: Uint8Array,
   nonce: Uint8Array,
 ): { chacha_key: Uint8Array; chacha_nonce: Uint8Array; hmac_key: Uint8Array } {
@@ -116,14 +127,19 @@ function hmacAad(key: Uint8Array, message: Uint8Array, aad: Uint8Array): Uint8Ar
   return hmac(sha256, key, concatBytes(aad, message));
 }
 
-function decodePayload(payload: string): {
+function decodePayload(
+  payload: string,
+  maxPayloadChars: number,
+): {
   nonce: Uint8Array;
   ciphertext: Uint8Array;
   mac: Uint8Array;
 } {
   if (typeof payload !== "string") throw new CryptoError("payload must be a valid string");
-  if (payload.length < 132) throw new CryptoError("invalid payload length: " + payload.length);
   if (payload[0] === "#") throw new CryptoError("unknown encryption version");
+  if (payload.length < 132 || payload.length > maxPayloadChars) {
+    throw new CryptoError("invalid payload length: " + payload.length);
+  }
   let data: Uint8Array;
   try {
     data = base64.decode(payload);
@@ -153,8 +169,15 @@ export function encrypt(
   return base64.encode(concatBytes(new Uint8Array([2]), nonce, ciphertext, mac));
 }
 
-export function decrypt(payload: string, conversationKey: Uint8Array): string {
-  const { nonce, ciphertext, mac } = decodePayload(payload);
+export function decrypt(
+  payload: string,
+  conversationKey: Uint8Array,
+  opts?: { maxPayloadChars?: number },
+): string {
+  const { nonce, ciphertext, mac } = decodePayload(
+    payload,
+    opts?.maxPayloadChars ?? DEFAULT_MAX_PAYLOAD_CHARS,
+  );
   const { chacha_key, chacha_nonce, hmac_key } = getMessageKeys(conversationKey, nonce);
   const calculatedMac = hmacAad(hmac_key, ciphertext, nonce);
   if (!equalBytes(calculatedMac, mac)) throw new CryptoError("invalid MAC");
@@ -176,6 +199,7 @@ export function decryptFromPubkey(
   payload: string,
   secretKey: Uint8Array,
   peerPubkey: string,
+  opts?: { maxPayloadChars?: number },
 ): string {
-  return decrypt(payload, getConversationKey(secretKey, peerPubkey));
+  return decrypt(payload, getConversationKey(secretKey, peerPubkey), opts);
 }

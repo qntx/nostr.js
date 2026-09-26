@@ -18,10 +18,9 @@ export type Nip96ServerInfo = {
   content_types?: string[];
 };
 
-export type Nip96UploadResult = {
-  url: string;
-  tags: string[][];
-};
+export type Nip96UploadResult =
+  | { status: "success"; url: string; tags: string[][] }
+  | { status: "processing"; processingUrl: string; tags: string[][] };
 
 export class Nip96Error extends NostrError {}
 
@@ -71,49 +70,58 @@ function parseNip96ServerInfo(json: unknown): Nip96ServerInfo {
   return info;
 }
 
-/** Parse `{ status, nip94_event.tags }` and require a `url` tag. */
-export function parseNip96UploadResponse(json: unknown): Nip96UploadResult {
+function parseStatus(value: unknown): "success" | "error" | "processing" | undefined {
+  return value === "success" || value === "error" || value === "processing" ? value : undefined;
+}
+
+/**
+ * Parse `{ status, processing_url, nip94_event.tags }`.
+ * A `url` tag is required unless the response reports delayed processing
+ * (`status: "processing"` or HTTP 202 with `processing_url`).
+ */
+export function parseNip96UploadResponse(json: unknown, httpStatus = 200): Nip96UploadResult {
   if (!json || typeof json !== "object" || Array.isArray(json)) {
     throw new Nip96Error("NIP-96 upload response must be a JSON object");
   }
-  const event = (json as { nip94_event?: unknown }).nip94_event;
+  const raw = json as { nip94_event?: unknown; status?: unknown; processing_url?: unknown };
+  const status = parseStatus(raw.status);
+  const processingUrl =
+    typeof raw.processing_url === "string" && raw.processing_url ? raw.processing_url : undefined;
+  const event = raw.nip94_event;
   const rawTags =
     event && typeof event === "object" && !Array.isArray(event)
       ? (event as { tags?: unknown }).tags
       : undefined;
-  if (!Array.isArray(rawTags)) {
-    throw new Nip96Error("upload response without url");
-  }
 
   const tags: string[][] = [];
-  for (const tag of rawTags) {
-    if (!Array.isArray(tag) || tag.some((item) => typeof item !== "string")) {
-      throw new Nip96Error("invalid nip94_event.tags");
+  if (Array.isArray(rawTags)) {
+    for (const tag of rawTags) {
+      if (!Array.isArray(tag) || tag.some((item) => typeof item !== "string")) {
+        throw new Nip96Error("invalid nip94_event.tags");
+      }
+      tags.push([...tag]);
     }
-    tags.push([...tag]);
   }
 
   const url = tags.find((tag) => tag[0] === "url")?.[1];
-  if (!url) {
-    throw new Nip96Error("upload response without url");
+  if (url) {
+    return { status: "success", url, tags };
   }
-  return { url, tags };
+  if ((httpStatus === 202 || status === "processing") && processingUrl) {
+    return { status: "processing", processingUrl, tags };
+  }
+  throw new Nip96Error("upload response without url");
 }
 
-/** GET `${service}/.well-known/nostr/nip96.json` with `redirect: "manual"`. */
-export async function fetchNip96Info(
-  serviceUrl: string,
-  opts?: { fetch?: Nip96Fetch; signal?: AbortSignal },
+async function fetchServerInfo(
+  fetchImpl: Nip96Fetch,
+  url: string,
+  signal?: AbortSignal,
 ): Promise<Nip96ServerInfo> {
-  const url = serverInfoUrl(serviceUrl);
-  const fetchImpl =
-    opts?.fetch ??
-    requireGlobalFetch(() => new Nip96Error("no fetch implementation available; pass opts.fetch"));
-
   const res = await fetchManual(
     fetchImpl,
     url,
-    { signal: opts?.signal },
+    { signal },
     (cause) =>
       new Nip96Error(`NIP-96 server info request failed: ${url}`, {
         cause: cause instanceof Error ? cause : undefined,
@@ -132,6 +140,29 @@ export async function fetchNip96Info(
     });
   }
   return parseNip96ServerInfo(json);
+}
+
+/** GET `${service}/.well-known/nostr/nip96.json`; follows `delegated_to_url` one hop. */
+export async function fetchNip96Info(
+  serviceUrl: string,
+  opts?: { fetch?: Nip96Fetch; signal?: AbortSignal },
+): Promise<Nip96ServerInfo> {
+  const fetchImpl =
+    opts?.fetch ??
+    requireGlobalFetch(() => new Nip96Error("no fetch implementation available; pass opts.fetch"));
+
+  const info = await fetchServerInfo(fetchImpl, serverInfoUrl(serviceUrl), opts?.signal);
+  if (!info.delegated_to_url) return info;
+
+  const delegated = await fetchServerInfo(
+    fetchImpl,
+    serverInfoUrl(info.delegated_to_url),
+    opts?.signal,
+  );
+  if (delegated.delegated_to_url) {
+    throw new Nip96Error("NIP-96 delegation exceeded one hop");
+  }
+  return delegated;
 }
 
 /** POST `apiUrl` as multipart `file`. `authorization` is a prebuilt NIP-98 header. */
@@ -178,5 +209,5 @@ export async function uploadNip96(
       cause: cause instanceof Error ? cause : undefined,
     });
   }
-  return parseNip96UploadResponse(json);
+  return parseNip96UploadResponse(json, res.status);
 }

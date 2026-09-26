@@ -57,7 +57,7 @@ export function relayListToTags(items: RelayListItem[]): Tag[] {
     if (item.read && item.write) return ["r", item.url];
     if (item.read) return ["r", item.url, "read"];
     if (item.write) return ["r", item.url, "write"];
-    return ["r", item.url];
+    throw new EventValidationError("relay list item must be read, write, or both");
   });
 }
 

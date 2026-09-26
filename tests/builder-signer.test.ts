@@ -322,7 +322,7 @@ describe("EventBuilder", () => {
   });
 
   test("deletion k tags with e", () => {
-    const del = EventBuilder.deletion(["id"], "x", { kinds: [1] });
+    const del = EventBuilder.deletion([{ id: "id", kind: 1 }], "x");
     expect(del.currentKind).toBe(Kind.EventDeletion);
     expect(del.currentContent).toBe("x");
     expect(del.currentTags).toEqual([
@@ -331,14 +331,38 @@ describe("EventBuilder", () => {
     ]);
   });
 
-  test("deletion empty ids with a and k", () => {
-    const del = EventBuilder.deletion([], "gone", { kinds: [0], addresses: ["0:pk:"] });
-    expect(del.currentContent).toBe("gone");
+  test("deletion dedupes k tags per target kind", () => {
+    const del = EventBuilder.deletion(
+      [
+        { id: "a", kind: 1 },
+        { id: "b", kind: 1 },
+        { id: "c", kind: 30023 },
+      ],
+      "x",
+    );
     expect(del.currentTags).toEqual([
-      ["k", "0"],
-      ["a", "0:pk:"],
+      ["e", "a"],
+      ["e", "b"],
+      ["e", "c"],
+      ["k", "1"],
+      ["k", "30023"],
     ]);
+  });
+
+  test("deletion address target derives k tag", () => {
+    const del = EventBuilder.deletion([{ address: "0:pk:" }], "gone");
+    expect(del.currentContent).toBe("gone");
+    expect(del.currentTags).toEqual([["a", "0:pk:"]]);
     expect(del.currentTags.some((t) => t[0] === "e")).toBe(false);
+  });
+
+  test("deletion address with valid coordinate derives k tag", () => {
+    const pk = "ab".repeat(32);
+    const del = EventBuilder.deletion([{ address: `30023:${pk}:d1` }], "gone");
+    expect(del.currentTags).toEqual([
+      ["a", `30023:${pk}:d1`],
+      ["k", "30023"],
+    ]);
   });
 
   test("relayList markers", () => {
