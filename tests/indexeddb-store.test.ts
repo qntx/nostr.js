@@ -430,17 +430,16 @@ describe("IndexedDbEventStore", () => {
     const keys = Keys.fromSecretKey(SK);
     const store = new IndexedDbEventStore({ dbName: "case-hex" });
     await store.open();
-    const note = EventBuilder.textNote("n").tag(["e", EID]).createdAt(1).signWithKeys(keys);
-    const mixed = {
-      ...note,
-      id: note.id.toUpperCase(),
-      pubkey: note.pubkey.toUpperCase(),
-      tags: [
-        ["e", EID.toUpperCase()],
-        ["p", keys.publicKey.toUpperCase()],
-      ] as typeof note.tags,
-    };
-    expect(await store.put(mixed)).toBe("accepted");
+    // Tag values are arbitrary content: uppercase e/p values are indexed
+    // case-insensitively while the event itself stays canonical.
+    const note = EventBuilder.textNote("n")
+      .tag(["e", EID.toUpperCase()])
+      .tag(["p", keys.publicKey.toUpperCase()])
+      .createdAt(1)
+      .signWithKeys(keys);
+    const mixed = { ...note, id: note.id.toUpperCase(), pubkey: note.pubkey.toUpperCase() };
+    expect(await store.put(mixed)).toBe("invalid");
+    expect(await store.put(note)).toBe("accepted");
     expect((await store.get(note.id.toUpperCase()))?.id).toBe(note.id);
     expect(
       await store.query([{ authors: [keys.publicKey.toUpperCase()], kinds: [1] }]),
@@ -546,7 +545,7 @@ describe("IndexedDbEventStore", () => {
       created_at: 5,
       tags: [] as [],
       content: "",
-      sig: "ab".repeat(32),
+      sig: "ab".repeat(64),
     });
     const e00 = mk("00".repeat(32), a.publicKey);
     const e80 = mk("80".repeat(32), b.publicKey);
@@ -848,7 +847,7 @@ describe("IndexedDbEventStore", () => {
       created_at: 5,
       tags: [] as [],
       content: "",
-      sig: "ab".repeat(32),
+      sig: "ab".repeat(64),
     };
     const low = { ...high, id: "00".repeat(32) };
     await store.put(high);
@@ -861,21 +860,18 @@ describe("IndexedDbEventStore", () => {
     store.close();
   });
 
-  test("v1 mixed-case pubkey and e-tag are queryable after upgrade", async () => {
+  test("v1 non-canonical rows are dropped on upgrade", async () => {
     const keys = Keys.fromSecretKey(SK);
     const note = EventBuilder.textNote("v1").tag(["e", EID]).createdAt(1).signWithKeys(keys);
-    await seedIdbV1("case-upgrade", [
-      {
-        ...note,
-        pubkey: note.pubkey.toUpperCase(),
-        tags: [["e", EID.toUpperCase()]],
-      },
-    ]);
+    const bad = { ...note, pubkey: note.pubkey.toUpperCase() };
+    const good = EventBuilder.textNote("ok").createdAt(2).signWithKeys(keys);
+    await seedIdbV1("case-upgrade", [bad, good]);
     const store = new IndexedDbEventStore({ dbName: "case-upgrade" });
     await store.open();
     mock.resetStats();
-    expect(await store.query([{ authors: [keys.publicKey], kinds: [1] }])).toHaveLength(1);
-    expect(await store.query([{ "#e": [EID] }])).toHaveLength(1);
+    expect(await store.query([{ kinds: [1] }])).toHaveLength(1);
+    expect(await store.get(bad.id)).toBeUndefined();
+    expect((await store.get(good.id))?.id).toBe(good.id);
     expect(mock.eventsGetAllCount()).toBe(0);
     store.close();
   });

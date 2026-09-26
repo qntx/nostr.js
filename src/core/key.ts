@@ -132,7 +132,7 @@ export function signEvent(
   }
 
   const expected = bytesToHex(schnorr.getPublicKey(sk));
-  if (unsigned.pubkey.toLowerCase() !== expected) {
+  if (unsigned.pubkey !== expected) {
     throw new CryptoError("unsigned event pubkey does not match secret key");
   }
 
@@ -163,15 +163,11 @@ export function verifyEvent(event: Event): boolean {
 
   try {
     const hash = getEventHash(event);
-    if (hash !== event.id.toLowerCase()) {
+    if (hash !== event.id) {
       markUnverified(event);
       return false;
     }
-    const ok = schnorr.verify(
-      hexToBytes(event.sig.toLowerCase()),
-      hexToBytes(hash),
-      hexToBytes(event.pubkey.toLowerCase()),
-    );
+    const ok = schnorr.verify(hexToBytes(event.sig), hexToBytes(hash), hexToBytes(event.pubkey));
     if (ok) markVerified(event);
     else markUnverified(event);
     return ok;

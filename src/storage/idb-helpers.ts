@@ -60,7 +60,7 @@ export function walkCursor(
 }
 
 export function tagRefKey(name: string, value: string, id: string): string {
-  return `${name}:${value.toLowerCase()}:${id.toLowerCase()}`;
+  return `${name}:${value.toLowerCase()}:${id}`;
 }
 
 export function writeTagRefs(store: IDBObjectStoreLike, event: Event): void {
@@ -68,7 +68,7 @@ export function writeTagRefs(store: IDBObjectStoreLike, event: Event): void {
     if ((tag[0] !== "e" && tag[0] !== "p") || tag[1] === undefined) continue;
     const name = tag[0];
     const value = tag[1].toLowerCase();
-    const id = event.id.toLowerCase();
+    const id = event.id;
     store.put({
       key: tagRefKey(name, value, id),
       name,
@@ -115,7 +115,7 @@ export function persistPlanTombstones(
     store.put({
       key: `pending:${p.id}`,
       type: "pending",
-      pubkey: p.pubkey.toLowerCase(),
+      pubkey: p.pubkey,
     } satisfies Tombstone);
   }
   for (const c of plan.coordinates) {
@@ -134,7 +134,7 @@ export function tombstonesToPlan(rows: unknown[]): DeletionPlan {
     if (!row || typeof row !== "object") continue;
     const r = row as Record<string, unknown>;
     if (r.type === "id" && typeof r.key === "string" && r.key.startsWith("id:")) {
-      plan.removeIds.push(r.key.slice(3).toLowerCase());
+      plan.removeIds.push(r.key.slice(3));
       continue;
     }
     if (
@@ -143,7 +143,7 @@ export function tombstonesToPlan(rows: unknown[]): DeletionPlan {
       r.key.startsWith("pending:") &&
       typeof r.pubkey === "string"
     ) {
-      plan.pendingIds.push({ id: r.key.slice(8).toLowerCase(), pubkey: r.pubkey.toLowerCase() });
+      plan.pendingIds.push({ id: r.key.slice(8), pubkey: r.pubkey });
       continue;
     }
     if (

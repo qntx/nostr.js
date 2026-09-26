@@ -19,14 +19,11 @@ export type Filter = {
 
 /** Local NIP-01 match. `search` is ignored; relays interpret NIP-50. */
 export function matchFilter(filter: Filter, event: Event): boolean {
-  if (filter.ids && !filter.ids.some((id) => id.toLowerCase() === event.id.toLowerCase())) {
+  if (filter.ids && !filter.ids.some((id) => id.toLowerCase() === event.id)) {
     return false;
   }
   if (filter.kinds && !filter.kinds.includes(event.kind)) return false;
-  if (
-    filter.authors &&
-    !filter.authors.some((pk) => pk.toLowerCase() === event.pubkey.toLowerCase())
-  ) {
+  if (filter.authors && !filter.authors.some((pk) => pk.toLowerCase() === event.pubkey)) {
     return false;
   }
 

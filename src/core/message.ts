@@ -18,7 +18,7 @@ export function createSubscriptionId(id?: string): SubscriptionId {
   if (id !== undefined) return assertSubscriptionId(id);
   const bytes = new Uint8Array(8);
   crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return bytesToHex(bytes);
 }
 
 /** Client → relay messages (NIP-01 + NIP-42 AUTH + NIP-45 COUNT + NIP-77). */

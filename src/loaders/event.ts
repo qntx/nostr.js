@@ -17,7 +17,7 @@ function parseRef(ref: EventRef): {
   cacheKey: string;
 } {
   if (typeof ref === "string") {
-    if (isHex32(ref)) {
+    if (isHex32(ref.toLowerCase())) {
       return {
         filter: { ids: [ref.toLowerCase()] },
         hints: [],

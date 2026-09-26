@@ -1,5 +1,5 @@
 import type { Event } from "../core/event.ts";
-import { validateSignedEvent } from "../core/event.ts";
+import { compareEventsDesc, validateSignedEvent } from "../core/event.ts";
 import { matchFilter, type Filter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
 import { bytesToHex, normalizeURL } from "../core/util.ts";
@@ -50,10 +50,6 @@ export type FakeRelaySession = {
   authed: boolean;
   queue: Promise<void>;
 };
-
-function isHex64(value: unknown): value is string {
-  return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
-}
 
 function searchMatch(filter: Filter, event: Event): boolean {
   if (filter.search === undefined) return true;
@@ -203,14 +199,14 @@ export class FakeRelayCore implements FakeRelay {
       const rows = (await this.#store.query([unbounded])).filter((event) =>
         searchMatch(filter, event),
       );
-      rows.sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id));
+      rows.sort(compareEventsDesc);
       const kept = filter.limit === undefined ? rows : rows.slice(0, filter.limit);
       for (const event of kept) {
         if (!seen.has(event.id)) seen.set(event.id, event);
       }
     }
     const matched = [...seen.values()];
-    matched.sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id));
+    matched.sort(compareEventsDesc);
     return matched;
   }
 
@@ -232,7 +228,7 @@ export class FakeRelayCore implements FakeRelay {
     switch (msg[0]) {
       case "EVENT": {
         const event = msg[1] as Event | undefined;
-        if (!event || !isHex64(event.id)) {
+        if (!event || typeof event.id !== "string") {
           this.#send(session, ["NOTICE", "invalid: malformed event"]);
           return;
         }
@@ -257,6 +253,10 @@ export class FakeRelayCore implements FakeRelay {
             false,
             "invalid: a newer version of this event exists",
           ]);
+          return;
+        }
+        if (result === "invalid") {
+          this.#send(session, ["OK", event.id, false, "invalid: malformed event"]);
           return;
         }
         if (result === "duplicate") {

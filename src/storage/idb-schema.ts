@@ -1,5 +1,5 @@
 import type { Event } from "../core/event.ts";
-import { isReplaceableWinner } from "../core/event.ts";
+import { isReplaceableWinner, itemCompare, validateSignedEvent } from "../core/event.ts";
 import { Kind } from "../core/kind.ts";
 import { eventAddress } from "../core/tag.ts";
 import { DeletionState, planDeletion } from "./deletion.ts";
@@ -17,8 +17,6 @@ import {
   type IDBTransactionLike,
   type Tombstone,
 } from "./idb-types.ts";
-import { normalizeEvent } from "./put.ts";
-
 export const IDB_VERSION = 4;
 
 export function openDb(dbName: string): Promise<IDBDatabaseLike> {
@@ -65,57 +63,59 @@ export function openDb(dbName: string): Promise<IDBDatabaseLike> {
 }
 
 export function migrateV1Events(tx: IDBTransactionLike, events: Event[]): void {
-  const byId = new Map(events.map((e) => [e.id.toLowerCase(), e]));
-  const deletion = new DeletionState();
-  const dels = events
-    .filter((e) => e.kind === Kind.EventDeletion)
-    .sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
-  for (const del of dels) {
-    const plan = planDeletion(del, (id) => byId.get(id));
-    deletion.absorb(plan);
-    for (const c of plan.coordinates) {
-      for (const ev of events) {
-        if (ev.kind === Kind.EventDeletion) continue;
-        if (eventAddress(ev) === c.key && ev.created_at <= c.until) {
-          deletion.ids.add(ev.id.toLowerCase());
-        }
-      }
-    }
-  }
-
   const eventsStore = tx.objectStore(EVENTS);
   const tagRefs = tx.objectStore(TAG_REFS);
   const addresses = tx.objectStore(ADDRESSES);
   const tombstones = tx.objectStore(TOMBSTONES);
 
+  // Canonical-input precondition: legacy rows failing validation are dropped.
+  const valid: Event[] = [];
+  for (const e of events) {
+    if (validateSignedEvent(e)) {
+      valid.push(e);
+      continue;
+    }
+    const row = e as { id?: unknown };
+    if (typeof row.id === "string") eventsStore.delete(row.id);
+  }
+
+  const byId = new Map(valid.map((e) => [e.id, e]));
+  const deletion = new DeletionState();
+  const dels = valid.filter((e) => e.kind === Kind.EventDeletion).sort(itemCompare);
+  for (const del of dels) {
+    const plan = planDeletion(del, (id) => byId.get(id));
+    deletion.absorb(plan);
+    for (const c of plan.coordinates) {
+      for (const ev of valid) {
+        if (ev.kind === Kind.EventDeletion) continue;
+        if (eventAddress(ev) === c.key && ev.created_at <= c.until) {
+          deletion.ids.add(ev.id);
+        }
+      }
+    }
+  }
+
   for (const id of deletion.ids) {
     tombstones.put({ key: `id:${id}`, type: "id" } satisfies Tombstone);
   }
   for (const [id, pubkey] of deletion.pending) {
-    tombstones.put({
-      key: `pending:${id}`,
-      type: "pending",
-      pubkey: pubkey.toLowerCase(),
-    } satisfies Tombstone);
+    tombstones.put({ key: `pending:${id}`, type: "pending", pubkey } satisfies Tombstone);
   }
   for (const [key, until] of deletion.coordinates) {
     tombstones.put({ key: `coord:${key}`, type: "coord", until } satisfies Tombstone);
   }
 
   const winners = new Map<string, Event>();
-  for (const event of events) {
-    const stored = normalizeEvent(event);
-    if (deletion.ids.has(stored.id) || deletion.covers(stored)) {
+  for (const event of valid) {
+    if (deletion.ids.has(event.id) || deletion.covers(event)) {
       eventsStore.delete(event.id);
       continue;
     }
-    if (stored.id !== event.id) eventsStore.delete(event.id);
-    if (stored !== event) eventsStore.put(stored);
-    writeTagRefs(tagRefs, stored);
-    const addr = eventAddress(stored);
+    writeTagRefs(tagRefs, event);
+    const addr = eventAddress(event);
     if (addr) {
       const prev = winners.get(addr);
-      if (!prev || isReplaceableWinner(stored, prev)) winners.set(addr, stored);
+      if (!prev || isReplaceableWinner(event, prev)) winners.set(addr, event);
     }
   }
   for (const [address, event] of winners) {

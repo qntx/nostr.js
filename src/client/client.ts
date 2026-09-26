@@ -291,7 +291,9 @@ export class Client {
         const results = await this.storage.putMany(events);
         const applied: Event[] = [];
         for (let i = 0; i < events.length; i++) {
-          if (results[i] === "rejected" || results[i] === "ephemeral") continue;
+          if (results[i] === "rejected" || results[i] === "ephemeral" || results[i] === "invalid") {
+            continue;
+          }
           this.#ingestMeta(events[i]!);
           applied.push(events[i]!);
         }

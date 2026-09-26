@@ -401,11 +401,18 @@ describe("issue #125", () => {
   });
 
   test("#12 uppercase event fields and deletion coordinate casing normalize correctly", () => {
-    // (a) add() records seenOn under the canonical (lowercase) id
+    // (a) a non-canonical event is invalid; uppercase lookup arguments still match
     const store = new ReactiveEventStore();
     const e = note("upper", 1);
-    store.add({ ...e, id: e.id.toUpperCase(), pubkey: e.pubkey.toUpperCase() }, "wss://r.example");
-    expect(store.get(e.id)?.id).toBe(e.id);
+    expect(
+      store.add(
+        { ...e, id: e.id.toUpperCase(), pubkey: e.pubkey.toUpperCase() },
+        "wss://r.example",
+      ),
+    ).toBe("invalid");
+    expect(store.get(e.id)).toBeUndefined();
+    expect(store.add(e, "wss://r.example")).toBe("accepted");
+    expect(store.get(e.id.toUpperCase())?.id).toBe(e.id);
     expect(store.seenOn(e.id)).toEqual([normalizeURL("wss://r.example")]);
 
     // (b) isDeleted coordinates are case-insensitive and cleared by a newer replacement

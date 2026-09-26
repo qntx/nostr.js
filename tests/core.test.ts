@@ -4,6 +4,7 @@ import {
   Kind,
   Keys,
   MessageError,
+  UrlError,
   SUBSCRIPTION_ID_MAX_CHARS,
   SecretKey,
   assertSubscriptionId,
@@ -29,8 +30,10 @@ import {
   parseEventAddress,
   parseRelayMessage,
   serializeEvent,
+  normalizeURL,
   Tag,
   validateEvent,
+  validateSignedEvent,
   verifyEvent,
   type Event,
   type Filter,
@@ -143,6 +146,22 @@ describe("events", () => {
     );
     const bad: Event = { ...event, content: "tampered" };
     expect(verifyEvent(bad)).toBe(false);
+  });
+
+  test("non-canonical uppercase hex fields are rejected everywhere", () => {
+    const event = finalizeEvent(
+      { kind: Kind.TextNote, tags: [], content: "case", created_at: 1 },
+      SK_HEX,
+    );
+    const upperId: Event = { ...event, id: event.id.toUpperCase() };
+    const upperPk: Event = { ...event, pubkey: event.pubkey.toUpperCase() };
+    const upperSig: Event = { ...event, sig: event.sig.toUpperCase() };
+    for (const bad of [upperId, upperPk, upperSig]) {
+      expect(validateSignedEvent(bad)).toBe(false);
+      expect(verifyEvent(bad)).toBe(false);
+    }
+    // serializeEvent must not silently lowercase a non-canonical pubkey
+    expect(() => serializeEvent(upperPk)).toThrow();
   });
 });
 
@@ -397,6 +416,10 @@ describe("messages", () => {
     const sub = createSubscriptionId("sub1");
     const eventMsg = parseRelayMessage(JSON.stringify(["EVENT", sub, event]));
     expect(eventMsg[0]).toBe("EVENT");
+    // Non-canonical events are rejected at the wire boundary
+    expect(() =>
+      parseRelayMessage(JSON.stringify(["EVENT", sub, { ...event, id: event.id.toUpperCase() }])),
+    ).toThrow(MessageError);
     expect(parseRelayMessage(JSON.stringify(["EOSE", sub]))[0]).toBe("EOSE");
     expect(parseRelayMessage(JSON.stringify(["OK", event.id, true, ""]))[0]).toBe("OK");
   });
@@ -437,5 +460,21 @@ describe("messages", () => {
     const generated = createSubscriptionId();
     expect(generated).toMatch(/^[0-9a-f]{16}$/);
     expect(generated).not.toBe(createSubscriptionId());
+  });
+});
+
+describe("normalizeURL", () => {
+  test("rejects non-websocket schemes", () => {
+    expect(() => normalizeURL("ftp://x")).toThrow(UrlError);
+    expect(() => normalizeURL("ftp://x")).toThrow(/scheme/);
+  });
+
+  test("rewrites http(s) and canonicalizes the URL", () => {
+    expect(normalizeURL("https://Relay.Example:443/a//b/?z=1&a=2#f")).toBe(
+      "wss://relay.example/a/b?a=2&z=1",
+    );
+    expect(normalizeURL("http://Relay.Example")).toBe("ws://relay.example/");
+    expect(normalizeURL("wss://Relay.Example/")).toBe("wss://relay.example/");
+    expect(normalizeURL("Relay.Example")).toBe("wss://relay.example/");
   });
 });

@@ -1,5 +1,5 @@
 import type { Event } from "../core/event.ts";
-import { itemCompare, sortEvents } from "../core/event.ts";
+import { compareEventsDesc, itemCompare, sortEvents } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { matchFilter } from "../core/filter.ts";
 import { eventAddress, formatEventAddress, parseEventAddress } from "../core/tag.ts";
@@ -163,7 +163,7 @@ export class MemoryIndex {
     if (until === undefined) return false;
     const id = this.#replaceable.get(address);
     if (id === undefined) return true;
-    const event = this.#byId.get(id.toLowerCase());
+    const event = this.#byId.get(id);
     return event === undefined || event.created_at <= until;
   }
 
@@ -200,7 +200,7 @@ export class MemoryIndex {
 
   #indexInsert(event: Event): void {
     this.#byId.set(event.id, event);
-    const pubkey = event.pubkey.toLowerCase();
+    const pubkey = event.pubkey;
     addToSet(this.#byPubkey, pubkey, event.id);
     addToSet(this.#byKind, event.kind, event.id);
     addToSet(this.#byKindPubkey, `${event.kind}:${pubkey}`, event.id);
@@ -214,11 +214,11 @@ export class MemoryIndex {
   }
 
   #indexRemove(id: string): boolean {
-    const key = id.toLowerCase();
+    const key = id;
     const event = this.#byId.get(key);
     if (!event) return false;
     this.#byId.delete(key);
-    const pubkey = event.pubkey.toLowerCase();
+    const pubkey = event.pubkey;
     removeFromSet(this.#byPubkey, pubkey, key);
     removeFromSet(this.#byKind, event.kind, key);
     removeFromSet(this.#byKindPubkey, `${event.kind}:${pubkey}`, key);
@@ -385,6 +385,5 @@ function removeFromSet<K>(map: Map<K, Set<string>>, key: K, id: string): void {
 }
 
 function queryItemOrder(a: NegentropyItem, b: NegentropyItem): number {
-  if (a.created_at !== b.created_at) return b.created_at - a.created_at;
-  return a.id.localeCompare(b.id);
+  return compareEventsDesc(a, b);
 }

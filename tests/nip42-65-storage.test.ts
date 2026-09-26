@@ -316,16 +316,21 @@ describe("MemoryEventStore", () => {
     ]);
   });
 
-  test("query({ids}) matches mixed-case stored ids like matchFilter", async () => {
+  test("non-canonical events are invalid; uppercase filter args still match", async () => {
     const store = new MemoryEventStore();
     const keys = Keys.fromSecretKey(SK);
     const note = EventBuilder.textNote("n").createdAt(1).signWithKeys(keys);
     const mixed = { ...note, id: note.id.toUpperCase(), pubkey: note.pubkey.toUpperCase() };
-    expect(await store.put(mixed)).toBe("accepted");
+    expect(await store.put(mixed)).toBe("invalid");
+    expect(await store.get(note.id)).toBeUndefined();
+
+    expect(await store.put(note)).toBe("accepted");
     expect((await store.get(note.id.toUpperCase()))?.id).toBe(note.id);
-    expect((await store.query([{ ids: [note.id] }])).map((e) => e.id)).toEqual([note.id]);
+    expect((await store.query([{ ids: [note.id.toUpperCase()] }])).map((e) => e.id)).toEqual([
+      note.id,
+    ]);
     expect(await store.count([{ ids: [note.id.toUpperCase()] }])).toBe(1);
-    expect(await store.negentropyItems({ ids: [note.id.toLowerCase()] })).toEqual([
+    expect(await store.negentropyItems({ ids: [note.id.toUpperCase()] })).toEqual([
       { id: note.id, created_at: 1 },
     ]);
   });
@@ -355,7 +360,7 @@ describe("MemoryEventStore", () => {
         created_at: i,
         tags: [],
         content: "payload-should-not-appear-on-items",
-        sig: "ab".repeat(32),
+        sig: "ab".repeat(64),
       });
     }
     for (const event of events) await store.put(event);
@@ -434,7 +439,7 @@ describe("MemoryEventStore", () => {
       created_at: 5,
       tags: [],
       content: "",
-      sig: "ab".repeat(32),
+      sig: "ab".repeat(64),
     };
     const low: Event = { ...high, id: "00".repeat(32) };
     await store.put(high);
@@ -491,7 +496,7 @@ describe("MemoryEventStore", () => {
       created_at: 5,
       tags: [],
       content: "low",
-      sig: "ab".repeat(32),
+      sig: "ab".repeat(64),
     };
     const mid: Event = { ...low, id: "80".repeat(32), pubkey: b.publicKey, content: "mid" };
     const high: Event = { ...low, id: "ff".repeat(32), content: "high" };
@@ -563,16 +568,13 @@ describe("MemoryEventStore", () => {
     const eid = "aa".repeat(32);
     const root = "11".repeat(32);
     const parent = "22".repeat(32);
-    const mixed = EventBuilder.textNote("mixed").createdAt(1).signWithKeys(keys);
-    const stored = {
-      ...mixed,
-      id: mixed.id.toUpperCase(),
-      pubkey: mixed.pubkey.toUpperCase(),
-      tags: [
-        ["e", eid.toUpperCase()],
-        ["p", keys.publicKey.toUpperCase()],
-      ] as typeof mixed.tags,
-    };
+    // Tag values are arbitrary content: uppercase e/p values stay canonical-indexed.
+    const stored = EventBuilder.textNote("mixed")
+      .tag(["e", eid.toUpperCase()])
+      .tag(["p", keys.publicKey.toUpperCase()])
+      .createdAt(1)
+      .signWithKeys(keys);
+    const mixed = stored;
     expect(await store.put(stored)).toBe("accepted");
     expect((await store.query([{ "#e": [eid.toUpperCase()] }])).map((e) => e.id)).toEqual([
       mixed.id,

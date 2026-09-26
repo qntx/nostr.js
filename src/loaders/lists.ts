@@ -45,7 +45,9 @@ export function createListLoaders(ctx: LoaderContext) {
         event,
         fresh,
         items: fromTags(event, (tag) =>
-          tag[0] === "p" && tag[1] && isHex32(tag[1]) ? tag[1].toLowerCase() : undefined,
+          tag[0] === "p" && tag[1] && isHex32(tag[1].toLowerCase())
+            ? tag[1].toLowerCase()
+            : undefined,
         ),
       };
     },
@@ -62,9 +64,13 @@ export function createListLoaders(ctx: LoaderContext) {
           if (!tag[1]) return undefined;
           switch (tag[0]) {
             case "p":
-              return isHex32(tag[1]) ? { label: "pubkey", value: tag[1].toLowerCase() } : undefined;
+              return isHex32(tag[1].toLowerCase())
+                ? { label: "pubkey", value: tag[1].toLowerCase() }
+                : undefined;
             case "e":
-              return isHex32(tag[1]) ? { label: "thread", value: tag[1].toLowerCase() } : undefined;
+              return isHex32(tag[1].toLowerCase())
+                ? { label: "thread", value: tag[1].toLowerCase() }
+                : undefined;
             case "t":
               return { label: "hashtag", value: tag[1] };
             case "word":

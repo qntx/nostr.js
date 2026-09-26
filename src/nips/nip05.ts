@@ -131,7 +131,7 @@ export function parseNip05Document(json: unknown): Nip05Document {
 
   const names: Record<string, string> = {};
   for (const [k, v] of Object.entries(raw.names as Record<string, unknown>)) {
-    if (typeof v !== "string" || !isHex32(v)) continue;
+    if (typeof v !== "string" || !isHex32(v.toLowerCase())) continue;
     names[k.toLowerCase()] = v.toLowerCase();
   }
 
@@ -139,7 +139,7 @@ export function parseNip05Document(json: unknown): Nip05Document {
   if (raw.relays && typeof raw.relays === "object" && !Array.isArray(raw.relays)) {
     relays = {};
     for (const [pk, list] of Object.entries(raw.relays as Record<string, unknown>)) {
-      if (!isHex32(pk)) continue;
+      if (!isHex32(pk.toLowerCase())) continue;
       const urls = stringUrls(list);
       if (urls?.length) relays[pk.toLowerCase()] = urls;
     }
@@ -215,7 +215,7 @@ export async function verifyNip05(
   identifier: string,
   opts?: { fetch?: Nip05Fetch; signal?: AbortSignal },
 ): Promise<boolean> {
-  if (!isHex32(pubkey)) return false;
+  if (!isHex32(pubkey.toLowerCase())) return false;
   const profile = await queryProfile(identifier, opts);
   return profile !== null && profile.pubkey === pubkey.toLowerCase();
 }

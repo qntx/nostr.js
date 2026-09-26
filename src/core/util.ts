@@ -1,48 +1,49 @@
+import {
+  bytesToHex as nobleBytesToHex,
+  hexToBytes as nobleHexToBytes,
+} from "@noble/hashes/utils.js";
 import { HexError, UrlError } from "./error.ts";
 import { SECRET_KEY_BYTES } from "./limits.ts";
 
 export const utf8Encoder = new TextEncoder();
 export const utf8Decoder = new TextDecoder();
 
-const HEX_RE = /^[0-9a-f]+$/;
+const HEX32_RE = /^[0-9a-f]{64}$/;
+const HEX64_RE = /^[0-9a-f]{128}$/;
 
 /** Lowercase hex encode. */
 export function bytesToHex(bytes: Uint8Array): string {
-  let out = "";
-  for (let i = 0; i < bytes.length; i++) {
-    out += bytes[i]!.toString(16).padStart(2, "0");
-  }
-  return out;
+  return nobleBytesToHex(bytes);
 }
 
 /** Decode lowercase or mixed-case hex to bytes. */
 export function hexToBytes(hex: string): Uint8Array {
-  const normalized = hex.toLowerCase();
-  if (normalized.length % 2 !== 0 || !HEX_RE.test(normalized)) {
-    throw new HexError(`invalid hex string of length ${hex.length}`);
+  try {
+    return nobleHexToBytes(hex);
+  } catch (cause) {
+    throw new HexError(`invalid hex string of length ${hex.length}`, {
+      cause: cause instanceof Error ? cause : undefined,
+    });
   }
-  const out = new Uint8Array(normalized.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(normalized.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
 }
 
-/** True when value is a 64-char hex string (any case) — 32 bytes. */
+/** True when value is canonical NIP-01 lowercase hex of 32 bytes (64 chars). */
 export function isHex32(value: string): boolean {
-  return value.length === 64 && HEX_RE.test(value.toLowerCase());
+  return HEX32_RE.test(value);
 }
 
-/** True when value is a 128-char hex string (any case) — 64 bytes. */
+/** True when value is canonical NIP-01 lowercase hex of 64 bytes (128 chars). */
 export function isHex64(value: string): boolean {
-  return value.length === 128 && HEX_RE.test(value.toLowerCase());
+  return HEX64_RE.test(value);
 }
 
+/** Caller input of any case: lowercases first, then requires canonical hex shape. */
 export function assertHex32(value: string, label: string): string {
-  if (!isHex32(value)) {
+  const normalized = value.toLowerCase();
+  if (!isHex32(normalized)) {
     throw new HexError(`invalid ${label}: expected 64-char hex`);
   }
-  return value.toLowerCase();
+  return normalized;
 }
 
 export function assertByteLength(bytes: Uint8Array, expected: number, label: string): void {
@@ -56,7 +57,11 @@ export function assertSecretKeyBytes(bytes: Uint8Array): void {
 }
 
 /**
- * Normalize a relay URL to a stable form (wss preferred, no trailing slash, sorted query).
+ * Normalize a relay URL to a stable form: `http:`/`https:` are rewritten to
+ * `ws:`/`wss:` (a bare host gets `wss://`), any other scheme throws UrlError.
+ * The result has a lowercased host, the default port removed, duplicate path
+ * slashes collapsed, a sorted query, and no fragment. `URL` serialization keeps
+ * a trailing `/` on the root path (`wss://a.example/`).
  */
 export function normalizeURL(url: string): string {
   try {
@@ -65,6 +70,9 @@ export function normalizeURL(url: string): string {
     const p = new URL(input);
     if (p.protocol === "http:") p.protocol = "ws:";
     else if (p.protocol === "https:") p.protocol = "wss:";
+    if (p.protocol !== "ws:" && p.protocol !== "wss:") {
+      throw new UrlError(`unsupported relay URL scheme: ${p.protocol}`);
+    }
     p.pathname = p.pathname.replace(/\/+/g, "/");
     if (p.pathname.endsWith("/") && p.pathname.length > 1) {
       p.pathname = p.pathname.slice(0, -1);
@@ -76,6 +84,7 @@ export function normalizeURL(url: string): string {
     p.hash = "";
     return p.toString();
   } catch (cause) {
+    if (cause instanceof UrlError) throw cause;
     throw new UrlError(`invalid URL: ${url}`, {
       cause: cause instanceof Error ? cause : undefined,
     });

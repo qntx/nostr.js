@@ -25,7 +25,7 @@ const FOLLOW_N = 8;
 const A_OLD = 6_900;
 const A_REMAINDER = 10;
 const B_NEW = 40;
-const SIG = "ab".repeat(32);
+const SIG = "ab".repeat(64);
 const E_REF = "aa".repeat(32);
 
 function hex32(n: number): string {

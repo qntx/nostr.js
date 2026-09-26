@@ -24,7 +24,7 @@ export class KeysSigner implements NostrSigner {
 
   async signEvent(unsigned: UnsignedEvent): Promise<Event> {
     const expected = getPublicKey(this.#keys.secretKey);
-    if (unsigned.pubkey.toLowerCase() !== expected) {
+    if (unsigned.pubkey !== expected) {
       throw new CryptoError("unsigned event pubkey does not match signer");
     }
     return signEvent(unsigned, this.#keys.secretKey);
