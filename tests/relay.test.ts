@@ -18,6 +18,7 @@ import {
   type EventTemplate,
 } from "../src/index.ts";
 import { NegentropyStorageVector, Nip77Error } from "../src/nips/nip77.ts";
+import { subscriptionToAsyncIterable, type SubscriptionHandlers } from "../src/relay/index.ts";
 import type { WebSocketConstructor } from "../src/relay/websocket.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 import { stubReportError } from "./helpers/report-error.ts";
@@ -2794,5 +2795,150 @@ describe("issue #130", () => {
     } finally {
       restore();
     }
+  });
+});
+
+describe("connect ownership (issue #134)", () => {
+  test("starter abort rejects only the starter; the joiner resolves and live subscriptions work", async () => {
+    MockWebSocket.autoConnect = false;
+    const relay = new Relay("wss://relay.example.com");
+    const reason = new Error("caller aborted");
+    const ctrl = new AbortController();
+    const pA = relay.connect({ signal: ctrl.signal });
+    const pB = relay.connect();
+    const errA = captureError(pA);
+    ctrl.abort(reason);
+    expect(await errA).toBe(reason);
+    expect(relay.connected).toBe(false);
+
+    // The shared attempt is still in flight and completes for the joiner.
+    MockWebSocket.last().open();
+    await pB;
+    expect(relay.connected).toBe(true);
+
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("hi").createdAt(1).signWithKeys(keys);
+    const events: Event[] = [];
+    const sub = relay.subscribe([{ kinds: [1] }], {
+      onevent: (e) => events.push(e),
+    });
+    MockWebSocket.last().receive(JSON.stringify(["EVENT", sub.id, note]));
+    expect(events).toHaveLength(1);
+    relay.close();
+  });
+
+  test("a joiner's own signal aborts only its wait", async () => {
+    MockWebSocket.autoConnect = false;
+    const relay = new Relay("wss://relay.example.com");
+    const pA = relay.connect();
+    const reason = new Error("joiner aborted");
+    const ctrl = new AbortController();
+    const pB = relay.connect({ signal: ctrl.signal });
+    const errB = captureError(pB);
+    ctrl.abort(reason);
+    expect(await errB).toBe(reason);
+
+    MockWebSocket.last().open();
+    await pA;
+    expect(relay.connected).toBe(true);
+    relay.close();
+  });
+
+  test("a pre-aborted signal rejects without opening a socket", async () => {
+    const relay = new Relay("wss://relay.example.com");
+    const reason = new Error("aborted before connect");
+    const ctrl = new AbortController();
+    ctrl.abort(reason);
+    const err = await captureError(relay.connect({ signal: ctrl.signal }));
+    expect(err).toBe(reason);
+    expect(MockWebSocket.instances).toHaveLength(0);
+    expect(relay.connected).toBe(false);
+  });
+});
+
+describe("subscriptionToAsyncIterable close semantics (issue #134)", () => {
+  function makeIterable(opts?: { signal?: AbortSignal; includeEose?: boolean }) {
+    let handlers: SubscriptionHandlers | undefined;
+    const closeReasons: string[] = [];
+    const iterable = subscriptionToAsyncIterable((h) => {
+      handlers = h;
+      return {
+        close: (reason = "closed by client") => {
+          closeReasons.push(reason);
+          handlers?.onclose?.(reason);
+        },
+      };
+    }, opts);
+    return { iterable, fire: () => handlers!, closeReasons };
+  }
+
+  const keys = Keys.fromSecretKey(SK);
+  const note = (content: string, created_at: number) =>
+    EventBuilder.textNote(content).createdAt(created_at).signWithKeys(keys);
+
+  test("remote close drains queued events, then throws RelayClosedError", async () => {
+    const { iterable, fire } = makeIterable();
+    const a = note("a", 1);
+    const b = note("b", 2);
+    fire().onevent?.(a);
+    fire().onevent?.(b);
+    fire().onclose?.("relay went away");
+
+    const it = iterable[Symbol.asyncIterator]();
+    expect((await it.next()).value?.id).toBe(a.id);
+    expect((await it.next()).value?.id).toBe(b.id);
+    const err = await it.next().then(
+      () => {
+        throw new Error("expected throw");
+      },
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(RelayClosedError);
+    expect((err as RelayClosedError).message).toBe("relay went away");
+  });
+
+  test("iterator return() is a local close and completes normally", async () => {
+    const { iterable, fire, closeReasons } = makeIterable();
+    fire().onevent?.(note("a", 1));
+    const got: string[] = [];
+    for await (const e of iterable) {
+      got.push(e.id);
+      break;
+    }
+    expect(got).toHaveLength(1);
+    expect(closeReasons).toEqual(["iterator returned"]);
+  });
+
+  test("signal abort is a local close and drains queued events", async () => {
+    const ctrl = new AbortController();
+    const { iterable, fire, closeReasons } = makeIterable({ signal: ctrl.signal });
+    const a = note("a", 1);
+    fire().onevent?.(a);
+    ctrl.abort(new Error("stop"));
+    const it = iterable[Symbol.asyncIterator]();
+    expect((await it.next()).value?.id).toBe(a.id);
+    expect((await it.next()).done).toBe(true);
+    expect(closeReasons).toEqual(["aborted"]);
+  });
+
+  test("EOSE with includeEose:false closes locally and completes normally", async () => {
+    const { iterable, fire, closeReasons } = makeIterable({ includeEose: false });
+    const a = note("a", 1);
+    fire().onevent?.(a);
+    fire().oneose?.();
+    const it = iterable[Symbol.asyncIterator]();
+    expect((await it.next()).value?.id).toBe(a.id);
+    expect((await it.next()).done).toBe(true);
+    expect(closeReasons).toEqual(["eose"]);
+  });
+
+  test("iterable.close() is a local close and completes normally", async () => {
+    const { iterable, fire, closeReasons } = makeIterable();
+    fire().onevent?.(note("a", 1));
+    iterable.close();
+    const it = iterable[Symbol.asyncIterator]();
+    await it.next();
+    expect((await it.next()).done).toBe(true);
+    expect(closeReasons).toEqual(["closed by client"]);
   });
 });

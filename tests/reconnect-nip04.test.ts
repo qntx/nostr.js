@@ -200,7 +200,7 @@ describe("Relay reconnect", () => {
     relay.close();
   });
 
-  test("abort during first connect does not reconnect", async () => {
+  test("abort during first connect rejects the caller but keeps the shared attempt", async () => {
     MockWebSocket.autoConnect = false;
     const ac = new AbortController();
     const relay = new Relay("wss://abort-first.example", {
@@ -211,13 +211,14 @@ describe("Relay reconnect", () => {
     const connecting = relay.connect({ signal: ac.signal });
     const sub = relay.subscribe([{ kinds: [1] }], {});
     ac.abort();
+    // The caller's signal rejects only its own wait; the shared attempt is
+    // unaffected — the subscription stays open and the socket completes.
     await expect(connecting).rejects.toThrow();
-    expect(sub.closed).toBe(true);
-    const before = MockWebSocket.instances.length;
-    expect(before).toBe(1);
-    await sleep(40);
-    expect(MockWebSocket.instances.length).toBe(before);
-    expect(relay.connected).toBe(false);
+    expect(sub.closed).toBe(false);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    MockWebSocket.last().open();
+    await waitUntil(() => relay.connected);
+    expect(relay.connected).toBe(true);
     relay.close();
   });
 
