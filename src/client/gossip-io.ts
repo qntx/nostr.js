@@ -26,11 +26,16 @@ export function fetchGossip(
   gossip: Gossip,
   filters: Filter[],
   defaultRelays: () => string[],
-  opts?: { timeoutMs?: number; signal?: AbortSignal },
+  opts?: {
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    onevent?: (event: Event, relayUrl: string) => void;
+  },
 ): Promise<Event[]> {
   return fetchRouted(pool, jobsForFilters(gossip, filters, defaultRelays), {
     timeoutMs: opts?.timeoutMs,
     signal: opts?.signal,
+    onevent: opts?.onevent,
   });
 }
 

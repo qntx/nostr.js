@@ -89,11 +89,24 @@ export type FetchEventsOptions = {
   localFirst?: boolean;
   /** When false, skip writing fetched events to storage/observe. Default true. */
   observe?: boolean;
+  /**
+   * Every event of every relay batch, including duplicates across relays.
+   * `relayUrl` is the normalized URL of the relay that delivered it.
+   */
+  onevent?: (event: Event, relayUrl: string) => void;
 };
 
 export type SubscribeOptions = {
   relays?: string[];
-  onevent?: (event: Event) => void;
+  /**
+   * First receipt of each event only (deduped across relays).
+   * `relayUrl` is the normalized URL of the relay that delivered it first.
+   */
+  onevent?: (event: Event, relayUrl: string) => void;
+  /**
+   * Every receipt from every relay, including duplicates skipped by dedupe.
+   */
+  receivedEvent?: (id: string, relayUrl: string) => void;
   oneose?: () => void;
   onclose?: (reason: string) => void;
   signal?: AbortSignal;
@@ -137,6 +150,8 @@ export type PrivateMessageSendResult = {
 export type ReceivedPrivateMessage = {
   wrap: Event;
   rumor: Rumor;
+  /** Normalized URL of the relay that delivered the wrap, when known. */
+  relayUrl?: string;
 };
 
 export type FetchPrivateMessagesOptions = {

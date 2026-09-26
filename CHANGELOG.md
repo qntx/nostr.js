@@ -11,6 +11,7 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 
 ### Added
 
+- Source relay URL on subscription callbacks: `fanIn`/`Pool.subscribe`/`Client.subscribe` `onevent(event, relayUrl)` fires on first receipt (deduped across relays) and `receivedEvent(id, relayUrl)` fires for every receipt from every relay, including duplicates skipped by dedupe or `alreadyHaveEvent`. `fetchRouted`/`Pool.fetch`/`fetchGossip`/`Client.fetchEvents` accept `onevent(event, relayUrl)` fired for every event of every relay batch, including cross-relay duplicates. `relayUrl` is the `normalizeURL` result. `ReceivedPrivateMessage.relayUrl` is populated by `fetchPrivateMessages`/`subscribePrivateMessages`.
 - NIP-51 private tags: `encryptPrivateTags` / `decryptPrivateTags` / `parseMuteListPrivate` via NIP-44 to the author's own pubkey. No NIP-04 sniff. `muteListEventBuilder` and loaders stay public-only.
 - `filterFingerprint(filters)`: canonical identity for live REQ coalescing. Object keys sorted; list fields copied and sorted; hex `ids`/`authors`/`#e`/`#p` lowercased; `#t` case preserved. `since`/`until`/`limit`/`search` included. A missing key is not an empty array. Filter arrays are ordered by each filter’s canonical JSON.
 - `SubscribeOptions.closeOnEose` (default false). `Relay.fetch` passes true so a one-shot query does not join a live group and CLOSES on EOSE.

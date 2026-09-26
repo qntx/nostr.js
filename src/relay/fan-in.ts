@@ -12,14 +12,16 @@ export type RoutedJob = {
 };
 
 export type FanInOptions = {
-  onevent?: (event: Event) => void;
+  /** First receipt only (deduped across jobs). `relayUrl` is the normalized relay URL. */
+  onevent?: (event: Event, relayUrl: string) => void;
   oneose?: () => void;
   onclose?: (reason: string) => void;
   signal?: AbortSignal;
   /** Armed at fan-in only. Never forwarded to relay.subscribe. */
   eoseTimeoutMs?: number;
   alreadyHaveEvent?: (id: string) => boolean;
-  receivedEvent?: (id: string) => void;
+  /** Every receipt from every relay, including skipped duplicates. */
+  receivedEvent?: (id: string, relayUrl: string) => void;
   closeOnEose?: boolean;
   /** Optional. ensureRelay uses Pool.#opts.connectTimeoutMs when omitted. */
   connectTimeoutMs?: number;
@@ -88,14 +90,15 @@ export function fanIn(
 
   const attach = (relay: Relay, job: RoutedJob, jobIndex: number): void => {
     if (closed) return;
+    const received = opts.receivedEvent;
     const sub = relay.subscribe([...job.filters], {
       id: jobs.length === 1 ? job.id : undefined,
       closeOnEose: opts.closeOnEose,
       alreadyHaveEvent: (id) => Boolean(opts.alreadyHaveEvent?.(id) || seen.has(id)),
-      receivedEvent: opts.receivedEvent,
+      receivedEvent: received === undefined ? undefined : (id) => received(id, relay.url),
       onevent: (event) => {
         seen.add(event.id);
-        opts.onevent?.(event);
+        opts.onevent?.(event, relay.url);
       },
       oneose: () => markEose(jobIndex, relay.url),
       onclose: (reason) => {
@@ -183,7 +186,13 @@ export function fanIn(
 export async function fetchRouted(
   pool: Pool,
   jobs: readonly RoutedJob[],
-  opts: { timeoutMs?: number; signal?: AbortSignal; connectTimeoutMs?: number } = {},
+  opts: {
+    timeoutMs?: number;
+    signal?: AbortSignal;
+    connectTimeoutMs?: number;
+    /** Every event of every relay batch, including cross-relay duplicates. */
+    onevent?: (event: Event, relayUrl: string) => void;
+  } = {},
 ): Promise<Event[]> {
   const byId = new Map<string, Event>();
   await Promise.all(
@@ -198,7 +207,10 @@ export async function fetchRouted(
             timeoutMs: opts.timeoutMs,
             signal: opts.signal,
           });
-          for (const event of batch) if (!byId.has(event.id)) byId.set(event.id, event);
+          for (const event of batch) {
+            opts.onevent?.(event, relay.url);
+            if (!byId.has(event.id)) byId.set(event.id, event);
+          }
         } catch {
           // skip failed relays
         }

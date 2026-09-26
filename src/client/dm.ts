@@ -113,6 +113,7 @@ export async function fetchPrivateMessages(
   await deps.hydrateGossip([self]);
   deps.throwIfAborted(opts?.signal);
   const relays = requireDmRelays(self, deps.gossip.dmRelays(self));
+  const urls = new Map<string, string>();
   const events = await deps.pool.fetch(
     relays,
     [
@@ -123,7 +124,13 @@ export async function fetchPrivateMessages(
         until: opts?.until,
       },
     ],
-    { timeoutMs: opts?.timeoutMs, signal: opts?.signal },
+    {
+      timeoutMs: opts?.timeoutMs,
+      signal: opts?.signal,
+      onevent: (event, relayUrl) => {
+        if (!urls.has(event.id)) urls.set(event.id, relayUrl);
+      },
+    },
   );
 
   const byRumor = new Map<string, ReceivedPrivateMessage>();
@@ -131,7 +138,7 @@ export async function fetchPrivateMessages(
     try {
       const rumor = await unwrap(crypto, wrap);
       if (deps.wantObserve(opts?.observe)) deps.observe(wrap);
-      byRumor.set(rumor.id, { wrap, rumor });
+      byRumor.set(rumor.id, { wrap, rumor, relayUrl: urls.get(wrap.id) });
     } catch {
       // junk / forgery / key mismatch — not stored
     }
@@ -178,7 +185,7 @@ export async function subscribePrivateMessages(
         opts?.onclose?.(reason);
       },
       eoseTimeoutMs: opts?.eoseTimeoutMs,
-      onevent: (wrap) => {
+      onevent: (wrap, relayUrl) => {
         if (closed) return;
         tail = tail
           .then(async () => {
@@ -189,7 +196,7 @@ export async function subscribePrivateMessages(
               if (seen.has(rumor.id)) return;
               seen.add(rumor.id);
               if (deps.wantObserve(opts?.observe)) deps.observe(wrap);
-              opts?.onevent?.({ wrap, rumor });
+              opts?.onevent?.({ wrap, rumor, relayUrl });
             } catch {
               // junk / forgery — not stored
             }

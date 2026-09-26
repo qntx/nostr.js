@@ -385,6 +385,7 @@ export class Client {
         await this.pool.fetch(this.#defaultRelays(opts?.relays), filters, {
           timeoutMs: opts?.timeoutMs,
           signal: opts?.signal,
+          onevent: opts?.onevent,
         }),
       );
       return sortedEvents([...byId.values()]);
@@ -394,6 +395,7 @@ export class Client {
       await fetchGossip(this.pool, this.gossip, filters, () => this.#defaultRelays(), {
         timeoutMs: opts?.timeoutMs,
         signal: opts?.signal,
+        onevent: opts?.onevent,
       }),
     );
     return sortedEvents([...byId.values()]);
@@ -416,14 +418,15 @@ export class Client {
     const filters = canonicalizeFilters(Array.isArray(filter) ? filter : [filter]);
     const shouldObserve = this.#wantObserve(opts?.observe);
 
-    const wrapEvent = (event: Event) => {
+    const wrapEvent = (event: Event, relayUrl: string) => {
       if (shouldObserve) this.observe(event);
-      opts?.onevent?.(event);
+      opts?.onevent?.(event, relayUrl);
     };
 
     if (!opts?.gossip || opts.relays) {
       return this.pool.subscribe(this.#defaultRelays(opts?.relays), filters, {
         onevent: wrapEvent,
+        receivedEvent: opts?.receivedEvent,
         oneose: opts?.oneose,
         onclose: opts?.onclose,
         signal: opts?.signal,
@@ -434,6 +437,7 @@ export class Client {
 
     return subscribeGossip(this.pool, this.gossip, filters, () => this.#defaultRelays(), {
       onevent: wrapEvent,
+      receivedEvent: opts?.receivedEvent,
       oneose: opts?.oneose,
       onclose: opts?.onclose,
       signal: opts?.signal,

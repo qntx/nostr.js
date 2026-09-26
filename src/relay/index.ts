@@ -13,6 +13,11 @@ export type {
 } from "./relay.ts";
 export { Subscription, subscriptionToAsyncIterable } from "./subscription.ts";
 export { Pool } from "./pool.ts";
-export type { PoolOptions, PoolPublishResult, PoolCountResult } from "./pool.ts";
+export type {
+  PoolOptions,
+  PoolPublishResult,
+  PoolCountResult,
+  PoolSubscribeOptions,
+} from "./pool.ts";
 export { fanIn, fetchRouted } from "./fan-in.ts";
 export type { RoutedJob, FanInOptions } from "./fan-in.ts";
