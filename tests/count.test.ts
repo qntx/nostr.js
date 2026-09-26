@@ -10,7 +10,7 @@ import {
   parseRelayMessage,
   useWebSocketImplementation,
 } from "../src/index.ts";
-import { FakeRelayBus } from "./helpers/fake-relay.ts";
+import { createFakeRelayNetwork, type FakeRelayNetwork } from "../src/testing/index.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
@@ -455,18 +455,17 @@ describe("Relay.count", () => {
   });
 });
 
-describe("Pool.count + FakeRelayBus", () => {
-  let bus: FakeRelayBus;
+describe("Pool.count + createFakeRelayNetwork", () => {
+  let net: FakeRelayNetwork;
 
   beforeEach(() => {
     MockWebSocket.reset();
     useWebSocketImplementation(MockWebSocketCtor);
-    bus = new FakeRelayBus();
-    bus.start();
+    net = createFakeRelayNetwork();
   });
 
   afterEach(() => {
-    bus.stop();
+    net.close();
     MockWebSocket.reset();
   });
 
@@ -476,11 +475,11 @@ describe("Pool.count + FakeRelayBus", () => {
     const b = EventBuilder.textNote("b").createdAt(2).signWithKeys(keys);
     const meta = EventBuilder.metadata({ name: "x" }).createdAt(3).signWithKeys(keys);
 
-    bus.seed("wss://a.example", [a, b, meta]);
-    bus.seed("wss://b.example", [a]);
+    net.relay("wss://a.example").seed([a, b, meta]);
+    net.relay("wss://b.example").seed([a]);
 
     const pool = new Pool({
-      websocketImplementation: MockWebSocketCtor,
+      websocketImplementation: net.websocketImplementation,
       enableReconnect: false,
     });
 

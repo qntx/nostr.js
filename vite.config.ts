@@ -89,6 +89,7 @@ export default defineConfig({
       "nips/nip77": "src/nips/nip77.ts",
       "nips/nip96": "src/nips/nip96.ts",
       "nips/nip98": "src/nips/nip98.ts",
+      testing: "src/testing/index.ts",
       // bun CI is Rust-free; wasm entry is publish / build:wasm only
       ...(packWasm ? { wasm: "src/wasm/index.ts" } : {}),
     },

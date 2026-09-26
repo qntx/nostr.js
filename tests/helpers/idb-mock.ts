@@ -150,7 +150,9 @@ export function installIdbMock(): IdbMock {
     #queue() {
       if (this.#scheduled) return;
       this.#scheduled = true;
-      queueMicrotask(() => {
+      // Real IDB commits at a task boundary; a microtask tick would complete
+      // the tx before microtask-chained follow-up requests are issued.
+      setTimeout(() => {
         this.#scheduled = false;
         if (this.#completed || this.#held || this.#pending > 0) return;
         if (stats.failTx) {

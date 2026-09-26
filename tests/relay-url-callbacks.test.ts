@@ -1,17 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
-import {
-  Client,
-  EventBuilder,
-  Keys,
-  Pool,
-  relayListEventBuilder,
-  useWebSocketImplementation,
-} from "../src/index.ts";
+import { Client, EventBuilder, Keys, Pool, relayListEventBuilder } from "../src/index.ts";
 import { fetchRouted } from "../src/relay/fan-in.ts";
 import type { Event } from "../src/core/event.ts";
 import { normalizeURL } from "../src/core/util.ts";
-import { FakeRelayBus } from "./helpers/fake-relay.ts";
-import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
+import { createFakeRelayNetwork, type FakeRelayNetwork } from "../src/testing/index.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
 
@@ -32,29 +24,25 @@ const A = normalizeURL("wss://a.example");
 const B = normalizeURL("wss://b.example");
 
 describe("relay URL callbacks", () => {
-  let bus: FakeRelayBus;
+  let net: FakeRelayNetwork;
 
   beforeEach(() => {
-    MockWebSocket.reset();
-    useWebSocketImplementation(MockWebSocketCtor);
-    bus = new FakeRelayBus();
-    bus.start();
+    net = createFakeRelayNetwork();
   });
 
   afterEach(() => {
-    bus.stop();
-    MockWebSocket.reset();
+    net.close();
   });
 
   test("client subscribe: onevent once with first URL, receivedEvent per receipt", async () => {
     const keys = Keys.fromSecretKey(SK);
     const note = EventBuilder.textNote("dup").createdAt(1).signWithKeys(keys);
-    bus.seed("wss://a.example", [note]);
-    bus.seed("wss://b.example", [note]);
+    net.relay("wss://a.example").seed([note]);
+    net.relay("wss://b.example").seed([note]);
 
     const client = Client.builder()
       .relays(["wss://a.example", "wss://b.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
 
@@ -82,11 +70,11 @@ describe("relay URL callbacks", () => {
   test("fetchRouted: onevent sees every relay batch, result deduped", async () => {
     const keys = Keys.fromSecretKey(SK);
     const note = EventBuilder.textNote("routed").createdAt(1).signWithKeys(keys);
-    bus.seed("wss://a.example", [note]);
-    bus.seed("wss://b.example", [note]);
+    net.relay("wss://a.example").seed([note]);
+    net.relay("wss://b.example").seed([note]);
 
     const pool = new Pool({
-      websocketImplementation: MockWebSocketCtor,
+      websocketImplementation: net.websocketImplementation,
       enableReconnect: false,
     });
 
@@ -111,12 +99,12 @@ describe("relay URL callbacks", () => {
   test("gossip subscribe passes the source relay URL", async () => {
     const a = Keys.fromSecretKey(SK);
     const note = EventBuilder.textNote("gossip dup").createdAt(1).signWithKeys(a);
-    bus.seed("wss://out-a.example", [note]);
-    bus.seed("wss://out-b.example", [note]);
+    net.relay("wss://out-a.example").seed([note]);
+    net.relay("wss://out-b.example").seed([note]);
 
     const client = Client.builder()
       .relays(["wss://default.example"])
-      .websocketImplementation(MockWebSocketCtor)
+      .websocketImplementation(net.websocketImplementation)
       .enableReconnect(false)
       .build();
     client.gossip.ingest(
