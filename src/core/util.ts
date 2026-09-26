@@ -4,7 +4,8 @@ import { SECRET_KEY_BYTES } from "./limits.ts";
 export const utf8Encoder = new TextEncoder();
 export const utf8Decoder = new TextDecoder();
 
-const HEX_RE = /^[0-9a-f]+$/;
+const HEX32_RE = /^[0-9a-f]{64}$/;
+const HEX64_RE = /^[0-9a-f]{128}$/;
 
 /** Lowercase hex encode. */
 export function bytesToHex(bytes: Uint8Array): string {
@@ -18,7 +19,7 @@ export function bytesToHex(bytes: Uint8Array): string {
 /** Decode lowercase or mixed-case hex to bytes. */
 export function hexToBytes(hex: string): Uint8Array {
   const normalized = hex.toLowerCase();
-  if (normalized.length % 2 !== 0 || !HEX_RE.test(normalized)) {
+  if (normalized.length % 2 !== 0 || !/^[0-9a-f]+$/.test(normalized)) {
     throw new HexError(`invalid hex string of length ${hex.length}`);
   }
   const out = new Uint8Array(normalized.length / 2);
@@ -28,21 +29,23 @@ export function hexToBytes(hex: string): Uint8Array {
   return out;
 }
 
-/** True when value is a 64-char hex string (any case) — 32 bytes. */
+/** True when value is canonical NIP-01 lowercase hex of 32 bytes (64 chars). */
 export function isHex32(value: string): boolean {
-  return value.length === 64 && HEX_RE.test(value.toLowerCase());
+  return HEX32_RE.test(value);
 }
 
-/** True when value is a 128-char hex string (any case) — 64 bytes. */
+/** True when value is canonical NIP-01 lowercase hex of 64 bytes (128 chars). */
 export function isHex64(value: string): boolean {
-  return value.length === 128 && HEX_RE.test(value.toLowerCase());
+  return HEX64_RE.test(value);
 }
 
+/** Caller input of any case: lowercases first, then requires canonical hex shape. */
 export function assertHex32(value: string, label: string): string {
-  if (!isHex32(value)) {
+  const normalized = value.toLowerCase();
+  if (!isHex32(normalized)) {
     throw new HexError(`invalid ${label}: expected 64-char hex`);
   }
-  return value.toLowerCase();
+  return normalized;
 }
 
 export function assertByteLength(bytes: Uint8Array, expected: number, label: string): void {

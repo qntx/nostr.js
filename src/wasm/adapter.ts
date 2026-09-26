@@ -35,9 +35,9 @@ export function makeVerifyEvent(
     }
     try {
       const serialized = utf8Encoder.encode(serializeEvent(event));
-      const id = hexToBytes(event.id.toLowerCase());
-      const pubkey = hexToBytes(event.pubkey.toLowerCase());
-      const sig = hexToBytes(event.sig.toLowerCase());
+      const id = hexToBytes(event.id);
+      const pubkey = hexToBytes(event.pubkey);
+      const sig = hexToBytes(event.sig);
       const ok = wasm.verifySerialized(serialized, id, pubkey, sig);
       if (ok) markVerified(event);
       else markUnverified(event);

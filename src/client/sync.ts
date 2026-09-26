@@ -153,7 +153,7 @@ export async function syncToRelay(
       }
       for (let j = 0; j < events.length; j++) {
         const event = events[j]!;
-        if (results[j] === "rejected") continue;
+        if (results[j] === "rejected" || results[j] === "invalid") continue;
         deps.ingestMeta(event);
         summary.received.push(event.id);
       }

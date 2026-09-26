@@ -31,6 +31,7 @@ import {
   serializeEvent,
   Tag,
   validateEvent,
+  validateSignedEvent,
   verifyEvent,
   type Event,
   type Filter,
@@ -143,6 +144,22 @@ describe("events", () => {
     );
     const bad: Event = { ...event, content: "tampered" };
     expect(verifyEvent(bad)).toBe(false);
+  });
+
+  test("non-canonical uppercase hex fields are rejected everywhere", () => {
+    const event = finalizeEvent(
+      { kind: Kind.TextNote, tags: [], content: "case", created_at: 1 },
+      SK_HEX,
+    );
+    const upperId: Event = { ...event, id: event.id.toUpperCase() };
+    const upperPk: Event = { ...event, pubkey: event.pubkey.toUpperCase() };
+    const upperSig: Event = { ...event, sig: event.sig.toUpperCase() };
+    for (const bad of [upperId, upperPk, upperSig]) {
+      expect(validateSignedEvent(bad)).toBe(false);
+      expect(verifyEvent(bad)).toBe(false);
+    }
+    // serializeEvent must not silently lowercase a non-canonical pubkey
+    expect(() => serializeEvent(upperPk)).toThrow();
   });
 });
 
@@ -397,6 +414,10 @@ describe("messages", () => {
     const sub = createSubscriptionId("sub1");
     const eventMsg = parseRelayMessage(JSON.stringify(["EVENT", sub, event]));
     expect(eventMsg[0]).toBe("EVENT");
+    // Non-canonical events are rejected at the wire boundary
+    expect(() =>
+      parseRelayMessage(JSON.stringify(["EVENT", sub, { ...event, id: event.id.toUpperCase() }])),
+    ).toThrow(MessageError);
     expect(parseRelayMessage(JSON.stringify(["EOSE", sub]))[0]).toBe("EOSE");
     expect(parseRelayMessage(JSON.stringify(["OK", event.id, true, ""]))[0]).toBe("OK");
   });

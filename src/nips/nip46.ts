@@ -81,7 +81,7 @@ export function parseBunkerURL(input: string): BunkerPointer | null {
 
 /** Build a client-initiated `nostrconnect://` URI. */
 export function createNostrConnectURI(params: NostrConnectParams): string {
-  if (!isHex32(params.clientPubkey)) {
+  if (!isHex32(params.clientPubkey.toLowerCase())) {
     throw new Nip46Error("invalid client pubkey");
   }
   if (!params.secret) {
@@ -120,7 +120,7 @@ export function parseNostrConnectURI(uri: string): NostrConnectParams {
     throw new Nip46Error(`expected nostrconnect: scheme, got ${url.protocol}`);
   }
   const clientPubkey = url.hostname || url.pathname.replace(/^\/*/, "");
-  if (!isHex32(clientPubkey)) {
+  if (!isHex32(clientPubkey.toLowerCase())) {
     throw new Nip46Error("invalid client pubkey in nostrconnect URI");
   }
   const secret = url.searchParams.get("secret");

@@ -51,10 +51,6 @@ export type FakeRelaySession = {
   queue: Promise<void>;
 };
 
-function isHex64(value: unknown): value is string {
-  return typeof value === "string" && /^[0-9a-f]{64}$/i.test(value);
-}
-
 function searchMatch(filter: Filter, event: Event): boolean {
   if (filter.search === undefined) return true;
   return event.content.toLowerCase().includes(filter.search.toLowerCase());
@@ -232,7 +228,7 @@ export class FakeRelayCore implements FakeRelay {
     switch (msg[0]) {
       case "EVENT": {
         const event = msg[1] as Event | undefined;
-        if (!event || !isHex64(event.id)) {
+        if (!event || typeof event.id !== "string") {
           this.#send(session, ["NOTICE", "invalid: malformed event"]);
           return;
         }
@@ -257,6 +253,10 @@ export class FakeRelayCore implements FakeRelay {
             false,
             "invalid: a newer version of this event exists",
           ]);
+          return;
+        }
+        if (result === "invalid") {
+          this.#send(session, ["OK", event.id, false, "invalid: malformed event"]);
           return;
         }
         if (result === "duplicate") {

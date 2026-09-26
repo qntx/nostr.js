@@ -1,13 +1,18 @@
 import type { Event } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 
+/**
+ * `"invalid"`: the event failed canonical shape validation (see
+ * `validateSignedEvent`); it was not stored and no deletion state changed.
+ */
 export type PutResult =
   | "accepted"
   | "duplicate"
   | "replaced"
   | "rejected"
   | "ephemeral"
-  | "deleted";
+  | "deleted"
+  | "invalid";
 
 /** NIP-77 item: event id + created_at. Sorted created_at asc, then id. */
 export type NegentropyItem = { id: string; created_at: number };

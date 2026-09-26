@@ -1,5 +1,5 @@
 import type { Event } from "../core/event.ts";
-import { itemCompare, sortEvents } from "../core/event.ts";
+import { itemCompare, sortEvents, validateSignedEvent } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { matchFilter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
@@ -31,7 +31,7 @@ import {
   type OutboxBoundRow,
   type Tombstone,
 } from "./idb-types.ts";
-import { decidePut, normalizeEvent, outboxBoundKey } from "./put.ts";
+import { decidePut, outboxBoundKey } from "./put.ts";
 import type { EventStore, NegentropyItem, OutboxBound, PutResult } from "./types.ts";
 
 export type IndexedDbEventStoreOptions = {
@@ -154,7 +154,11 @@ export class IndexedDbEventStore implements EventStore {
     const addressesStore = tx.objectStore(ADDRESSES);
     const results: PutResult[] = [];
     for (const raw of batch) {
-      const event = normalizeEvent(raw);
+      if (!validateSignedEvent(raw)) {
+        results.push("invalid");
+        continue;
+      }
+      const event = raw;
       const byId = new Map<string, Pick<Event, "id" | "pubkey" | "kind" | "created_at" | "tags">>();
       const existing = await reqOf<Event | undefined>(eventsStore.get(event.id));
       if (existing) byId.set(existing.id, existing);
@@ -401,7 +405,7 @@ export class IndexedDbEventStore implements EventStore {
 
   async #deleteEventRows(tx: IDBTransactionLike, id: string): Promise<boolean> {
     const events = tx.objectStore(EVENTS);
-    const event = await reqOf<Event | undefined>(events.get(id.toLowerCase()));
+    const event = await reqOf<Event | undefined>(events.get(id));
     if (!event) return false;
     const addr = eventAddress(event);
     let row: AddressRow | undefined;

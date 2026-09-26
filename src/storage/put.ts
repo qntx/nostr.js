@@ -1,5 +1,5 @@
 import type { Event } from "../core/event.ts";
-import { isReplaceableWinner } from "../core/event.ts";
+import { isReplaceableWinner, validateSignedEvent } from "../core/event.ts";
 import { isEphemeralKind, Kind } from "../core/kind.ts";
 import { eventAddress } from "../core/tag.ts";
 import {
@@ -10,19 +10,12 @@ import {
 } from "./deletion.ts";
 import type { PutResult } from "./types.ts";
 
-export function normalizeEvent(event: Event): Event {
-  const id = event.id.toLowerCase();
-  const pubkey = event.pubkey.toLowerCase();
-  if (id === event.id && pubkey === event.pubkey) return event;
-  return { ...event, id, pubkey };
-}
-
 export function outboxBoundKey(pubkey: string, kind: number): string {
   return `${pubkey.toLowerCase()}:${kind}`;
 }
 
 export type PutDecision =
-  | { action: "skip"; result: "duplicate" | "ephemeral" | "rejected"; event: Event }
+  | { action: "skip"; result: "duplicate" | "ephemeral" | "rejected" | "invalid"; event: Event }
   | { action: "tombstone"; result: "duplicate"; event: Event }
   | { action: "delete"; result: "deleted"; event: Event; plan: DeletionPlan; coordIds: string[] }
   | {
@@ -42,7 +35,11 @@ export type PutLookup = {
 };
 
 export function decidePut(raw: Event, lookup: PutLookup): PutDecision {
-  const event = normalizeEvent(raw);
+  // Canonical-input precondition: non-canonical events are never indexed.
+  if (!validateSignedEvent(raw)) {
+    return { action: "skip", result: "invalid", event: raw };
+  }
+  const event = raw;
   if (lookup.deletion.ids.has(event.id) || lookup.getById(event.id)) {
     return { action: "skip", result: "duplicate", event };
   }

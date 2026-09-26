@@ -86,7 +86,7 @@ function isRelaySetAddress(value: string): boolean {
   if (pkSep < 0) return false;
   const pubkey = value.slice(kindSep + 1, pkSep);
   const d = value.slice(pkSep + 1);
-  return isHex32(pubkey) && d.length > 0;
+  return isHex32(pubkey.toLowerCase()) && d.length > 0;
 }
 
 /** Parse kind:10000 mute list public tags (`p` / `e` / `t` / `word`). */
@@ -98,10 +98,11 @@ export function parseMuteList(event: Pick<Event, "kind" | "tags">): MuteItem[] {
     if (!value) continue;
     switch (tag[0]) {
       case "p":
-        if (isHex32(value)) items.push({ type: "pubkey", value: value.toLowerCase() });
+        if (isHex32(value.toLowerCase()))
+          items.push({ type: "pubkey", value: value.toLowerCase() });
         break;
       case "e":
-        if (isHex32(value)) items.push({ type: "event", value: value.toLowerCase() });
+        if (isHex32(value.toLowerCase())) items.push({ type: "event", value: value.toLowerCase() });
         break;
       case "t":
         // NIP-51 does not require hashtag case-folding.
@@ -188,7 +189,7 @@ export function parsePinList(event: Pick<Event, "kind" | "tags">): string[] {
   requireKind(event, Kind.PinList);
   const ids: string[] = [];
   for (const tag of event.tags) {
-    if (tag[0] !== "e" || !tag[1] || !isHex32(tag[1])) continue;
+    if (tag[0] !== "e" || !tag[1] || !isHex32(tag[1].toLowerCase())) continue;
     ids.push(tag[1].toLowerCase());
   }
   return ids;
@@ -212,7 +213,7 @@ export function parseBookmarkList(event: Pick<Event, "kind" | "tags">): {
   for (const tag of event.tags) {
     if (!tag[1]) continue;
     if (tag[0] === "e") {
-      if (isHex32(tag[1])) e.push(tag[1].toLowerCase());
+      if (isHex32(tag[1].toLowerCase())) e.push(tag[1].toLowerCase());
     } else if (tag[0] === "a") {
       a.push(tag[1]);
     }
@@ -295,7 +296,7 @@ export function parseFollowPack(event: Pick<Event, "kind" | "tags">): {
   requireKind(event, Kind.StarterPack);
   const pubkeys: string[] = [];
   for (const tag of event.tags) {
-    if (tag[0] !== "p" || !tag[1] || !isHex32(tag[1])) continue;
+    if (tag[0] !== "p" || !tag[1] || !isHex32(tag[1].toLowerCase())) continue;
     pubkeys.push(tag[1].toLowerCase());
   }
   return { d: identifier(event.tags), pubkeys };

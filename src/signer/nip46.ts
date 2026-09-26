@@ -432,7 +432,7 @@ export class Nip46Signer implements NostrSigner {
   async getPublicKey(): Promise<string> {
     if (!this.#cachedRemotePubkey) {
       const pk = await this.#sendRequest("get_public_key", []);
-      if (!isHex32(pk)) throw new Nip46Error("bunker returned invalid pubkey");
+      if (!isHex32(pk.toLowerCase())) throw new Nip46Error("bunker returned invalid pubkey");
       this.#cachedRemotePubkey = pk.toLowerCase();
     }
     return this.#cachedRemotePubkey;

@@ -24,7 +24,7 @@ export function planDeletion(
   deletion: Pick<Event, "pubkey" | "created_at" | "tags">,
   getById: (id: string) => Pick<Event, "id" | "pubkey" | "kind"> | undefined,
 ): DeletionPlan {
-  const pubkey = deletion.pubkey.toLowerCase();
+  const pubkey = deletion.pubkey;
   const removeIds: string[] = [];
   const pendingIds: Array<{ id: string; pubkey: string }> = [];
   const coordinates: Array<{ key: string; until: number }> = [];
@@ -32,7 +32,7 @@ export function planDeletion(
   const seenCoords = new Set<string>();
 
   for (const tag of deletion.tags) {
-    if (tag[0] === "e" && tag[1] && isHex32(tag[1])) {
+    if (tag[0] === "e" && tag[1] && isHex32(tag[1].toLowerCase())) {
       const id = tag[1].toLowerCase();
       if (seenIds.has(id)) continue;
       seenIds.add(id);
@@ -42,7 +42,7 @@ export function planDeletion(
         continue;
       }
       if (existing.kind === Kind.EventDeletion) continue;
-      if (existing.pubkey.toLowerCase() !== pubkey) continue;
+      if (existing.pubkey !== pubkey) continue;
       removeIds.push(id);
       continue;
     }
@@ -76,7 +76,7 @@ export class DeletionState {
     if (this.ids.has(event.id)) return true;
     if (event.kind === Kind.EventDeletion) return false;
     const pendingPk = this.pending.get(event.id);
-    if (pendingPk && event.pubkey.toLowerCase() === pendingPk) return true;
+    if (pendingPk && event.pubkey === pendingPk) return true;
     const addr = eventAddress(event);
     if (!addr) return false;
     const until = this.coordinates.get(addr);

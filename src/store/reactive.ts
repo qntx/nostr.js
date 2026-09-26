@@ -173,9 +173,14 @@ export class ReactiveEventStore {
 
   add(event: Event, relayUrl?: string): PutResult {
     const result = this.#index.put(event);
-    // seenOn keys are normalized ids — the stored event lowercases them.
-    const id = event.id.toLowerCase();
-    if (relayUrl !== undefined && result !== "ephemeral" && result !== "rejected") {
+    // Stored events are canonical; seenOn keys are their lowercase ids.
+    const id = event.id;
+    if (
+      relayUrl !== undefined &&
+      result !== "ephemeral" &&
+      result !== "rejected" &&
+      result !== "invalid"
+    ) {
       this.#recordSeen(id, relayUrl);
     }
     // The just-inserted event must survive its own eviction pass even when

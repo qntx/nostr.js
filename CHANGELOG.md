@@ -58,6 +58,8 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 - NIP-10: unknown `e` markers (including `mention`) go to `mentions` only, not positional root/reply.
 - `EventBuilder.repost` / `genericRepost` require a `relayHint` URL (NIP-18).
 - `EventBuilder.reaction` emits `a` only when the target is addressable (NIP-25).
+- **BREAKING**: Event `id`/`pubkey`/`sig` must be canonical lowercase hex. `isHex32`/`isHex64` are strict lowercase predicates; `validateEvent`/`validateSignedEvent` reject uppercase fields, `serializeEvent`/`verifyEvent` no longer lowercase them, and wire parsing (`parseRelayMessage`/`parseClientMessage`) rejects non-canonical events. Caller input stays case-insensitive via `assertHex32` and lowercased lookups (#128).
+- **BREAKING**: `PutResult` gains `"invalid"`: `EventStore.put`/`MemoryIndex.put`/`ReactiveEventStore.add` return it for events failing `validateSignedEvent` instead of silently lowercasing and storing them. The fake relay answers `OK false "invalid: malformed event"` (#128).
 - NIP-59 seals have empty tags.
 - NIP-46 `connect` accepts `bunker://` or a pointer only. A NIP-05 identifier is not a bunker pointer.
 - `itemCompare` lives in `core`. NIP-77 does not re-export it.

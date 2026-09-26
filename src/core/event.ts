@@ -92,14 +92,7 @@ export function serializeEvent(event: UnsignedEvent): string {
   if (!validateEvent(event)) {
     throw new EventValidationError("cannot serialize event with invalid shape");
   }
-  return JSON.stringify([
-    0,
-    event.pubkey.toLowerCase(),
-    event.created_at,
-    event.kind,
-    event.tags,
-    event.content,
-  ]);
+  return JSON.stringify([0, event.pubkey, event.created_at, event.kind, event.tags, event.content]);
 }
 
 /** SHA-256 of the canonical serialization, lowercase hex. */
