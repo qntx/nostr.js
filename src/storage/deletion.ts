@@ -93,6 +93,9 @@ export class DeletionState {
     }
     for (const c of plan.coordinates) {
       const prev = this.coordinates.get(c.key) ?? Number.NEGATIVE_INFINITY;
+      // Re-absorbing a coordinate moves it to the newest end so FIFO
+      // tombstone caps evict the oldest marker, not the freshest.
+      this.coordinates.delete(c.key);
       this.coordinates.set(c.key, Math.max(prev, c.until));
     }
   }

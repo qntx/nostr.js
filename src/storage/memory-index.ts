@@ -8,7 +8,12 @@ import { applyPutMemory, decidePut, outboxBoundKey, type PutLookup } from "./put
 import type { NegentropyItem, OutboxBound, PutResult } from "./types.ts";
 
 export type MemoryIndexOptions = {
-  /** FIFO cap on tombstoned deletion ids. Default unbounded. */
+  /**
+   * FIFO cap applied independently to each deletion-state collection:
+   * tombstoned event ids, pending e-tag ids, and coordinate tombstones.
+   * Default unbounded. Trade-off: once an entry is trimmed, a re-arriving
+   * old deleted event or replaceable version can be accepted again.
+   */
   maxTombstones?: number;
   /** Fires after every physical index insert (accept, replace, deletion event). */
   onInsert?(event: Event): void;
@@ -336,13 +341,26 @@ export class MemoryIndex {
   }
 
   #trimTombstones(): void {
-    if (this.#maxTombstones === undefined) return;
-    let excess = this.#deletion.ids.size - this.#maxTombstones;
-    if (excess <= 0) return;
+    const cap = this.#maxTombstones;
+    if (cap === undefined) return;
+    let excess = this.#deletion.ids.size - cap;
     for (const id of this.#deletion.ids) {
+      if (excess <= 0) break;
       this.#deletion.ids.delete(id);
       this.#deletion.pending.delete(id);
-      if (--excess === 0) return;
+      excess--;
+    }
+    excess = this.#deletion.pending.size - cap;
+    for (const id of this.#deletion.pending.keys()) {
+      if (excess <= 0) break;
+      this.#deletion.pending.delete(id);
+      excess--;
+    }
+    excess = this.#deletion.coordinates.size - cap;
+    for (const key of this.#deletion.coordinates.keys()) {
+      if (excess <= 0) break;
+      this.#deletion.coordinates.delete(key);
+      excess--;
     }
   }
 }
