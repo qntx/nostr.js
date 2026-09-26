@@ -2942,3 +2942,32 @@ describe("subscriptionToAsyncIterable close semantics (issue #134)", () => {
     expect(closeReasons).toEqual(["closed by client"]);
   });
 });
+
+describe("relay.stream abort semantics (issue #134)", () => {
+  test("signal abort mid-stream drains queued events and completes without throwing", async () => {
+    const relay = await Relay.connect("wss://stream-abort.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const keys = Keys.fromSecretKey(SK);
+    const a = EventBuilder.textNote("a").createdAt(1).signWithKeys(keys);
+    const b = EventBuilder.textNote("b").createdAt(2).signWithKeys(keys);
+    const ctrl = new AbortController();
+    const stream = relay.stream([{ kinds: [1] }], { signal: ctrl.signal });
+    const it = stream[Symbol.asyncIterator]();
+
+    const ws = MockWebSocket.last();
+    const req = ws.lastSent() as [string, string, ...unknown[]];
+    expect(req[0]).toBe("REQ");
+    const subId = req[1];
+    ws.receive(JSON.stringify(["EVENT", subId, a]));
+    ws.receive(JSON.stringify(["EVENT", subId, b]));
+
+    // The Subscription's abort listener fires before the iterable wrapper's;
+    // both are local closes, so no RelayClosedError reaches the consumer.
+    ctrl.abort(new Error("caller aborted"));
+    expect((await it.next()).value?.id).toBe(a.id);
+    expect((await it.next()).value?.id).toBe(b.id);
+    expect(await it.next()).toEqual({ value: undefined, done: true });
+    relay.close();
+  });
+});
