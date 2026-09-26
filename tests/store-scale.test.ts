@@ -10,11 +10,13 @@ import {
   IndexedDbEventStore,
   Kind,
   MemoryEventStore,
+  SqliteEventStore,
   sortEvents,
   type Event,
   type EventStore,
 } from "../src/index.ts";
 import { installIdbMock, type IdbMock } from "./helpers/idb-mock.ts";
+import { SqliteTestDriver } from "./helpers/sqlite-driver.ts";
 
 const SCALE = process.env.STORE_SCALE === "1";
 const describeScale = SCALE ? describe : describe.skip;
@@ -147,5 +149,14 @@ describeScale("store scale 10^4", () => {
     expect(mock.cursorVisitCount()).toBeGreaterThan(LIMIT);
     expect(mock.cursorVisitCount()).toBeLessThan(LIMIT + FOLLOW_N + 32);
     idb.close();
+
+    const sqliteDriver = await SqliteTestDriver.open();
+    const sqlite = await SqliteEventStore.open(sqliteDriver);
+    await fill(sqlite, events);
+    const foundSqlite = await sqlite.query([
+      { authors: follow, kinds: [Kind.TextNote], limit: LIMIT },
+    ]);
+    expect(foundSqlite.map((e) => e.id)).toEqual(expectedIds);
+    sqliteDriver.close();
   }, 60_000);
 });

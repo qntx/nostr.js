@@ -186,12 +186,15 @@ export {
 export {
   MemoryEventStore,
   IndexedDbEventStore,
+  SqliteEventStore,
   StorageError,
   type EventStore,
   type PutResult,
   type NegentropyItem,
   type OutboxBound,
   type IndexedDbEventStoreOptions,
+  type SqlDriver,
+  type SqlValue,
 } from "./storage/index.ts";
 export { ReactiveEventStore, type ReactiveEventStoreOptions, type Watch } from "./store/index.ts";
 export {
