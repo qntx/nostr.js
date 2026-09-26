@@ -56,7 +56,6 @@ describe("nip96 server info", () => {
       return jsonResponse(200, {
         api_url: API_URL,
         download_url: "https://cdn.example",
-        delegated_to_url: "https://other.example",
         content_types: ["image/jpeg", "video/webm"],
         supported_nips: [60],
         plans: { free: { name: "Free" } },
@@ -67,7 +66,6 @@ describe("nip96 server info", () => {
     expect(info).toEqual({
       api_url: API_URL,
       download_url: "https://cdn.example",
-      delegated_to_url: "https://other.example",
       content_types: ["image/jpeg", "video/webm"],
     });
     expect(calls).toHaveLength(1);
@@ -111,13 +109,28 @@ describe("nip96 server info", () => {
     await expect(fetchNip96Info(SERVICE, { fetch: fetchImpl })).rejects.toThrow(Nip96Error);
   });
 
-  test("empty api_url is valid for delegated documents", async () => {
+  test("follows delegated_to_url exactly one hop", async () => {
+    const calls: string[] = [];
+    const fetchImpl: Nip96Fetch = async (url) => {
+      calls.push(String(url));
+      if (calls.length === 1) {
+        return jsonResponse(200, {
+          api_url: "",
+          delegated_to_url: "https://other.example",
+        });
+      }
+      return jsonResponse(200, { api_url: "https://other.example/upload" });
+    };
+    const info = await fetchNip96Info(SERVICE, { fetch: fetchImpl });
+    expect(calls).toEqual([INFO_URL, "https://other.example/.well-known/nostr/nip96.json"]);
+    expect(info).toEqual({ api_url: "https://other.example/upload" });
+  });
+
+  test("a second delegation throws", async () => {
     const fetchImpl: Nip96Fetch = async () =>
       jsonResponse(200, { api_url: "", delegated_to_url: "https://other.example" });
-    await expect(fetchNip96Info(SERVICE, { fetch: fetchImpl })).resolves.toEqual({
-      api_url: "",
-      delegated_to_url: "https://other.example",
-    });
+    await expect(fetchNip96Info(SERVICE, { fetch: fetchImpl })).rejects.toThrow(Nip96Error);
+    await expect(fetchNip96Info(SERVICE, { fetch: fetchImpl })).rejects.toThrow(/one hop/);
   });
 
   test("non-OK info includes JSON message", async () => {
@@ -132,6 +145,7 @@ describe("nip96 server info", () => {
 describe("nip96 upload parse", () => {
   test("parseNip96UploadResponse reads url tag and tags", () => {
     expect(parseNip96UploadResponse(SUCCESS_BODY)).toEqual({
+      status: "success",
       url: FILE_URL,
       tags: [
         ["url", FILE_URL],
@@ -139,6 +153,36 @@ describe("nip96 upload parse", () => {
         ["m", "image/png"],
       ],
     });
+  });
+
+  test("parseNip96UploadResponse returns a processing result for HTTP 202", () => {
+    expect(
+      parseNip96UploadResponse(
+        { status: "processing", processing_url: "https://files.example/status/1" },
+        202,
+      ),
+    ).toEqual({
+      status: "processing",
+      processingUrl: "https://files.example/status/1",
+      tags: [],
+    });
+    // HTTP 200 with a processing status is honored the same way.
+    expect(
+      parseNip96UploadResponse({
+        status: "processing",
+        processing_url: "https://files.example/status/1",
+      }),
+    ).toEqual({
+      status: "processing",
+      processingUrl: "https://files.example/status/1",
+      tags: [],
+    });
+  });
+
+  test("parseNip96UploadResponse still throws for error responses", () => {
+    expect(() => parseNip96UploadResponse({ status: "error", message: "nope" }, 400)).toThrow(
+      Nip96Error,
+    );
   });
 
   test("upload response without url throws", () => {
@@ -166,6 +210,8 @@ describe("nip96 upload parse", () => {
       extraFields: { caption: "hi", no_transform: "true" },
     });
 
+    expect(result.status).toBe("success");
+    if (result.status !== "success") throw new Error("expected success");
     expect(result.url).toBe(FILE_URL);
     expect(result.tags[0]).toEqual(["url", FILE_URL]);
     expect(calls).toHaveLength(1);
