@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { defineConfig } from "vite-plus";
+import { defineConfig, type UserConfig } from "vite-plus";
 
 const packWasm = process.env.WASM_PACK === "1";
 const wasmTest = process.env.WASM_TEST === "1";
@@ -54,7 +54,7 @@ function wasmUrlAsset() {
   };
 }
 
-export default defineConfig({
+const config: UserConfig = defineConfig({
   staged: {
     "*": "vp check --fix",
   },
@@ -119,3 +119,5 @@ export default defineConfig({
   },
   fmt: {},
 });
+
+export default config;

@@ -56,7 +56,7 @@ export class LoaderContext {
     this.#relays = [...urls];
   }
 
-  isFresh(fetchedAt: number, now = Math.floor(Date.now() / 1000)): boolean {
+  isFresh(fetchedAt: number, now: number = Math.floor(Date.now() / 1000)): boolean {
     return now - fetchedAt < this.staleAfterSec;
   }
 }

@@ -67,7 +67,7 @@ export class Nip59Error extends NostrError {
   }
 }
 
-export const TWO_DAYS_SECS = 2 * 24 * 60 * 60;
+export const TWO_DAYS_SECS: number = 2 * 24 * 60 * 60;
 
 export function isGiftWrapKind(kind: number): boolean {
   return kind === Kind.GiftWrap || kind === Kind.GiftWrapEphemeral;

@@ -13,8 +13,10 @@ import type { EventStore, OutboxBound } from "../storage/types.ts";
 
 export type { OutboxBound } from "../storage/types.ts";
 
+/** Outbox feed lifecycle error (e.g. use after close). */
 export class OutboxError extends NostrError {}
 
+/** Options for {@link createOutboxFeed}. */
 export type OutboxFeedOptions = {
   pool: Pool;
   gossip: Gossip;

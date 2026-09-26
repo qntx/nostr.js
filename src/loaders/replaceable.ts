@@ -4,13 +4,16 @@ import { formatEventAddress } from "../core/tag.ts";
 import { DataLoader } from "./dataloader.ts";
 import type { LoaderContext } from "./context.ts";
 
+/** Result of a replaceable load: the winning event (or null) and freshness. */
 export type ReplaceableLoadResult = {
   event: Event | null;
   fresh: boolean;
 };
 
+/** `default`: fetch when stale or unfetched; `force`: always fetch; `cache-only`: index only. */
 export type LoadStyle = "default" | "force" | "cache-only";
 
+/** Loads the winning replaceable/addressable event of one kind for a pubkey. */
 export type ReplaceableLoader = (
   pubkey: string,
   opts?: { hints?: string[]; style?: LoadStyle },

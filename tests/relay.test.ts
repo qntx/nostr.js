@@ -158,7 +158,7 @@ class NodeWsPingSocket extends MockWebSocket {
 }
 
 class NativeTimeoutSocket extends NativePingSocket {
-  pongEnabled = false;
+  override pongEnabled = false;
 }
 
 const NativePingCtor = NativePingSocket as unknown as WebSocketConstructor;

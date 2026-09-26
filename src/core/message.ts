@@ -5,8 +5,10 @@ import type { Filter } from "./filter.ts";
 import { SUBSCRIPTION_ID_MAX_CHARS } from "./limits.ts";
 import { bytesToHex, hexToBytes } from "./util.ts";
 
+/** NIP-01 subscription id: 1..64 chars. */
 export type SubscriptionId = string;
 
+/** Validate a subscription id; throws {@link MessageError} unless 1..64 chars. */
 export function assertSubscriptionId(id: string): SubscriptionId {
   if (id.length === 0 || id.length > SUBSCRIPTION_ID_MAX_CHARS) {
     throw new MessageError(`subscription id length must be 1..${SUBSCRIPTION_ID_MAX_CHARS}`);
@@ -14,6 +16,7 @@ export function assertSubscriptionId(id: string): SubscriptionId {
   return id;
 }
 
+/** Validate the given id, or mint a random 16-hex-char subscription id. */
 export function createSubscriptionId(id?: string): SubscriptionId {
   if (id !== undefined) return assertSubscriptionId(id);
   const bytes = new Uint8Array(8);
@@ -78,14 +81,17 @@ export function mergeCountHll(hexes: readonly string[]): string {
   return bytesToHex(merged);
 }
 
+/** Serialize a client->relay message to its NIP-01 JSON wire form. */
 export function encodeClientMessage(message: ClientMessage): string {
   return JSON.stringify(message);
 }
 
+/** Serialize a relay->client message to its NIP-01 JSON wire form. */
 export function encodeRelayMessage(message: RelayMessage): string {
   return JSON.stringify(message);
 }
 
+/** Parse a client->relay JSON message; throws {@link MessageError} on malformed input. */
 export function parseClientMessage(raw: string): ClientMessage {
   let data: unknown;
   try {
@@ -159,6 +165,7 @@ export function parseClientMessage(raw: string): ClientMessage {
   }
 }
 
+/** Parse a relay->client JSON message; throws {@link MessageError} on malformed input. */
 export function parseRelayMessage(raw: string): RelayMessage {
   let data: unknown;
   try {

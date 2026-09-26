@@ -9,20 +9,29 @@ import {
   utf8Encoder,
 } from "../core/util.ts";
 
+/** Bech32 `nprofile1…` string (TLV profile pointer). */
 export type NProfile = `nprofile1${string}`;
+/** Bech32 `nevent1…` string (TLV event pointer). */
 export type NEvent = `nevent1${string}`;
+/** Bech32 `naddr1…` string (TLV address pointer). */
 export type NAddr = `naddr1${string}`;
+/** Bech32 `nsec1…` string (32-byte secret key). */
 export type NSec = `nsec1${string}`;
+/** Bech32 `npub1…` string (32-byte public key). */
 export type NPub = `npub1${string}`;
+/** Bech32 `note1…` string (32-byte event id). */
 export type Note = `note1${string}`;
 
+/** Maximum bech32 string length accepted by {@link decode} (NIP-19). */
 export const Bech32MaxSize = 5000;
 
+/** Decoded `nprofile` payload: a pubkey plus optional relay hints. */
 export type ProfilePointer = {
   pubkey: string;
   relays?: string[];
 };
 
+/** Decoded `nevent` payload: an event id plus optional relay/author/kind hints. */
 export type EventPointer = {
   id: string;
   relays?: string[];
@@ -30,6 +39,7 @@ export type EventPointer = {
   kind?: number;
 };
 
+/** Decoded `naddr` payload: a replaceable-event coordinate plus optional relay hints. */
 export type AddressPointer = {
   identifier: string;
   pubkey: string;
@@ -37,6 +47,7 @@ export type AddressPointer = {
   relays?: string[];
 };
 
+/** Result of {@link decode}: the bech32 prefix and its decoded payload. */
 export type DecodedResult =
   | { type: "nprofile"; data: ProfilePointer }
   | { type: "nevent"; data: EventPointer }
@@ -45,6 +56,7 @@ export type DecodedResult =
   | { type: "npub"; data: string }
   | { type: "note"; data: string };
 
+/** Error thrown by NIP-19 encoding/decoding failures. */
 export class Nip19Error extends NostrError {
   constructor(message: string) {
     super(message);
@@ -122,19 +134,23 @@ export function encodeBytes<Prefix extends string>(
   return encodeBech32(prefix, bytes);
 }
 
+/** Encode a 32-byte secret key as `nsec1…`; throws {@link Nip19Error} on wrong length. */
 export function nsecEncode(key: Uint8Array): NSec {
   assertByteLength(key, 32, "secret key");
   return encodeBytes("nsec", key);
 }
 
+/** Encode a hex public key as `npub1…`; throws {@link HexError} on bad hex. */
 export function npubEncode(hex: string): NPub {
   return encodeBytes("npub", hexToBytes(assertHex32(hex, "pubkey")));
 }
 
+/** Encode a hex event id as `note1…`; throws {@link HexError} on bad hex. */
 export function noteEncode(hex: string): Note {
   return encodeBytes("note", hexToBytes(assertHex32(hex, "event id")));
 }
 
+/** Encode a profile pointer as `nprofile1…`. */
 export function nprofileEncode(profile: ProfilePointer): NProfile {
   const data = encodeTLV({
     0: [hexToBytes(assertHex32(profile.pubkey, "pubkey"))],
@@ -143,6 +159,7 @@ export function nprofileEncode(profile: ProfilePointer): NProfile {
   return encodeBech32("nprofile", data);
 }
 
+/** Encode an event pointer as `nevent1…`. */
 export function neventEncode(event: EventPointer): NEvent {
   if (event.kind !== undefined) assertNip19Kind(event.kind);
   const kindArray = event.kind !== undefined ? integerToUint8Array(event.kind) : undefined;
@@ -155,6 +172,7 @@ export function neventEncode(event: EventPointer): NEvent {
   return encodeBech32("nevent", data);
 }
 
+/** Encode an address pointer as `naddr1…`. */
 export function naddrEncode(addr: AddressPointer): NAddr {
   assertNip19Kind(addr.kind);
   const kind = integerToUint8Array(addr.kind);
@@ -167,6 +185,7 @@ export function naddrEncode(addr: AddressPointer): NAddr {
   return encodeBech32("naddr", data);
 }
 
+/** Decode a NIP-19 bech32 entity; throws {@link Nip19Error} on bad input or unknown prefix. */
 export function decode(code: string): DecodedResult {
   let { prefix, words } = bech32.decode(code as `${string}1${string}`, Bech32MaxSize);
   const data = new Uint8Array(bech32.fromWords(words));

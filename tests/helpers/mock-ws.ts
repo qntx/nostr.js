@@ -14,7 +14,7 @@ export class MockWebSocket implements WebSocketLike {
   /** If set, connect fails. */
   static failConnect = false;
 
-  readyState = MockWebSocket.CONNECTING;
+  readyState: number = MockWebSocket.CONNECTING;
   readonly url: string;
   readonly sent: string[] = [];
   #listeners = new Map<string, Set<Listener>>();

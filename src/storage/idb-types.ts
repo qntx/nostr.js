@@ -3,7 +3,7 @@ export const TAG_REFS = "tag_refs";
 export const ADDRESSES = "addresses";
 export const TOMBSTONES = "tombstones";
 export const OUTBOX_BOUNDS = "outbox_bounds";
-export const WRITE_STORES = [EVENTS, TAG_REFS, ADDRESSES, TOMBSTONES];
+export const WRITE_STORES: string[] = [EVENTS, TAG_REFS, ADDRESSES, TOMBSTONES];
 
 export type IDBCursorDirectionLike = "next" | "prev";
 

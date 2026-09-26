@@ -18,6 +18,7 @@ export function isAddressableKind(kind: number): boolean {
   return kind >= 30000 && kind < 40000;
 }
 
+/** NIP-01 kind classes: regular / replaceable / ephemeral / addressable. */
 export type KindClassification =
   | "regular"
   | "replaceable"
@@ -25,6 +26,7 @@ export type KindClassification =
   | "addressable"
   | "unknown";
 
+/** Classify a kind number into its NIP-01 storage class (`"unknown"` outside all ranges). */
 export function classifyKind(kind: number): KindClassification {
   if (isRegularKind(kind)) return "regular";
   if (isReplaceableKind(kind)) return "replaceable";
@@ -65,5 +67,7 @@ export const Kind = {
   StarterPack: 39089,
 } as const;
 
+/** Name of a kind constant on {@link Kind}. */
 export type KindName = keyof typeof Kind;
+/** Union of the numeric kind values on {@link Kind}. */
 export type KnownKind = (typeof Kind)[KindName];

@@ -27,7 +27,7 @@ const extendedPrefixThreshold = 0x10000;
  * events far below this. Raise it via `opts.maxPayloadChars` in `decrypt`/
  * `decryptFromPubkey` for large local payloads.
  */
-export const DEFAULT_MAX_PAYLOAD_CHARS = Math.ceil((71 + calcPaddedLen(0x100000)) / 3) * 4;
+export const DEFAULT_MAX_PAYLOAD_CHARS: number = Math.ceil((71 + calcPaddedLen(0x100000)) / 3) * 4;
 
 function assert32(bytes: Uint8Array, label: string): void {
   if (bytes.length !== 32) throw new CryptoError(`${label} must be 32 bytes`);

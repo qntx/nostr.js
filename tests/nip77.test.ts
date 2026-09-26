@@ -1037,7 +1037,7 @@ describe("Relay.negReconcile + Client.sync", () => {
     net.relay("wss://neg.example").seed([remote]);
 
     class SwallowSilent extends net.websocketImplementation {
-      send(data: string): void {
+      override send(data: string): void {
         if ((this as { url?: string }).url?.includes("silent-neg.example")) return;
         super.send(data);
       }
@@ -1070,7 +1070,7 @@ describe("Negentropy session timeout", () => {
   const silentWs = (): typeof net.websocketImplementation => {
     const FakeWS = net.websocketImplementation;
     return class extends FakeWS {
-      send(data: string): void {
+      override send(data: string): void {
         const msg = JSON.parse(data) as unknown[];
         if (typeof msg[0] === "string" && msg[0].startsWith("NEG-")) return;
         super.send(data);

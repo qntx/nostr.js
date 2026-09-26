@@ -6,7 +6,7 @@ import { NostrError } from "../core/error.ts";
 import { decode, type DecodedResult } from "./nip19.ts";
 
 /** Matches `nostr:<bech32>` (not anchored). */
-export const NOSTR_URI_REGEX = /nostr:([a-z0-9]+1[02-9ac-hj-np-z]+)/i;
+export const NOSTR_URI_REGEX: RegExp = /nostr:([a-z0-9]+1[02-9ac-hj-np-z]+)/i;
 
 export type NostrURI = {
   /** Full URI including `nostr:` */

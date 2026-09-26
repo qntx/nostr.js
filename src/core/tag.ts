@@ -7,6 +7,7 @@ export type Tag = readonly string[];
 /** Mutable tag builder input. */
 export type TagInput = string[];
 
+/** Type guard: a non-empty array of strings. */
 export function isTag(value: unknown): value is Tag {
   if (!Array.isArray(value) || value.length === 0) return false;
   for (const item of value) {
@@ -15,10 +16,12 @@ export function isTag(value: unknown): value is Tag {
   return true;
 }
 
+/** First element of a tag (its name). */
 export function tagName(tag: Tag): string {
-  return tag[0];
+  return tag[0]!;
 }
 
+/** Second element of a tag (its primary value), or undefined for a bare name tag. */
 export function tagValue(tag: Tag): string | undefined {
   return tag[1];
 }
@@ -87,6 +90,7 @@ export function parseEventAddress(value: string): EventAddress | undefined {
   return { kind, pubkey, identifier: value.slice(second + 1) };
 }
 
+/** Format an address as a `kind:pubkey:dTag` coordinate string. */
 export function formatEventAddress(kind: number, pubkey: string, identifier = ""): string {
   return `${kind}:${pubkey.toLowerCase()}:${identifier}`;
 }

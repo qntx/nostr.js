@@ -24,8 +24,6 @@ export {
   isHex32,
   isHex64,
   normalizeURL,
-  utf8Decoder,
-  utf8Encoder,
 } from "./util.ts";
 
 export {
@@ -54,7 +52,6 @@ export type { EventAddress, TagInput } from "./tag.ts";
 
 export {
   getEventHash,
-  isMarkedVerified,
   isReplaceableWinner,
   itemCompare,
   serializeEvent,
@@ -87,7 +84,6 @@ export { EventBuilder, type ProfileMetadata } from "./builder.ts";
 export {
   canonicalizeFilter,
   canonicalizeFilters,
-  cloneFilter,
   filterFingerprint,
   getFilterLimit,
   matchFilter,

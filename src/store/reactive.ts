@@ -7,11 +7,13 @@ import { normalizeURL } from "../core/util.ts";
 import { MemoryIndex } from "../storage/memory-index.ts";
 import type { PutResult } from "../storage/types.ts";
 
+/** A reactive snapshot source compatible with `useSyncExternalStore`. */
 export interface Watch<T> {
   subscribe(onChange: () => void): () => void;
   getSnapshot(): T;
 }
 
+/** Capacity options for {@link ReactiveEventStore}. */
 export type ReactiveEventStoreOptions = {
   /** Max stored events before LRU eviction. Default 50_000. */
   maxEvents?: number;
@@ -23,6 +25,7 @@ export type ReactiveEventStoreOptions = {
 
 const SEEN_ON_PER_ID = 16;
 
+/** Category of a {@link Watch} subscription. */
 type WatchKind = "event" | "replaceable" | "query";
 
 /** Structural handle the store needs for invalidation; implemented by WatchImpl. */

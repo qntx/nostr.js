@@ -1,13 +1,7 @@
 import { base64, base64urlnopad } from "@scure/base";
 import { describe, expect, test } from "vite-plus/test";
-import {
-  EventValidationError,
-  Kind,
-  Keys,
-  finalizeEvent,
-  utf8Encoder,
-  type Event,
-} from "../src/index.ts";
+import { EventValidationError, Kind, Keys, finalizeEvent, type Event } from "../src/index.ts";
+import { utf8Encoder } from "../src/core/util.ts";
 import {
   BlossomError,
   blobExists,

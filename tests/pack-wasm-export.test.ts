@@ -32,6 +32,8 @@ describe("package.json wasm publish", () => {
   });
 
   test("prepublishOnly packs wasm", () => {
+    // The setup-wasm reusable workflow requires this exact string;
+    // package checks run at the end of build:wasm instead.
     expect(readPkg().scripts.prepublishOnly).toBe("bun run build:wasm");
   });
 
@@ -42,17 +44,17 @@ describe("package.json wasm publish", () => {
   });
 
   test("build:wasm fails closed when dist/*.wasm is missing", () => {
-    const script = readPkg().scripts["build:wasm"];
+    const script = readPkg().scripts["build:wasm"]!;
     expect(script).toBe(
-      "bash scripts/build-wasm.sh && WASM_PACK=1 vp pack && ls dist/*.wasm >/dev/null",
+      "bash scripts/build-wasm.sh && WASM_PACK=1 vp pack && ls dist/*.wasm >/dev/null && publint && attw --pack . --profile esm-only",
     );
     expect(script).not.toMatch(/(^|[\s;|&])cp(\s|$)/);
     expect(script.includes("then cp ")).toBe(false);
-    expect(script.endsWith("ls dist/*.wasm >/dev/null")).toBe(true);
+    expect(script.endsWith("attw --pack . --profile esm-only")).toBe(true);
   });
 
   test("bun run build does not set WASM_PACK", () => {
-    const build = readPkg().scripts.build;
+    const build = readPkg().scripts.build!;
     expect(build).toBe("vp pack");
     expect(build.includes("WASM_PACK")).toBe(false);
     expect(build.includes("build:wasm")).toBe(false);
