@@ -158,6 +158,7 @@ export {
   RelayError,
   RelayPublishError,
   RelayStatus,
+  RelayTimeoutError,
   isInsecureRelayUrl,
   useWebSocketImplementation,
   type PoolOptions,

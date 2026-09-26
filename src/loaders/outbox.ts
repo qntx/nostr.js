@@ -4,6 +4,7 @@ import type { Filter } from "../core/filter.ts";
 import { sortedEvents } from "../core/event.ts";
 import { Kind } from "../core/kind.ts";
 import { normalizeURL } from "../core/util.ts";
+import { throwIfAborted } from "../core/abort.ts";
 import type { Gossip } from "../gossip/gossip.ts";
 import type { Pool } from "../relay/pool.ts";
 import { toStorageError } from "../storage/error.ts";
@@ -198,7 +199,7 @@ export class OutboxFeed {
     const byId = new Map<string, Event>();
     await Promise.all(
       [...byRelay.entries()].map(async ([url, authors]) => {
-        if (opts?.signal?.aborted) return;
+        throwIfAborted(opts?.signal);
 
         const filters = this.#syncFilters(authors, opts);
         try {
@@ -208,8 +209,9 @@ export class OutboxFeed {
             onevent: (event, relayUrl) => this.#seen?.(event, relayUrl),
           });
           for (const event of batch) byId.set(event.id, event);
-        } catch {
-          // skip failed relay
+        } catch (err) {
+          // An abort rejects the whole sync; per-relay failures are skipped.
+          if (opts?.signal?.aborted) throw err;
         }
       }),
     );

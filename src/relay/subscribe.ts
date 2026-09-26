@@ -3,7 +3,7 @@ import type { Event } from "../core/event.ts";
 import { invokeSafely } from "../core/report.ts";
 import { filterFingerprint, type Filter } from "../core/filter.ts";
 import type { ClientMessage, SubscriptionId } from "../core/message.ts";
-import { RelayConnectionError } from "./error.ts";
+import { abortReason, throwIfAborted } from "../core/abort.ts";
 import {
   Subscription,
   subscriptionToAsyncIterable,
@@ -300,17 +300,20 @@ export async function fetchFilters(
   filters: Filter[],
   opts: { timeoutMs: number; signal?: AbortSignal; id?: string; url: string },
 ): Promise<Event[]> {
+  throwIfAborted(opts.signal);
   const events: Event[] = [];
   const seen = new Set<string>();
 
   await new Promise<void>((resolve, reject) => {
     let settled = false;
-    const done = (err?: Error) => {
+    const done = (err?: unknown) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      sub.close(err ? err.message : "fetch complete");
-      if (err) reject(err);
+      sub.close(
+        err instanceof Error ? err.message : err === undefined ? "fetch complete" : "aborted",
+      );
+      if (err !== undefined) reject(err);
       else resolve();
     };
 
@@ -329,13 +332,15 @@ export async function fetchFilters(
         done();
       },
       onclose() {
-        if (!settled) done();
+        // The Subscription's own abort listener may close it before ours runs;
+        // an aborted signal still rejects the fetch with the signal's reason.
+        if (!settled) done(opts.signal?.aborted ? abortReason(opts.signal) : undefined);
       },
     });
 
     opts.signal?.addEventListener(
       "abort",
-      () => done(new RelayConnectionError("fetch aborted", opts.url)),
+      () => done(opts.signal ? abortReason(opts.signal) : undefined),
       { once: true },
     );
   });

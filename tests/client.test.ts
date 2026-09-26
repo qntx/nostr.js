@@ -6,6 +6,7 @@ import {
   Keys,
   KeysSigner,
   MessageError,
+  RelayTimeoutError,
   relayListEventBuilder,
   useWebSocketImplementation,
 } from "../src/index.ts";
@@ -170,7 +171,7 @@ describe("Client", () => {
         sleep(3500).then(() => "pending" as const),
       ]);
       expect(status).toBe("pending");
-      await expect(pending).rejects.toThrow(/timed out/);
+      await expect(pending).rejects.toThrow(RelayTimeoutError);
     } finally {
       await client.shutdown();
     }
@@ -1174,6 +1175,23 @@ describe("Client", () => {
     }
     const results = await publishP;
     expect(results.some((r) => r.result?.ok)).toBe(true);
+    await client.shutdown();
+  });
+});
+
+describe("issue #130", () => {
+  test("fetchEvents aborts mid-flight with signal.reason", async () => {
+    const client = Client.builder()
+      .relays(["wss://abort.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    const ac = new AbortController();
+    const reason = new Error("user aborted");
+    const fetchP = client.fetchEvents({ kinds: [1] }, { signal: ac.signal });
+    await waitUntil(() => MockWebSocket.instances.length === 1);
+    ac.abort(reason);
+    await expect(fetchP).rejects.toBe(reason);
     await client.shutdown();
   });
 });

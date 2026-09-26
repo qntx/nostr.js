@@ -1,14 +1,15 @@
 import type { Filter } from "../core/filter.ts";
 import type { ClientMessage } from "../core/message.ts";
 import { Nip77Error, runNegSession, type NegentropyStorageVector } from "../nips/nip77.ts";
-import { RelayConnectionError, RelayPublishError } from "./error.ts";
+import { abortReason } from "../core/abort.ts";
+import { RelayTimeoutError } from "./error.ts";
 
 export type NegSession = {
   queue: string[];
   waiter:
     | {
         resolve: (hex: string) => void;
-        reject: (err: Error) => void;
+        reject: (err: unknown) => void;
       }
     | undefined;
   error: Error | undefined;
@@ -55,7 +56,7 @@ export async function runWiredNegSession(opts: {
   const { session, storage, filter, id, timeoutMs, signal, send, url } = opts;
   const deadline = Date.now() + timeoutMs;
 
-  const timedOut = (): RelayPublishError => new RelayPublishError("negentropy timed out", url);
+  const timedOut = (): RelayTimeoutError => new RelayTimeoutError("negentropy timed out", url);
 
   const remainingMs = (): number => deadline - Date.now();
 
@@ -69,12 +70,14 @@ export async function runWiredNegSession(opts: {
         session.waiter = undefined;
         reject(timedOut());
       }, remainingMs());
-      const fail = (err: Error): void => {
+      const fail = (err: unknown): void => {
         clearTimeout(timer);
         session.waiter = undefined;
         reject(err);
       };
-      const onAbort = (): void => fail(new RelayConnectionError("negentropy aborted", url));
+      const onAbort = (): void => {
+        if (signal) fail(abortReason(signal));
+      };
       session.waiter = {
         resolve: (hex) => {
           clearTimeout(timer);

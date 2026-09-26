@@ -340,19 +340,17 @@ describe("ClientError", () => {
     );
   });
 
-  test("throwIfAborted with non-Error reason is ClientError", async () => {
+  test("throwIfAborted rejects with a non-Error signal.reason", async () => {
     const client = new Client({
       signer: new KeysSigner(SK),
       storage: new MemoryEventStore(),
     });
     const ac = new AbortController();
     ac.abort("stop");
-    pinClientError(
-      await captureError(
-        client.syncToRelay("wss://a.example", { kinds: [1] }, { signal: ac.signal }),
-      ),
-      "aborted",
+    const err = await captureError(
+      client.syncToRelay("wss://a.example", { kinds: [1] }, { signal: ac.signal }),
     );
+    expect(err).toBe("stop");
   });
 
   test("throwIfAborted with Error reason rethrows that Error", async () => {

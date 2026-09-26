@@ -15,7 +15,14 @@ import { Nip77Error, type NegentropyStorageVector } from "../nips/nip77.ts";
 import { isAuthRequired, makeAuthEvent } from "../nips/nip42.ts";
 import { NoSignerError } from "../signer/error.ts";
 import { normalizeURL } from "../core/util.ts";
-import { RelayClosedError, RelayConnectionError, RelayError, RelayPublishError } from "./error.ts";
+import { abortReason, throwIfAborted } from "../core/abort.ts";
+import {
+  RelayClosedError,
+  RelayConnectionError,
+  RelayError,
+  RelayPublishError,
+  RelayTimeoutError,
+} from "./error.ts";
 import {
   armEoseTimeout,
   closeAllSubscriptions,
@@ -92,7 +99,7 @@ type PublishWaiter = {
 
 type CountWaiter = {
   resolve: (result: CountResult) => void;
-  reject: (err: Error) => void;
+  reject: (err: unknown) => void;
   timer: ReturnType<typeof setTimeout> | undefined;
   filters: Filter[];
   authRetried: boolean;
@@ -245,6 +252,7 @@ export class Relay {
   async connect(opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void> {
     if (this.#connected) return;
     if (this.#connecting) return await this.#connecting;
+    throwIfAborted(opts?.signal);
 
     const gen = ++this.#gen;
     this.#intentionalClose = false;
@@ -257,7 +265,7 @@ export class Relay {
     const isReconnect = this.#reconnectAttempts > 0;
 
     let resolveConnect = (): void => {};
-    let rejectConnect = (_err: Error): void => {};
+    let rejectConnect = (_err: unknown): void => {};
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let ws: WebSocketLike | undefined;
@@ -299,7 +307,7 @@ export class Relay {
       this.#intentionalClose = true;
       this.#skipReconnect = true;
       release();
-      finish(new RelayConnectionError("connection aborted", this.url));
+      finish(abortReason(opts!.signal!));
       if (gen === this.#gen) {
         this.#handleSocketDeath("connection aborted", { fromConnectAttempt: true, gen });
       }
@@ -313,10 +321,8 @@ export class Relay {
       opts?.signal?.removeEventListener("abort", onAbort);
       if (this.#connectFinish === finish) this.#connectFinish = undefined;
       if (this.#connecting === connecting) this.#connecting = undefined;
-      if (err) {
-        rejectConnect(
-          err instanceof Error ? err : new RelayConnectionError("connection failed", this.url),
-        );
+      if (err !== undefined) {
+        rejectConnect(err);
       } else {
         resolveConnect();
       }
@@ -332,7 +338,7 @@ export class Relay {
       }
       if (!isReconnect && !this.#enableReconnect) this.#skipReconnect = true;
       release();
-      finish(new RelayConnectionError("connection timed out", this.url));
+      finish(new RelayTimeoutError("connection timed out", this.url));
       if (gen === this.#gen) {
         this.#handleSocketDeath("connection timed out", { fromConnectAttempt: true, gen });
       }
@@ -752,7 +758,7 @@ export class Relay {
     const result = await new Promise<PublishResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#publishes.delete(event.id);
-        reject(new RelayPublishError("publish timed out", this.url));
+        reject(new RelayTimeoutError("publish timed out", this.url));
       }, timeoutMs);
       this.#publishes.set(event.id, { resolve, reject, timer, event, timeoutMs });
       try {
@@ -777,9 +783,7 @@ export class Relay {
   ): Promise<CountResult> {
     if (!this.#connected) throw new RelayClosedError("not connected", this.url);
     if (filters.length === 0) throw new RelayError("COUNT requires at least one filter", this.url);
-    if (opts?.signal?.aborted) {
-      throw new RelayConnectionError("count aborted", this.url);
-    }
+    throwIfAborted(opts?.signal);
     filters = canonicalizeFilters(filters);
 
     const id = opts?.id !== undefined ? createSubscriptionId(opts.id) : this.nextSubId("count");
@@ -809,9 +813,11 @@ export class Relay {
         authRetried: false,
         timeoutMs,
       };
-      const onAbort = () => waiter.reject(new RelayConnectionError("count aborted", this.url));
+      const onAbort = () => {
+        if (opts?.signal) waiter.reject(abortReason(opts.signal));
+      };
       waiter.timer = setTimeout(() => {
-        waiter.reject(new RelayPublishError("count timed out", this.url));
+        waiter.reject(new RelayTimeoutError("count timed out", this.url));
       }, timeoutMs);
       this.#counts.set(id, waiter);
 
@@ -858,7 +864,7 @@ export class Relay {
       return await new Promise<PublishResult>((resolve, reject) => {
         const timer = setTimeout(() => {
           this.#publishes.delete(event.id);
-          reject(new RelayPublishError("auth timed out", this.url));
+          reject(new RelayTimeoutError("auth timed out", this.url));
         }, timeoutMs);
         this.#publishes.set(event.id, {
           resolve: (result) => {
@@ -968,7 +974,7 @@ export class Relay {
         return;
       }
       waiter.timer = setTimeout(() => {
-        waiter.reject(new RelayPublishError("count timed out", this.url));
+        waiter.reject(new RelayTimeoutError("count timed out", this.url));
       }, waiter.timeoutMs);
       this.#send(["COUNT", id, ...waiter.filters]);
     } catch (err) {
@@ -1006,7 +1012,7 @@ export class Relay {
       }
       waiter.timer = setTimeout(() => {
         this.#publishes.delete(eventId);
-        waiter.reject(new RelayPublishError("publish timed out", this.url));
+        waiter.reject(new RelayTimeoutError("publish timed out", this.url));
       }, waiter.timeoutMs);
       this.#send(["EVENT", waiter.event]);
     } catch {
@@ -1030,9 +1036,7 @@ export class Relay {
     opts?: { id?: string; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<{ have: string[]; need: string[] }> {
     if (!this.#connected) throw new RelayClosedError("not connected", this.url);
-    if (opts?.signal?.aborted) {
-      throw new RelayConnectionError("negentropy aborted", this.url);
-    }
+    throwIfAborted(opts?.signal);
     filter = canonicalizeFilter(filter);
 
     const id = opts?.id !== undefined ? assertSubscriptionId(opts.id) : this.nextSubId("neg");

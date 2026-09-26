@@ -1,6 +1,7 @@
 import type { Event } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { invokeSafely } from "../core/report.ts";
+import { abortReason, throwIfAborted } from "../core/abort.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayClosedError } from "./error.ts";
 import type { Pool } from "./pool.ts";
@@ -206,6 +207,7 @@ export async function fetchRouted(
     onevent?: (event: Event, relayUrl: string) => void;
   } = {},
 ): Promise<Event[]> {
+  throwIfAborted(opts.signal);
   const byId = new Map<string, Event>();
   await Promise.all(
     jobs.flatMap((job) => {
@@ -233,7 +235,9 @@ export async function fetchRouted(
             signal: opts.signal,
           });
         } catch {
-          return; // skip failed relays
+          // An abort rejects the whole call; per-relay failures are skipped.
+          if (opts.signal?.aborted) throw abortReason(opts.signal);
+          return;
         }
         // The whole batch lands before callbacks so a throwing onevent cannot
         // drop events; listener errors are reported, never propagated.

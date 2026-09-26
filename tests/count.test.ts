@@ -5,6 +5,7 @@ import {
   MessageError,
   Pool,
   Relay,
+  RelayTimeoutError,
   encodeClientMessage,
   mergeCountHll,
   parseRelayMessage,
@@ -225,6 +226,15 @@ describe("Relay.count", () => {
     relay.close();
   });
 
+  test("COUNT timeout rejects with RelayTimeoutError", async () => {
+    const relay = await Relay.connect("wss://count-timeout.example", {
+      websocketImplementation: MockWebSocketCtor,
+    });
+    const countP = relay.count([{ kinds: [1] }], { timeoutMs: 40 });
+    await expect(countP).rejects.toThrow(RelayTimeoutError);
+    relay.close();
+  });
+
   test("COUNT times out after AUTH retry, not during AUTH", async () => {
     const keys = Keys.fromSecretKey(SK);
     const relay = await Relay.connect("wss://count-auth-post-timeout.example", {
@@ -254,6 +264,7 @@ describe("Relay.count", () => {
     const counts = ws.sent.map((s) => JSON.parse(s) as unknown[]).filter((m) => m[0] === "COUNT");
     expect(counts).toHaveLength(2);
     expect(counts[1]).toEqual(["COUNT", "count:post-auth-timeout", filters[0]]);
+    await expect(countP).rejects.toThrow(RelayTimeoutError);
     await expect(countP).rejects.toThrow(/count timed out/);
     relay.close();
   });
@@ -401,7 +412,7 @@ describe("Relay.count", () => {
       .find((m) => m[0] === "AUTH") as [string, { id: string }] | undefined;
     expect(authFrame?.[0]).toBe("AUTH");
     ac.abort();
-    await expect(first).rejects.toThrow(/count aborted/);
+    await expect(first).rejects.toBe(ac.signal.reason);
 
     const second = relay.count([{ kinds: [0] }], { id: "count:reuse", timeoutMs: 2000 });
     await Promise.resolve();
