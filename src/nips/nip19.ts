@@ -1,6 +1,13 @@
 import { bech32 } from "@scure/base";
 import { NostrError } from "../core/error.ts";
-import { bytesToHex, hexToBytes, utf8Decoder, utf8Encoder } from "../core/util.ts";
+import {
+  assertByteLength,
+  assertHex32,
+  bytesToHex,
+  hexToBytes,
+  utf8Decoder,
+  utf8Encoder,
+} from "../core/util.ts";
 
 export type NProfile = `nprofile1${string}`;
 export type NEvent = `nevent1${string}`;
@@ -71,10 +78,17 @@ function parseTLV(data: Uint8Array): TLV {
   return result;
 }
 
+function assertNip19Kind(kind: number): void {
+  if (!Number.isInteger(kind) || kind < 0 || kind > 0xffffffff) {
+    throw new Nip19Error(`invalid kind: ${kind}`);
+  }
+}
+
 function encodeTLV(tlv: TLV): Uint8Array {
   const entries: Uint8Array[] = [];
   for (const [t, vs] of Object.entries(tlv).reverse()) {
     for (const v of vs) {
+      if (v.length > 255) throw new Nip19Error("TLV value exceeds 255 bytes");
       const entry = new Uint8Array(v.length + 2);
       entry[0] = Number.parseInt(t, 10);
       entry[1] = v.length;
@@ -109,42 +123,45 @@ export function encodeBytes<Prefix extends string>(
 }
 
 export function nsecEncode(key: Uint8Array): NSec {
+  assertByteLength(key, 32, "secret key");
   return encodeBytes("nsec", key);
 }
 
 export function npubEncode(hex: string): NPub {
-  return encodeBytes("npub", hexToBytes(hex));
+  return encodeBytes("npub", hexToBytes(assertHex32(hex, "pubkey")));
 }
 
 export function noteEncode(hex: string): Note {
-  return encodeBytes("note", hexToBytes(hex));
+  return encodeBytes("note", hexToBytes(assertHex32(hex, "event id")));
 }
 
 export function nprofileEncode(profile: ProfilePointer): NProfile {
   const data = encodeTLV({
-    0: [hexToBytes(profile.pubkey)],
+    0: [hexToBytes(assertHex32(profile.pubkey, "pubkey"))],
     1: (profile.relays || []).map((url) => utf8Encoder.encode(url)),
   });
   return encodeBech32("nprofile", data);
 }
 
 export function neventEncode(event: EventPointer): NEvent {
+  if (event.kind !== undefined) assertNip19Kind(event.kind);
   const kindArray = event.kind !== undefined ? integerToUint8Array(event.kind) : undefined;
   const data = encodeTLV({
-    0: [hexToBytes(event.id)],
+    0: [hexToBytes(assertHex32(event.id, "event id"))],
     1: (event.relays || []).map((url) => utf8Encoder.encode(url)),
-    2: event.author ? [hexToBytes(event.author)] : [],
+    2: event.author ? [hexToBytes(assertHex32(event.author, "author"))] : [],
     3: kindArray ? [kindArray] : [],
   });
   return encodeBech32("nevent", data);
 }
 
 export function naddrEncode(addr: AddressPointer): NAddr {
+  assertNip19Kind(addr.kind);
   const kind = integerToUint8Array(addr.kind);
   const data = encodeTLV({
     0: [utf8Encoder.encode(addr.identifier)],
     1: (addr.relays || []).map((url) => utf8Encoder.encode(url)),
-    2: [hexToBytes(addr.pubkey)],
+    2: [hexToBytes(assertHex32(addr.pubkey, "pubkey"))],
     3: [kind],
   });
   return encodeBech32("naddr", data);

@@ -3,6 +3,7 @@ import { bech32 } from "@scure/base";
 import {
   decodeNostrURI,
   getPublicKey,
+  Nip19Error,
   naddrEncode,
   neventEncode,
   nip19Decode,
@@ -79,5 +80,44 @@ describe("nip19", () => {
     const ok = decodeNostrURI(`nostr:${npub}`);
     expect(ok.type).toBe("npub");
     expect(decodeNostrURI("not-a-code").type).toBe("invalid");
+  });
+});
+
+describe("issue #130 encoder validation", () => {
+  const pk = getPublicKey(SecretKey.generate());
+
+  test("hex inputs are validated and normalized to lowercase", () => {
+    const decoded = nip19Decode(npubEncode(pk.toUpperCase()));
+    expect(decoded.type).toBe("npub");
+    if (decoded.type === "npub") expect(decoded.data).toBe(pk);
+    expect(() => npubEncode("nothex")).toThrow();
+    expect(() => noteEncode("ab")).toThrow();
+    expect(() => nprofileEncode({ pubkey: "zz" })).toThrow();
+    expect(() => neventEncode({ id: "xyz" })).toThrow();
+    expect(() => neventEncode({ id: pk, author: "nope" })).toThrow();
+    expect(() => naddrEncode({ kind: 1, identifier: "x", pubkey: "0" })).toThrow();
+  });
+
+  test("nsecEncode requires exactly 32 bytes", () => {
+    expect(() => nsecEncode(new Uint8Array(16))).toThrow();
+    expect(() => nsecEncode(new Uint8Array(33))).toThrow();
+    const decoded = nip19Decode(nsecEncode(new Uint8Array(32).fill(7)));
+    expect(decoded.type).toBe("nsec");
+  });
+
+  test("kind must be an integer in 0..2^32-1", () => {
+    expect(() => naddrEncode({ kind: -1, identifier: "x", pubkey: pk })).toThrow(Nip19Error);
+    expect(() => naddrEncode({ kind: 2 ** 32, identifier: "x", pubkey: pk })).toThrow(Nip19Error);
+    expect(() => naddrEncode({ kind: 1.5, identifier: "x", pubkey: pk })).toThrow(Nip19Error);
+    expect(() => neventEncode({ id: pk, kind: 2 ** 32 })).toThrow(Nip19Error);
+    expect(naddrEncode({ kind: 0xffffffff, identifier: "x", pubkey: pk })).toMatch(/^naddr1/);
+  });
+
+  test("TLV values over 255 bytes throw Nip19Error", () => {
+    const longRelay = `wss://${"a".repeat(300)}`;
+    expect(() => nprofileEncode({ pubkey: pk, relays: [longRelay] })).toThrow(Nip19Error);
+    expect(() => naddrEncode({ kind: 30023, identifier: "x".repeat(300), pubkey: pk })).toThrow(
+      Nip19Error,
+    );
   });
 });
