@@ -87,6 +87,20 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 - NIP-46 request ids are 128-bit random hex (`randomBytes`), dropping the predictable counter (#130).
 - BREAKING: `ClientOptions.automaticAuth` defaults to `true` regardless of signer presence. The AUTH sign function reads the current signer at challenge time, so `setSigner()` applies to already-connected relays; a challenge with no signer is ignored (previously automatic auth was only enabled when a signer was passed in the constructor).
 - BREAKING: `PoolOptions.allowInsecure` defaults to `false`. `ws://` relays are rejected by `ensureRelay` unless listed in `trustedInsecureUrls` or `setAllowInsecure(true)` is called (previously allowed by default).
+- **BREAKING**: `EventBuilder.deletion` takes `targets, reason` where each target is an event-id string, `{ id, kind? }`, or `{ address }`; deduped `k` tags are emitted automatically (NIP-09 SHOULD) and the parallel `kinds`/`addresses` options are gone (#132).
+- `createAuthTemplate` (Blossom/BUD-11) defaults `content` to a per-verb human-readable string and throws `BlossomError` for an explicitly empty `message` (#132).
+- `dmRelayListEventBuilder` (kind 10050) and `blossomServerListEventBuilder` (kind 10063) throw when no valid relay/server tag would be emitted, per NIP-17/BUD-03 MUST (#132).
+- `fetchNip96Info` follows `delegated_to_url` exactly one hop (a second delegation throws `Nip96Error`); `Nip96UploadResult` is now a discriminated union — `{ status: "success"; url; tags }` or `{ status: "processing"; processingUrl; tags }` — so delayed-processing responses no longer throw (#132).
+- NIP-77 `Negentropy.reconcile` replies with a single `0x61` byte for queries carrying another 0x60–0x6f protocol version (peer downgrade per spec) instead of throwing (#132).
+- NIP-59 `unwrap` accepts seals whose only tags are `["expiration", <unix ts>]` (NIP-17 disappearing messages); other seal tags still throw (#132).
+- `decodeNostrURI` rejects `nostr:nsec1…` (NIP-21 excludes `nsec`); bare `decode("nsec1…")` still works (#132).
+- `isNip05`/`parseNip05` share one validator: local part `[a-z0-9._-]` (case-insensitive), `+` and other non-spec characters rejected (#132).
+- `getPow` (NIP-13) throws `Nip13Error` for non-hex or wrong-length string input instead of returning garbage (#132).
+- `relayListToTags` (NIP-65) throws `EventValidationError` for an entry with both `read` and `write` false (#132).
+- NIP-44 `decodePayload` checks the `#` version marker before the length check (spec pseudocode order) and rejects payloads above `DEFAULT_MAX_PAYLOAD_CHARS` — the base64 length of a 1 MiB-plaintext payload — before base64 decoding; raise it via `decrypt`/`decryptFromPubkey` `opts.maxPayloadChars` (#132).
+- `nip44.getMessageKeys` is exported to cover the spec's `get_message_keys` vectors (#132).
+- NIP-10 `buildReplyTags` omits the root `e` tag pubkey hint when the root author is unknown instead of falling back to the parent's pubkey (#132).
+- `tests/fixtures/nip44.vectors.json` is the official vector file (sha256 matches the checksum published in 44.md) and the suite consumes `valid.get_message_keys`, `valid.encrypt_decrypt_long_msg`, the extended-prefix boundary table, and all `invalid.*` entries (#132).
 
 ### Removed
 
