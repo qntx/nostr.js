@@ -14,7 +14,6 @@ import {
   type Recipient,
 } from "../nips/nip17.ts";
 import { unwrap, type Nip59Crypto } from "../nips/nip59.ts";
-import type { ReactiveEventStore } from "../store/reactive.ts";
 import type {
   FetchPrivateMessagesOptions,
   PrivateMessageSendResult,
@@ -27,9 +26,9 @@ import type {
 export type DmDeps = {
   pool: Pool;
   gossip: Gossip;
-  index: ReactiveEventStore;
   hydrateGossip: (pubkeys: readonly string[]) => Promise<void>;
-  observe: (event: Event, relayUrl?: string) => void;
+  ingest: (event: Event, relayUrl?: string) => void;
+  markSeen: (id: string, relayUrl: string) => void;
   assertAlive: () => void;
   requireNip59Crypto: () => Nip59Crypto;
   throwIfAborted: (signal?: AbortSignal) => void;
@@ -97,7 +96,7 @@ export async function sendPrivateMessage(
       const relays = requireDmRelays(recipient, deps.gossip.dmRelays(recipient));
       const results = await deps.pool.publish(relays, wrap, { timeoutMs: opts?.timeoutMs });
       if (results.some((r) => r.result?.ok) && deps.wantObserve(opts?.observe)) {
-        deps.observe(wrap);
+        deps.ingest(wrap);
       }
       return { recipient, wrap, results };
     }),
@@ -145,11 +144,11 @@ export async function fetchPrivateMessages(
       const wrapUrls = urls.get(wrap.id);
       const firstUrl = wrapUrls?.values().next().value;
       if (deps.wantObserve(opts?.observe)) {
-        deps.observe(wrap, firstUrl);
+        deps.ingest(wrap, firstUrl);
         // Every other relay that delivered the same wrap is recorded too.
         if (wrapUrls) {
           for (const url of wrapUrls) {
-            if (url !== firstUrl) deps.index.markSeen(wrap.id, url);
+            if (url !== firstUrl) deps.markSeen(wrap.id, url);
           }
         }
       }
@@ -184,7 +183,7 @@ export async function subscribePrivateMessages(
     const extra = pendingUrls.get(wrapId);
     if (extra === undefined) return;
     pendingUrls.delete(wrapId);
-    for (const url of extra) deps.index.markSeen(wrapId, url);
+    for (const url of extra) deps.markSeen(wrapId, url);
   };
   let tail = Promise.resolve();
   let closed = false;
@@ -209,7 +208,7 @@ export async function subscribePrivateMessages(
       receivedEvent: (id, relayUrl) => {
         if (closed) return;
         if (processed.has(id)) {
-          deps.index.markSeen(id, relayUrl);
+          deps.markSeen(id, relayUrl);
           return;
         }
         const list = pendingUrls.get(id);
@@ -229,7 +228,7 @@ export async function subscribePrivateMessages(
                 return;
               }
               seen.add(rumor.id);
-              if (deps.wantObserve(opts?.observe)) deps.observe(wrap, relayUrl);
+              if (deps.wantObserve(opts?.observe)) deps.ingest(wrap, relayUrl);
               flushSeen(wrap.id);
               opts?.onevent?.({ wrap, rumor, relayUrl });
             } catch {
