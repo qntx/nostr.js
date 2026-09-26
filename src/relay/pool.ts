@@ -39,6 +39,12 @@ export type PoolPublishResult = {
   error?: string;
 };
 
+/** Multi-relay subscribe options: callbacks also receive the normalized relay URL. */
+export type PoolSubscribeOptions = Omit<SubscribeOptions, "onevent" | "receivedEvent"> & {
+  onevent?: (event: Event, relayUrl: string) => void;
+  receivedEvent?: (id: string, relayUrl: string) => void;
+};
+
 export type PoolCountResult = {
   url: string;
   count?: number;
@@ -194,7 +200,7 @@ export class Pool {
   subscribe(
     relays: string[],
     filters: Filter[],
-    opts: SubscribeOptions = {},
+    opts: PoolSubscribeOptions = {},
   ): { close: (reason?: string) => void } {
     if (filters.length === 0) throw new MessageError("REQ requires at least one filter");
     if (opts.id !== undefined) assertSubscriptionId(opts.id);
@@ -216,13 +222,19 @@ export class Pool {
   async fetch(
     relays: string[],
     filters: Filter[],
-    opts?: { timeoutMs?: number; signal?: AbortSignal },
+    opts?: {
+      timeoutMs?: number;
+      signal?: AbortSignal;
+      /** Every event of every relay batch, including cross-relay duplicates. */
+      onevent?: (event: Event, relayUrl: string) => void;
+    },
   ): Promise<Event[]> {
     if (filters.length === 0) throw new MessageError("REQ requires at least one filter");
     return fetchRouted(this, [{ urls: relays, filters: canonicalizeFilters(filters) }], {
       timeoutMs: opts?.timeoutMs,
       signal: opts?.signal,
       connectTimeoutMs: this.#opts.connectTimeoutMs,
+      onevent: opts?.onevent,
     });
   }
 

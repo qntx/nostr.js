@@ -162,6 +162,7 @@ export {
   type PoolOptions,
   type PoolCountResult,
   type PoolPublishResult,
+  type PoolSubscribeOptions,
   type PublishResult,
   type RelayOptions,
   type RelayStatusName,
