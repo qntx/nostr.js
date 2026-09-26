@@ -166,6 +166,8 @@ export class ReactiveEventStore {
     this.#maxSeenOnEntries = opts?.maxSeenOnEntries ?? 20_000;
     this.#index = new MemoryIndex({
       maxTombstones: opts?.maxTombstones ?? 100_000,
+      // Keep evicted replaceable winners rejectable while their body is gone.
+      maxWatermarks: this.#maxEvents,
       onInsert: (event) => this.#onInsert(event),
       onRemove: (event) => this.#onRemove(event),
     });
@@ -431,8 +433,8 @@ export class ReactiveEventStore {
       if (pinned.has(id) || id === protectedId) continue;
       const event = this.#index.get(id);
       if (event === undefined) continue;
-      // Latest replaceable/addressable versions are never evicted.
-      if (eventAddress(event) !== undefined) continue;
+      // Replaceable/addressable winners evict like any other event; the index
+      // records a watermark so stale versions stay rejected afterwards.
       evicting.push(id);
     }
     this.#index.evict(evicting);

@@ -15,6 +15,16 @@ export type MemoryIndexOptions = {
    * old deleted event or replaceable version can be accepted again.
    */
   maxTombstones?: number;
+  /**
+   * FIFO cap on replaceable/addressable winner watermarks recorded by
+   * {@link evict}. A watermark keeps only `{ id, created_at }` per address so
+   * stale versions stay rejected after the winner's body is evicted, and a
+   * re-put of the watermarked id re-inserts it. Default 0 (no watermark
+   * retention); callers that evict should pass a bound. Once a watermark is
+   * trimmed, an older evicted version can be accepted again — the same
+   * trade-off as deletion tombstones.
+   */
+  maxWatermarks?: number;
   /** Fires after every physical index insert (accept, replace, deletion event). */
   onInsert?(event: Event): void;
   /** Fires after every physical index remove (replace, delete, evict, remove, clear). */
@@ -33,14 +43,20 @@ export class MemoryIndex {
   #byKindPubkey = new Map<string, Set<string>>(); // `${kind}:${pubkey}` → ids
   #byEpTag = new Map<string, Set<string>>(); // `${"e"|"p"}:${value.toLowerCase()}` → ids
   #replaceable = new Map<string, string>(); // address -> event id
+  // address -> last evicted winner; insertion order is the FIFO trim order
+  #watermarks = new Map<string, { id: string; created_at: number }>();
+  // winner id -> address reverse index for O(1) watermark drops on deletion
+  #watermarkIds = new Map<string, string>();
   #deletion = new DeletionState();
   #outboxBounds = new Map<string, OutboxBound>();
   #maxTombstones: number | undefined;
+  #maxWatermarks: number;
   #onInsert: ((event: Event) => void) | undefined;
   #onRemove: ((event: Event) => void) | undefined;
 
   constructor(opts?: MemoryIndexOptions) {
     this.#maxTombstones = opts?.maxTombstones;
+    this.#maxWatermarks = opts?.maxWatermarks ?? 0;
     this.#onInsert = opts?.onInsert === undefined ? undefined : (event) => opts.onInsert?.(event);
     this.#onRemove = opts?.onRemove === undefined ? undefined : (event) => opts.onRemove?.(event);
   }
@@ -52,16 +68,25 @@ export class MemoryIndex {
       getReplaceable: (addr) => {
         const id = this.#replaceable.get(addr);
         const ev = id ? this.#byId.get(id) : undefined;
-        return ev ? { id: ev.id, created_at: ev.created_at } : undefined;
+        if (ev) return { id: ev.id, created_at: ev.created_at };
+        const watermark = this.#watermarks.get(addr);
+        return watermark === undefined ? undefined : { ...watermark, evicted: true };
       },
     };
+    const decision = decidePut(raw, lookup);
+    if (decision.action === "delete") {
+      // Pending e-tag targets and coordinate tombstones never reach
+      // indexRemove — drop their watermarks here.
+      for (const p of decision.plan.pendingIds) this.#dropWatermarkId(p.id);
+      for (const c of decision.plan.coordinates) this.#dropWatermark(c.key);
+    }
     const result = applyPutMemory(
       {
         deletion: this.#deletion,
         indexInsert: (e) => this.#indexInsert(e),
         indexRemove: (id) => this.#indexRemove(id),
       },
-      decidePut(raw, lookup),
+      decision,
     );
     this.#trimTombstones();
     return result;
@@ -144,11 +169,23 @@ export class MemoryIndex {
     return n;
   }
 
-  /** Remove by id without writing a tombstone (LRU eviction). */
+  /**
+   * Remove by id without writing a tombstone (LRU eviction). When the evicted
+   * event is the current winner of a replaceable/addressable address, a
+   * `{ id, created_at }` watermark is recorded so stale versions stay
+   * rejected while the body is gone; the watermarks are FIFO-bounded by
+   * `maxWatermarks`.
+   */
   evict(ids: readonly string[]): number {
     let n = 0;
     for (const raw of ids) {
-      if (this.#indexRemove(raw.toLowerCase())) n += 1;
+      const id = raw.toLowerCase();
+      const event = this.#byId.get(id);
+      if (event === undefined) continue;
+      const addr = eventAddress(event);
+      const winner = addr !== undefined && this.#replaceable.get(addr) === id;
+      if (this.#indexRemove(id)) n += 1;
+      if (winner) this.#setWatermark(addr, { id, created_at: event.created_at });
     }
     return n;
   }
@@ -195,6 +232,8 @@ export class MemoryIndex {
     this.#byKindPubkey.clear();
     this.#byEpTag.clear();
     this.#replaceable.clear();
+    this.#watermarks.clear();
+    this.#watermarkIds.clear();
     this.#deletion.clear();
     this.#outboxBounds.clear();
   }
@@ -214,12 +253,18 @@ export class MemoryIndex {
       addToSet(this.#byEpTag, `${tag[0]}:${tag[1].toLowerCase()}`, event.id);
     }
     const addr = eventAddress(event);
-    if (addr) this.#replaceable.set(addr, event.id);
+    if (addr) {
+      this.#replaceable.set(addr, event.id);
+      this.#dropWatermark(addr);
+    }
     this.#onInsert?.(event);
   }
 
   #indexRemove(id: string): boolean {
     const key = id;
+    // A removed/deleted id must not keep a stale watermark alive; eviction
+    // re-records its winner watermark right after this call.
+    this.#dropWatermarkId(key);
     const event = this.#byId.get(key);
     if (!event) return false;
     this.#byId.delete(key);
@@ -338,6 +383,32 @@ export class MemoryIndex {
     // #t/#d and other non-e/p tags are not indexed (e/p only). A generic tag
     // store is extra put/remove amp; hashtag-only queries scan #byId.
     for (const event of this.#byId.values()) visit(event);
+  }
+
+  #setWatermark(addr: string, watermark: { id: string; created_at: number }): void {
+    if (this.#maxWatermarks === 0) return;
+    this.#dropWatermark(addr);
+    this.#watermarks.set(addr, watermark);
+    this.#watermarkIds.set(watermark.id, addr);
+    while (this.#watermarks.size > this.#maxWatermarks) {
+      const oldest = this.#watermarks.keys().next();
+      if (oldest.done) break;
+      this.#dropWatermark(oldest.value);
+    }
+  }
+
+  #dropWatermark(addr: string): void {
+    const watermark = this.#watermarks.get(addr);
+    if (watermark === undefined) return;
+    this.#watermarks.delete(addr);
+    this.#watermarkIds.delete(watermark.id);
+  }
+
+  #dropWatermarkId(id: string): void {
+    const addr = this.#watermarkIds.get(id);
+    if (addr === undefined) return;
+    this.#watermarkIds.delete(id);
+    this.#watermarks.delete(addr);
   }
 
   #trimTombstones(): void {

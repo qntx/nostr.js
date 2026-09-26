@@ -3,12 +3,10 @@ import {
   Client,
   ClientError,
   CryptoError,
-  DataLoader,
   EventBuilder,
   Gossip,
   Keys,
   KeysSigner,
-  LoaderError,
   IndexedDbEventStore,
   MemoryEventStore,
   Nip19Error,
@@ -18,6 +16,7 @@ import {
   OutboxFeed,
   Pool,
   Relay,
+  ReactiveEventStore,
   RelayClosedError,
   RelayPublishError,
   StorageError,
@@ -27,6 +26,7 @@ import {
   nsecEncode,
   useWebSocketImplementation,
 } from "../src/index.ts";
+import { DataLoader, LoaderError } from "../src/loaders/dataloader.ts";
 import { subscriptionToAsyncIterable } from "../src/relay/subscription.ts";
 import { makeVerifyEvent } from "../src/wasm/adapter.ts";
 import { loadNostrWasm, resetNostrWasmForTests } from "../src/wasm/load.ts";
@@ -66,7 +66,11 @@ describe("event loader nsec/npub", () => {
     const keys = Keys.fromSecretKey(SK);
     const nsec = nsecEncode(keys.secretKey.bytes);
     expect(nsec.startsWith("nsec1")).toBe(true);
-    const loaders = createLoaders({ pool: new Pool(), relays: [] });
+    const loaders = createLoaders({
+      pool: new Pool(),
+      relays: [],
+      index: new ReactiveEventStore(),
+    });
     const err = syncThrow(() => loaders.event(nsec));
     expect(err).toBeInstanceOf(Nip19Error);
     expect((err as Nip19Error).message).toBe("cannot load event from nsec");
@@ -76,7 +80,11 @@ describe("event loader nsec/npub", () => {
     const keys = Keys.fromSecretKey(SK);
     const npub = npubEncode(keys.publicKey);
     expect(npub.startsWith("npub1")).toBe(true);
-    const loaders = createLoaders({ pool: new Pool(), relays: [] });
+    const loaders = createLoaders({
+      pool: new Pool(),
+      relays: [],
+      index: new ReactiveEventStore(),
+    });
     const err = syncThrow(() => loaders.event(npub));
     expect(err).toBeInstanceOf(Nip19Error);
     expect((err as Nip19Error).message).toBe("cannot load event from npub");

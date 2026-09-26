@@ -2,8 +2,7 @@ import type { Event } from "../core/event.ts";
 import type { ProfileMetadata } from "../core/builder.ts";
 import { Kind } from "../core/kind.ts";
 import { npubEncode } from "../nips/nip19.ts";
-import type { LoaderContext } from "./context.ts";
-import { createReplaceableLoader, type LoadStyle } from "./replaceable.ts";
+import type { LoadStyle, ReplaceableLoader } from "./replaceable.ts";
 
 export type NostrUser = {
   pubkey: string;
@@ -44,13 +43,13 @@ function parseMetadata(content: string): ProfileMetadata {
   }
 }
 
-export function createProfileLoader(ctx: LoaderContext) {
-  const loader = createReplaceableLoader(ctx, Kind.Metadata);
+export function createProfileLoader(replaceable: (kind: number) => ReplaceableLoader) {
+  const loader = replaceable(Kind.Metadata);
 
   return {
     async load(pubkey: string, opts?: { hints?: string[]; style?: LoadStyle }): Promise<NostrUser> {
       const base = bareNostrUser(pubkey);
-      const { event, fresh } = await loader.load(pubkey, opts);
+      const { event, fresh } = await loader(pubkey, opts);
       if (!event) return { ...base, fresh };
 
       const metadata = parseMetadata(event.content);

@@ -39,6 +39,12 @@ export type RoutedFilter = {
 export type GossipOptions = {
   /** Max relays to keep per direction when ranking. Default 4. */
   maxRelaysPerPubkey?: number;
+  /**
+   * Max pubkeys with tracked routes; the map is LRU — writes and lookups
+   * refresh recency, and inserting beyond the cap drops the oldest entry.
+   * Default 10_000.
+   */
+  maxPubkeys?: number;
 };
 
 function emptyRoutes(): PubkeyRoutes {
@@ -58,9 +64,11 @@ function emptyRoutes(): PubkeyRoutes {
 export class Gossip {
   readonly #routes = new Map<string, PubkeyRoutes>();
   readonly #maxRelays: number;
+  readonly #maxPubkeys: number;
 
   constructor(opts: GossipOptions = {}) {
     this.#maxRelays = opts.maxRelaysPerPubkey ?? 4;
+    this.#maxPubkeys = opts.maxPubkeys ?? 10_000;
   }
 
   /**
@@ -98,7 +106,7 @@ export class Gossip {
     eventId?: string,
   ): boolean {
     const pk = pubkey.toLowerCase();
-    const prev = this.#routes.get(pk) ?? emptyRoutes();
+    const prev = this.#lookup(pk) ?? emptyRoutes();
     if (prev.updatedAt > updatedAt) return false;
     if (
       eventId &&
@@ -125,7 +133,7 @@ export class Gossip {
       if (item.read && !read.includes(url)) read.push(url);
     }
 
-    this.#routes.set(pk, {
+    this.#put(pk, {
       write: write.slice(0, this.#maxRelays),
       read: read.slice(0, this.#maxRelays),
       dm: prev.dm,
@@ -144,7 +152,7 @@ export class Gossip {
     eventId?: string,
   ): boolean {
     const pk = pubkey.toLowerCase();
-    const prev = this.#routes.get(pk) ?? emptyRoutes();
+    const prev = this.#lookup(pk) ?? emptyRoutes();
     if (prev.dmUpdatedAt > updatedAt) return false;
     if (
       eventId &&
@@ -169,7 +177,7 @@ export class Gossip {
       if (!dm.includes(url)) dm.push(url);
     }
 
-    this.#routes.set(pk, {
+    this.#put(pk, {
       write: prev.write,
       read: prev.read,
       dm: dm.slice(0, this.#maxRelays),
@@ -182,20 +190,20 @@ export class Gossip {
   }
 
   getRoutes(pubkey: string): PubkeyRoutes | undefined {
-    return this.#routes.get(pubkey.toLowerCase());
+    return this.#lookup(pubkey.toLowerCase());
   }
 
   outboxRelays(pubkey: string): string[] {
-    return this.#routes.get(pubkey.toLowerCase())?.write ?? [];
+    return this.#lookup(pubkey.toLowerCase())?.write ?? [];
   }
 
   inboxRelays(pubkey: string): string[] {
-    return this.#routes.get(pubkey.toLowerCase())?.read ?? [];
+    return this.#lookup(pubkey.toLowerCase())?.read ?? [];
   }
 
   /** NIP-17 kind:10050 delivery relays for gift-wraps. */
   dmRelays(pubkey: string): string[] {
-    return this.#routes.get(pubkey.toLowerCase())?.dm ?? [];
+    return this.#lookup(pubkey.toLowerCase())?.dm ?? [];
   }
 
   clear(pubkey?: string): void {
@@ -240,7 +248,7 @@ export class Gossip {
     const relays = new Set<string>();
     let anyUnrouted = false;
     for (const pk of unionKeys) {
-      const r = this.#routes.get(pk);
+      const r = this.#lookup(pk);
       const urls = r ? [...r.write, ...r.read] : [];
       if (urls.length === 0) {
         anyUnrouted = true;
@@ -268,7 +276,7 @@ export class Gossip {
     let anyRoute = false;
 
     for (const pk of pubkeys) {
-      const routes = this.#routes.get(pk);
+      const routes = this.#lookup(pk);
       const urls = direction === "write" ? routes?.write : routes?.read;
       if (!urls || urls.length === 0) {
         unrouted.push(pk);
@@ -291,5 +299,26 @@ export class Gossip {
     return unrouted.length > 0
       ? { perRelay: map, remainder: narrow(filter, unrouted) }
       : { perRelay: map };
+  }
+
+  /** Read that refreshes LRU recency. */
+  #lookup(pk: string): PubkeyRoutes | undefined {
+    const routes = this.#routes.get(pk);
+    if (routes !== undefined) {
+      this.#routes.delete(pk);
+      this.#routes.set(pk, routes);
+    }
+    return routes;
+  }
+
+  /** Write at the newest LRU end, then trim the oldest beyond the cap. */
+  #put(pk: string, routes: PubkeyRoutes): void {
+    this.#routes.delete(pk);
+    this.#routes.set(pk, routes);
+    while (this.#routes.size > this.#maxPubkeys) {
+      const oldest = this.#routes.keys().next();
+      if (oldest.done) break;
+      this.#routes.delete(oldest.value);
+    }
   }
 }

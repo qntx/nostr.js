@@ -4,8 +4,7 @@ import { isHex32, normalizeURL } from "../core/util.ts";
 import { parseDmRelayList } from "../nips/nip17.ts";
 import type { RelayListItem } from "../nips/nip65.ts";
 import { parseRelayList } from "../nips/nip65.ts";
-import type { LoaderContext } from "./context.ts";
-import { createReplaceableLoader, type LoadStyle } from "./replaceable.ts";
+import type { LoadStyle, ReplaceableLoader } from "./replaceable.ts";
 
 export type ListResult<T> = {
   event: Event | null;
@@ -29,18 +28,18 @@ function fromTags<T>(event: Event | null, map: (tag: readonly string[]) => T | u
   return out;
 }
 
-export function createListLoaders(ctx: LoaderContext) {
-  const followsLoader = createReplaceableLoader(ctx, Kind.Contacts);
-  const muteLoader = createReplaceableLoader(ctx, Kind.MuteList);
-  const relayListLoader = createReplaceableLoader(ctx, Kind.RelayList);
-  const dmRelayListLoader = createReplaceableLoader(ctx, Kind.DirectMessageRelaysList);
+export function createListLoaders(replaceable: (kind: number) => ReplaceableLoader) {
+  const followsLoader = replaceable(Kind.Contacts);
+  const muteLoader = replaceable(Kind.MuteList);
+  const relayListLoader = replaceable(Kind.RelayList);
+  const dmRelayListLoader = replaceable(Kind.DirectMessageRelaysList);
 
   return {
     async follows(
       pubkey: string,
       opts?: { hints?: string[]; style?: LoadStyle },
     ): Promise<ListResult<string>> {
-      const { event, fresh } = await followsLoader.load(pubkey, opts);
+      const { event, fresh } = await followsLoader(pubkey, opts);
       return {
         event,
         fresh,
@@ -56,7 +55,7 @@ export function createListLoaders(ctx: LoaderContext) {
       pubkey: string,
       opts?: { hints?: string[]; style?: LoadStyle },
     ): Promise<ListResult<MutedEntity>> {
-      const { event, fresh } = await muteLoader.load(pubkey, opts);
+      const { event, fresh } = await muteLoader(pubkey, opts);
       return {
         event,
         fresh,
@@ -86,7 +85,7 @@ export function createListLoaders(ctx: LoaderContext) {
       pubkey: string,
       opts?: { hints?: string[]; style?: LoadStyle },
     ): Promise<ListResult<RelayListItem>> {
-      const { event, fresh } = await relayListLoader.load(pubkey, opts);
+      const { event, fresh } = await relayListLoader(pubkey, opts);
       let items: RelayListItem[] = [];
       if (event) {
         try {
@@ -110,7 +109,7 @@ export function createListLoaders(ctx: LoaderContext) {
       pubkey: string,
       opts?: { hints?: string[]; style?: LoadStyle },
     ): Promise<ListResult<string>> {
-      const { event, fresh } = await dmRelayListLoader.load(pubkey, opts);
+      const { event, fresh } = await dmRelayListLoader(pubkey, opts);
       let items: string[] = [];
       if (event) {
         try {

@@ -31,7 +31,15 @@ export type PutLookup = {
   getById: (
     id: string,
   ) => Pick<Event, "id" | "pubkey" | "kind" | "created_at" | "tags"> | undefined;
-  getReplaceable: (address: string) => Pick<Event, "id" | "created_at"> | undefined;
+  /**
+   * Current replaceable winner for an address. `evicted: true` marks an
+   * eviction watermark: the winning event body was dropped, but its
+   * id/created_at still reject older versions, and a re-put of the
+   * watermarked id re-inserts it.
+   */
+  getReplaceable: (
+    address: string,
+  ) => (Pick<Event, "id" | "created_at"> & { evicted?: boolean }) | undefined;
 };
 
 export function decidePut(raw: Event, lookup: PutLookup): PutDecision {
@@ -53,15 +61,18 @@ export function decidePut(raw: Event, lookup: PutLookup): PutDecision {
   const address = eventAddress(event);
   if (address) {
     const prev = lookup.getReplaceable(address);
-    if (prev && !isReplaceableWinner(event, prev)) {
+    // A stored incumbent rejects stale versions; an eviction watermark does
+    // the same, except a re-put of the watermarked id re-inserts it.
+    if (prev && prev.id !== event.id && !isReplaceableWinner(event, prev)) {
       return { action: "skip", result: "rejected", event };
     }
+    const supersedes = prev !== undefined && prev.evicted !== true;
     return {
       action: "insert",
-      result: prev ? "replaced" : "accepted",
+      result: supersedes ? "replaced" : "accepted",
       event,
       address,
-      replaceId: prev?.id,
+      replaceId: supersedes ? prev.id : undefined,
     };
   }
   return { action: "insert", result: "accepted", event };
