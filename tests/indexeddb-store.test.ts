@@ -6,6 +6,7 @@ import {
   IndexedDbEventStore,
   Keys,
   Kind,
+  MemoryEventStore,
   StorageError,
 } from "../src/index.ts";
 import {
@@ -1174,5 +1175,50 @@ describe("IndexedDbEventStore", () => {
     expect((err as StorageError).cause).toBeUndefined();
     expect(await store.get(note.id)).toBeUndefined();
     store.close();
+  });
+});
+
+describe("scanFilter merge cursor cap (issue #134)", () => {
+  let mock: IdbMock;
+
+  beforeEach(() => {
+    mock = installIdbMock();
+  });
+
+  afterEach(() => {
+    mock.uninstall();
+  });
+
+  test("100 authors × 1 kind falls back to wide cursors with identical results", async () => {
+    const authors = Array.from({ length: 100 }, () => Keys.generate());
+    const events = authors.flatMap((k, i) =>
+      [0, 1, 2].map((j) =>
+        EventBuilder.textNote(`a${i}-${j}`)
+          .createdAt(1000 + i * 10 + j)
+          .signWithKeys(k),
+      ),
+    );
+    const idb = new IndexedDbEventStore({ dbName: "merge-cap" });
+    const mem = new MemoryEventStore();
+    await idb.putMany(events);
+    await mem.putMany(events);
+
+    const pks = authors.map((k) => k.publicKey);
+    // authors × kinds exceeds MAX_MERGE_CURSORS → one cursor per kind.
+    const filter = { authors: pks, kinds: [Kind.TextNote] };
+    expect((await idb.query([filter])).map((e) => e.id)).toEqual(
+      (await mem.query([filter])).map((e) => e.id),
+    );
+    // Per-filter limit still applies on the fallback path (newest-first).
+    const limited = { ...filter, limit: 25 };
+    expect((await idb.query([limited])).map((e) => e.id)).toEqual(
+      (await mem.query([limited])).map((e) => e.id),
+    );
+    // Authors alone over the cap collapse to a single created_at cursor.
+    const authorsOnly = { authors: pks, limit: 40 };
+    expect((await idb.query([authorsOnly])).map((e) => e.id)).toEqual(
+      (await mem.query([authorsOnly])).map((e) => e.id),
+    );
+    idb.close();
   });
 });

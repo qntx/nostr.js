@@ -2,19 +2,24 @@ import type { Event } from "../core/event.ts";
 import { canonicalizeFilter, type Filter } from "../core/filter.ts";
 import type { Pool } from "../relay/pool.ts";
 import type { EventStore, PutResult } from "../storage/types.ts";
-import type { ReactiveEventStore } from "../store/reactive.ts";
 import { storageFromItems, type NegentropyStorageVector } from "../nips/nip77.ts";
 import { SyncDirection, type SyncOptions, type SyncSummary } from "./types.ts";
 
 export type SyncDeps = {
   pool: Pool;
   storage: EventStore;
-  index: ReactiveEventStore;
   persistEvents: boolean;
   assertAlive: () => void;
   throwIfAborted: (signal?: AbortSignal) => void;
   wantObserve: (flag?: boolean) => boolean;
-  ingestMeta: (event: Event) => void;
+  /**
+   * The client's single ingest path: index (with relay URL) → meta →
+   * persistence. `persist: false` when this function already wrote storage
+   * via an awaited `putMany`.
+   */
+  ingest: (event: Event, relayUrl?: string, opts?: { persist?: boolean }) => void;
+  /** Record a relay sighting for an id already in the index. */
+  markSeen: (id: string, relayUrl: string) => void;
   defaultRelays: (urls?: string[]) => string[];
 };
 
@@ -52,8 +57,8 @@ function mergeSyncSummary(into: SyncSummary, other: SyncSummary): SyncSummary {
 /**
  * NIP-77 sync against one relay: reconcile, then optionally upload
  * local-only events and/or download remote-only events.
- * `observe: false` skips putMany and ingestMeta; received ids are still listed.
- * `persistEvents: false` skips putMany, still ingestMeta when observe is on.
+ * `observe: false` skips putMany and ingest; received ids are still listed.
+ * `persistEvents: false` skips putMany, still ingests when observe is on.
  */
 export async function syncToRelay(
   deps: SyncDeps,
@@ -122,13 +127,16 @@ export async function syncToRelay(
     for (let i = 0; i < need.length; i += SYNC_ID_BATCH) {
       const batch = need.slice(i, i + SYNC_ID_BATCH);
       deps.throwIfAborted(opts?.signal);
+      // Every relay that delivered an event is recorded once it is ingested.
+      const urlsById = new Map<string, string[]>();
       const events = await deps.pool.fetch([url], [{ ids: batch }], {
         timeoutMs: opts?.timeoutMs,
         signal: opts?.signal,
-        // Index + seenOn track every received event, even when persistence is off.
         onevent: shouldObserve
           ? (event, relayUrl) => {
-              deps.index.add(event, relayUrl);
+              const urls = urlsById.get(event.id);
+              if (urls === undefined) urlsById.set(event.id, [relayUrl]);
+              else if (!urls.includes(relayUrl)) urls.push(relayUrl);
             }
           : undefined,
       });
@@ -136,13 +144,20 @@ export async function syncToRelay(
         for (const event of events) summary.received.push(event.id);
         continue;
       }
+      const ingestAll = (event: Event): void => {
+        const urls = urlsById.get(event.id) ?? [];
+        deps.ingest(event, urls[0], { persist: false });
+        for (let u = 1; u < urls.length; u++) deps.markSeen(event.id, urls[u]!);
+      };
       if (!deps.persistEvents) {
         for (const event of events) {
-          deps.ingestMeta(event);
+          ingestAll(event);
           summary.received.push(event.id);
         }
         continue;
       }
+      // The awaited putMany reports persistFailures; accepted events then go
+      // through the ingest path with persistence already done.
       let results: PutResult[];
       try {
         results = await deps.storage.putMany(events);
@@ -154,7 +169,7 @@ export async function syncToRelay(
       for (let j = 0; j < events.length; j++) {
         const event = events[j]!;
         if (results[j] === "rejected" || results[j] === "invalid") continue;
-        deps.ingestMeta(event);
+        ingestAll(event);
         summary.received.push(event.id);
       }
     }

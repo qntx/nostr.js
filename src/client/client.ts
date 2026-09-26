@@ -176,30 +176,39 @@ export class Client {
     return flag !== false;
   }
 
-  /**
-   * Unified ingest pipeline: reactive index first (sync), then gossip +
-   * replaceable loader cache; storage writes are coalesced into a
-   * single-flight `putMany`.
-   */
+  /** Ingest one inbound event: index (with relay URL) → meta → persistence. */
   observe(event: Event, relayUrl?: string): void {
-    this.index.add(event, relayUrl);
-    this.#ingestMeta(event);
-    if (!this.#persistEvents) return;
-    this.#persistQueue.push(event);
-    this.#armFlush();
+    this.#ingest(event, relayUrl);
   }
 
-  /** Observe many events (deduped by id, order preserved) as one persist batch. */
+  /** Ingest many events (deduped by id, order preserved) as one persist batch. */
   observeAll(events: readonly Event[]): void {
     const seen = new Set<string>();
     for (const event of events) {
       if (seen.has(event.id)) continue;
       seen.add(event.id);
-      this.index.add(event);
-      this.#ingestMeta(event);
-      if (this.#persistEvents) this.#persistQueue.push(event);
+      this.#ingest(event);
     }
-    if (this.#persistEvents && this.#persistQueue.length > 0) this.#armFlush();
+  }
+
+  /**
+   * The single inbound-event pipeline: reactive index add (with the source
+   * relay URL recorded in seenOn), gossip + replaceable loader cache meta,
+   * then the persistence decision. `persist: false` skips the storage queue
+   * for callers that persist via their own awaited `putMany` (down-sync);
+   * `meta: false` is a pure sighting/index add.
+   */
+  #ingest(event: Event, relayUrl?: string, opts?: { persist?: boolean; meta?: boolean }): void {
+    this.index.add(event, relayUrl);
+    if (opts?.meta !== false) this.#ingestMeta(event);
+    if (opts?.persist === false || !this.#persistEvents) return;
+    this.#persistQueue.push(event);
+    this.#armFlush();
+  }
+
+  /** Record a relay sighting for an id already in the index. */
+  #markSeen(id: string, relayUrl: string): void {
+    this.index.markSeen(id, relayUrl);
   }
 
   #ingestMeta(event: Event): void {
@@ -282,12 +291,10 @@ export class Client {
       onEvent: opts.onEvent,
       maxRelaysPerAuthor: opts.maxRelaysPerAuthor,
       observe: (event, relayUrl) => this.observe(event, relayUrl),
-      seen: (event, relayUrl) => {
-        this.index.add(event, relayUrl);
-      },
+      seen: (event, relayUrl) => this.#ingest(event, relayUrl, { persist: false, meta: false }),
       applySync: async (events) => {
         if (!this.#persistEvents) {
-          for (const event of events) this.#ingestMeta(event);
+          for (const event of events) this.#ingest(event, undefined, { persist: false });
           return [];
         }
         const results = await this.storage.putMany(events);
@@ -296,7 +303,7 @@ export class Client {
           if (results[i] === "rejected" || results[i] === "ephemeral" || results[i] === "invalid") {
             continue;
           }
-          this.#ingestMeta(events[i]!);
+          this.#ingest(events[i]!, undefined, { persist: false });
           applied.push(events[i]!);
         }
         return applied;
@@ -400,7 +407,7 @@ export class Client {
         const local = await this.storage.query(filters);
         for (const e of local) {
           candidates.push(e);
-          if (shouldObserve) this.index.add(e);
+          if (shouldObserve) this.#ingest(e, undefined, { persist: false, meta: false });
         }
       } catch (err) {
         invokeSafely(() => this.onstorageerror?.(toStorageError(err)));
@@ -408,9 +415,9 @@ export class Client {
     }
 
     // Every inbound event lands in the index (with its relay URL) before the
-    // caller's onevent runs; dedupe + persistence happen in ingest/observe.
+    // caller's onevent runs; the batch below re-ingests for persistence.
     const onevent = (event: Event, relayUrl: string) => {
-      if (shouldObserve) this.index.add(event, relayUrl);
+      if (shouldObserve) this.#ingest(event, relayUrl, { persist: false, meta: false });
       opts?.onevent?.(event, relayUrl);
     };
 
@@ -466,7 +473,7 @@ export class Client {
     };
 
     const wrapReceived = (id: string, relayUrl: string) => {
-      if (shouldObserve) this.index.markSeen(id, relayUrl);
+      if (shouldObserve) this.#markSeen(id, relayUrl);
       opts?.receivedEvent?.(id, relayUrl);
     };
 
@@ -505,9 +512,9 @@ export class Client {
     return {
       pool: this.pool,
       gossip: this.gossip,
-      index: this.index,
       hydrateGossip: (pubkeys) => this.hydrateGossip(pubkeys),
-      observe: (event, relayUrl) => this.observe(event, relayUrl),
+      ingest: (event, relayUrl) => this.#ingest(event, relayUrl),
+      markSeen: (id, relayUrl) => this.#markSeen(id, relayUrl),
       assertAlive: () => this.#assertAlive(),
       requireNip59Crypto: () => this.#requireNip59Crypto(),
       throwIfAborted: (signal) => this.#throwIfAborted(signal),
@@ -520,12 +527,12 @@ export class Client {
     return {
       pool: this.pool,
       storage: this.storage,
-      index: this.index,
       persistEvents: this.#persistEvents,
       assertAlive: () => this.#assertAlive(),
       throwIfAborted: (signal) => this.#throwIfAborted(signal),
       wantObserve: (flag) => this.#wantObserve(flag),
-      ingestMeta: (event) => this.#ingestMeta(event),
+      ingest: (event, relayUrl, opts) => this.#ingest(event, relayUrl, opts),
+      markSeen: (id, relayUrl) => this.#markSeen(id, relayUrl),
       defaultRelays: (urls) => this.#defaultRelays(urls),
     };
   }
@@ -561,8 +568,8 @@ export class Client {
   /**
    * NIP-77 sync against one relay: reconcile, then optionally upload
    * local-only events and/or download remote-only events.
-   * `observe: false` skips putMany and ingestMeta; received ids are still listed.
-   * `persistEvents: false` skips putMany, still ingestMeta when observe is on.
+   * `observe: false` skips putMany and ingest; received ids are still listed.
+   * `persistEvents: false` skips putMany, still ingests when observe is on.
    */
   async syncToRelay(
     url: string,

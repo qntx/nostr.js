@@ -15,7 +15,7 @@ import { Nip77Error, type NegentropyStorageVector } from "../nips/nip77.ts";
 import { isAuthRequired, makeAuthEvent } from "../nips/nip42.ts";
 import { NoSignerError } from "../signer/error.ts";
 import { normalizeURL } from "../core/util.ts";
-import { abortReason, throwIfAborted } from "../core/abort.ts";
+import { abortReason, raceSignal, throwIfAborted } from "../core/abort.ts";
 import { invokeSafely } from "../core/report.ts";
 import {
   RelayClosedError,
@@ -252,7 +252,9 @@ export class Relay {
 
   async connect(opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void> {
     if (this.#connected) return;
-    if (this.#connecting) return await this.#connecting;
+    // A connect attempt is never owned by a caller's signal: joiners race
+    // their own signal against the shared attempt; only close() cancels it.
+    if (this.#connecting) return await raceSignal(this.#connecting, opts?.signal);
     throwIfAborted(opts?.signal);
 
     const gen = ++this.#gen;
@@ -300,26 +302,11 @@ export class Relay {
       if (this.#ws === ws) this.#ws = undefined;
     };
 
-    const onAbort = (): void => {
-      if (gen !== this.#gen) {
-        release();
-        return;
-      }
-      this.#intentionalClose = true;
-      this.#skipReconnect = true;
-      release();
-      finish(abortReason(opts!.signal!));
-      if (gen === this.#gen) {
-        this.#handleSocketDeath("connection aborted", { fromConnectAttempt: true, gen });
-      }
-    };
-
     const finish = (err?: unknown): void => {
       if (settled) return;
       settled = true;
       if (timer !== undefined) clearTimeout(timer);
       if (this.#connectTimer === timer) this.#connectTimer = undefined;
-      opts?.signal?.removeEventListener("abort", onAbort);
       if (this.#connectFinish === finish) this.#connectFinish = undefined;
       if (this.#connecting === connecting) this.#connecting = undefined;
       if (err !== undefined) {
@@ -346,8 +333,6 @@ export class Relay {
     }, timeoutMs);
     this.#connectTimer = timer;
 
-    opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
     try {
       ws = new this.#WS(this.url);
     } catch (err) {
@@ -356,7 +341,7 @@ export class Relay {
       if (gen === this.#gen) {
         this.#handleSocketDeath("connection failed", { fromConnectAttempt: true, gen });
       }
-      await connecting;
+      await raceSignal(connecting, opts?.signal);
       return;
     }
     this.#ws = ws;
@@ -441,7 +426,7 @@ export class Relay {
     ws.addEventListener("close", onClose);
     ws.addEventListener("message", onMessage);
 
-    await connecting;
+    await raceSignal(connecting, opts?.signal);
   }
 
   #detachSocketHandlers(): void {

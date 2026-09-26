@@ -456,3 +456,45 @@ describe("issue #125", () => {
     }
   });
 });
+
+describe("MemoryIndex maxTombstones (issue #134)", () => {
+  const coordOf = (d: string) => `30001:${keys.publicKey}:${d}`;
+  const delAddr = (d: string, at: number) =>
+    EventBuilder.deletion([{ address: coordOf(d) }], "gone")
+      .createdAt(at)
+      .signWithKeys(keys);
+
+  test("pending deletion ids trim FIFO; a trimmed pending target is accepted again", () => {
+    const index = new MemoryIndex({ maxTombstones: 2 });
+    const a = note("a", 1);
+    const b = note("b", 1);
+    const c = note("c", 1);
+    // Deletions for ids not yet stored land in `pending`.
+    index.put(kind5([a], 2));
+    index.put(kind5([b], 3));
+    index.put(kind5([c], 4)); // pending exceeds the cap → oldest (a) trimmed
+    expect(index.put(a)).toBe("accepted"); // tombstone forgotten
+    expect(index.put(b)).toBe("duplicate"); // still pending-covered
+    expect(index.put(c)).toBe("duplicate");
+  });
+
+  test("coordinate tombstones trim FIFO; re-absorb moves a coordinate to the newest end", () => {
+    const index = new MemoryIndex({ maxTombstones: 2 });
+    index.put(delAddr("a", 10));
+    index.put(delAddr("b", 11));
+    expect(index.isDeleted(coordOf("a"))).toBe(true);
+    // Re-absorbing "a" makes it the newest entry; "c" then evicts "b".
+    index.put(delAddr("a", 12));
+    index.put(delAddr("c", 13));
+    expect(index.isDeleted(coordOf("a"))).toBe(true);
+    expect(index.isDeleted(coordOf("b"))).toBe(false);
+    expect(index.isDeleted(coordOf("c"))).toBe(true);
+    // A stale event at the trimmed coordinate is accepted again.
+    const stale = EventBuilder.textNote("old")
+      .kind(30001)
+      .tag(["d", "b"])
+      .createdAt(5)
+      .signWithKeys(keys);
+    expect(index.put(stale)).toBe("accepted");
+  });
+});

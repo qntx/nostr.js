@@ -149,22 +149,32 @@ describe("wasm HTTP load", () => {
 });
 
 describe("subscriptionToAsyncIterable close reasons", () => {
-  function started(): {
+  function started(opts?: { signal?: AbortSignal; includeEose?: boolean }): {
+    stream: AsyncIterable<unknown> & { close: (reason?: string) => void };
+    oneose: () => void;
     onclose: (reason: string) => void;
     next: () => Promise<IteratorResult<unknown>>;
   } {
-    let onclose: ((reason: string) => void) | undefined;
+    let handlersRef: {
+      oneose?: () => void;
+      onclose?: (reason: string) => void;
+    } = {};
     const stream = subscriptionToAsyncIterable((handlers) => {
-      onclose = handlers.onclose;
+      handlersRef = handlers;
       return {
         close: (reason) => {
           handlers.onclose?.(reason ?? "closed by client");
         },
       };
-    });
-    if (!onclose) throw new Error("start omitted onclose");
+    }, opts);
+    if (!handlersRef.onclose) throw new Error("start omitted onclose");
     const iterator = stream[Symbol.asyncIterator]();
-    return { onclose, next: () => iterator.next() };
+    return {
+      stream,
+      oneose: () => handlersRef.oneose?.(),
+      onclose: (reason: string) => handlersRef.onclose?.(reason),
+      next: () => iterator.next(),
+    };
   }
 
   test("onclose relay gone throws RelayClosedError from next", async () => {
@@ -176,24 +186,33 @@ describe("subscriptionToAsyncIterable close reasons", () => {
     expect((err as RelayClosedError).message).toBe("relay gone");
   });
 
-  test("onclose eose completes without throw", async () => {
-    const { onclose, next } = started();
-    const pending = next();
-    onclose("eose");
-    expect(await pending).toEqual({ value: undefined, done: true });
-  });
-
-  test("onclose closed by client completes without throw", async () => {
+  test("any remote close reason throws, even one that looks local", async () => {
     const { onclose, next } = started();
     const pending = next();
     onclose("closed by client");
+    const err = await captureError(pending);
+    expect(err).toBeInstanceOf(RelayClosedError);
+  });
+
+  test("local stream.close() completes without throw", async () => {
+    const { stream, next } = started();
+    const pending = next();
+    stream.close("closed by client");
     expect(await pending).toEqual({ value: undefined, done: true });
   });
 
-  test("onclose aborted completes without throw", async () => {
-    const { onclose, next } = started();
+  test("EOSE auto-close completes without throw", async () => {
+    const { oneose, next } = started({ includeEose: false });
     const pending = next();
-    onclose("aborted");
+    oneose();
+    expect(await pending).toEqual({ value: undefined, done: true });
+  });
+
+  test("signal abort completes without throw", async () => {
+    const ctrl = new AbortController();
+    const { next } = started({ signal: ctrl.signal });
+    const pending = next();
+    ctrl.abort(new Error("stop"));
     expect(await pending).toEqual({ value: undefined, done: true });
   });
 });

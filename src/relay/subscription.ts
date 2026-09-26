@@ -117,10 +117,20 @@ export function subscriptionToAsyncIterable(
   let error: Error | undefined;
   let wake: (() => void) | undefined;
   let closer: { close: (reason?: string) => void } | undefined;
+  // Set before every locally initiated close so onclose can distinguish it
+  // from a remote/transport close without comparing reason strings.
+  let localClose = false;
 
   const notify = () => {
     wake?.();
     wake = undefined;
+  };
+
+  const closeLocal = (reason: string): void => {
+    localClose = true;
+    closer?.close(reason);
+    done = true;
+    notify();
   };
 
   closer = start({
@@ -130,13 +140,15 @@ export function subscriptionToAsyncIterable(
     },
     oneose() {
       if (opts?.includeEose === false) {
-        done = true;
-        closer?.close("eose");
-        notify();
+        closeLocal("eose");
       }
     },
     onclose(reason) {
-      if (reason && reason !== "eose" && reason !== "closed by client" && reason !== "aborted") {
+      // The Subscription's own abort listener fires before this wrapper's,
+      // so a signal-driven close can surface here while localClose is still
+      // false — it is still a local close, not a remote one.
+      if (opts?.signal?.aborted) localClose = true;
+      if (!localClose && reason) {
         error = new RelayClosedError(reason);
       }
       done = true;
@@ -146,26 +158,15 @@ export function subscriptionToAsyncIterable(
 
   if (opts?.signal) {
     if (opts.signal.aborted) {
-      closer.close("aborted");
-      done = true;
+      closeLocal("aborted");
     } else {
-      opts.signal.addEventListener(
-        "abort",
-        () => {
-          closer?.close("aborted");
-          done = true;
-          notify();
-        },
-        { once: true },
-      );
+      opts.signal.addEventListener("abort", () => closeLocal("aborted"), { once: true });
     }
   }
 
   return {
     close(reason?: string) {
-      closer?.close(reason);
-      done = true;
-      notify();
+      closeLocal(reason ?? "closed by client");
     },
     [Symbol.asyncIterator]() {
       return {
@@ -182,8 +183,7 @@ export function subscriptionToAsyncIterable(
           }
         },
         async return(): Promise<IteratorResult<Event>> {
-          closer?.close("iterator returned");
-          done = true;
+          closeLocal("iterator returned");
           return { value: undefined, done: true };
         },
       };
