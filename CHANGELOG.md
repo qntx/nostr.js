@@ -24,7 +24,7 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 - `createLoaders` requires `index: ReactiveEventStore` and drops the `cache` option — pass `client.index` (or your own store); fetched events flow through the new optional `ingest` callback (default `index.add`). `Loaders` drops `context` and gains `addRelay`/`removeRelay`/`replaceable(kind)`; `Client` wires `index` and `ingest` itself (#137).
 - `EventBuilder.deletion` takes `targets, reason` where each target is an event-id string, `{ id, kind? }`, or `{ address }`; deduped `k` tags are emitted automatically (NIP-09 SHOULD) and the `kinds`/`addresses` options are gone (#133).
 - `Nip96UploadResult` is a discriminated union — `{ status: "success"; url; tags }` or `{ status: "processing"; processingUrl; tags }`; check `status` before reading `url` (#133).
-- `CountResult.hll` is a 512-char lowercase hex HyperLogLog sketch, not opaque base64 (#126).
+- `CountResult.hll` is a 512-char lowercase hex HyperLogLog sketch, not opaque base64.
 - Validation that returned corrupt output in 0.1.0 now throws: NIP-19 encoders reject bad hex/kinds/>255-byte TLV values (`Nip19Error`), `getPow` rejects non-hex input (`Nip13Error`), `relayListToTags` rejects `{ read: false, write: false }` (`EventValidationError`), `dmRelayListEventBuilder`/`blossomServerListEventBuilder` throw when no valid tag would be emitted, and `createAuthTemplate` throws `BlossomError` for an explicitly empty `message` (#131, #133).
 
 ### Added
@@ -64,6 +64,7 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 - `bytesToHex`/`hexToBytes` delegate to `@noble/hashes` (`hexToBytes` still throws `HexError`); event ordering drops `localeCompare` for `created_at`-then-id over canonical ids; custom REQ/COUNT ids are validated to 1..64 characters (#129).
 - `signEvent`/`finalizeEvent` accept a `Keys` instance and reuse its cached public key; `Nip07Signer.getPublicKey` validates with `assertHex32`; NIP-46 request ids are 128-bit random (#131).
 - `MemoryIndexOptions.maxTombstones` bounds tombstoned ids, pending e-tag ids, and coordinate tombstones, each FIFO; `ReactiveEventStore` keeps a 100_000 default, `MemoryEventStore` stays unbounded (#135).
+- IndexedDB `scanFilter` opens at most 64 merge cursors per filter, then falls back to one cursor per kind or a single `created_at` scan plus `matchFilter`; results and per-filter limits are unchanged (#135).
 - TypeScript strictness: `tsconfig` enables `erasableSyntaxOnly`, `noUncheckedIndexedAccess`, `noImplicitOverride`, and `isolatedDeclarations`; every root export carries a TSDoc summary; `check:pkg` (`WASM_PACK=1 vp pack && publint && attw --pack . --profile esm-only`) validates the published package at the end of `build:wasm` (#138).
 
 ### Removed
@@ -75,14 +76,10 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 
 - A throwing `onevent` no longer drops the rest of a relay fetch batch; user-callback errors are isolated via `reportError` across `fetchRouted`/`fanIn`, REQ dispatch, `Subscription.close`, and store watch/`onInsert` listeners (#125).
 - Equivalent relay URL spellings no longer duplicate fan-in attachments or `Client` relay entries: job URLs are normalized and deduped, and `Client` stores normalized `relays` (#125).
-- `maxRelays` no longer closes relays that are still connecting (#125).
-- `Relay.auth` caches the settled OK verdict per challenge instead of the in-flight promise: a rejected AUTH replays the cached `OK false` without re-signing, while timeouts and send failures are not cached (#125).
 - Event stores canonicalize address coordinates (lowercase pubkey) in `isDeleted`/`getByAddress`, and a replacement newer than the tombstone's `until` clears the deletion (#125).
 - `IndexedDbEventStore.setOutboxBound` serializes through the write queue so it cannot overlap `putMany` or `clear`.
 - `Nip46Signer`: an `auth_url` reply re-arms the request under `authTimeoutMs` instead of consuming it, `close()` clears pending auth waits, and `onAuthUrl` (plus `Relay.onnotice`/`onclose`/`onauth`/`onreconnect`, `PoolOptions.onIdleRelaysClosed`, `Client.onstorageerror`, `OutboxFeed` `onEvent`/`observe`/`seen`) throwing is isolated via `reportError` (#131).
 - `Relay.fetch` aborted mid-flight rejects with `signal.reason` instead of resolving a partial batch (#131).
-- `Nip46Signer` dropped the redundant `#waitingAuth` set; the `auth_url` re-arm keys off `#listeners` directly (#135).
-- IndexedDB `scanFilter` merges bounds cursors up to `MAX_MERGE_CURSORS` (64), then falls back to one cursor per kind or a single `created_at` scan plus `matchFilter` — results and per-filter limits unchanged (#135).
 - EVENT `auth-required:` rearms the publish timeout after AUTH.
 - An extra live REQ while disconnected no longer resets reconnect backoff.
 - `subscribePrivateMessages` close/abort skips later persist and `onevent`; junk wraps are not stored.
