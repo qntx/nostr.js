@@ -6,6 +6,7 @@ import type { WebSocketConstructor } from "../relay/websocket.ts";
 import type { NostrSigner } from "../signer/types.ts";
 import type { StorageError } from "../storage/error.ts";
 import type { EventStore } from "../storage/types.ts";
+import type { ReactiveEventStore } from "../store/reactive.ts";
 import type { ReplyTo } from "../nips/nip17.ts";
 import type { Rumor } from "../nips/nip59.ts";
 
@@ -65,6 +66,11 @@ export type ClientOptions = {
    * Browser apps that want persistence must pass {@link IndexedDbEventStore} and `await open()`.
    */
   storage?: EventStore;
+  /**
+   * Synchronous reactive index that mirrors every ingested event before
+   * callbacks and persistence. Defaults to a new {@link ReactiveEventStore}.
+   */
+  index?: ReactiveEventStore;
   /**
    * When true (default), every ingested event is written to storage.
    * Set false to disable automatic persistence while keeping the store for manual use.

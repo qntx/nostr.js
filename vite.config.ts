@@ -4,6 +4,7 @@ import { defineConfig } from "vite-plus";
 
 const packWasm = process.env.WASM_PACK === "1";
 const wasmTest = process.env.WASM_TEST === "1";
+const storeBench = process.env.STORE_BENCH === "1";
 
 /** Always declare ./wasm so `vp pack` without WASM_PACK does not strip the export. */
 export function applyPackExports(pkgExports: Record<string, unknown>): Record<string, unknown> {
@@ -66,6 +67,7 @@ export default defineConfig({
       relay: "src/relay/index.ts",
       client: "src/client/index.ts",
       storage: "src/storage/index.ts",
+      store: "src/store/index.ts",
       loaders: "src/loaders/index.ts",
       gossip: "src/gossip/index.ts",
       "nips/blossom": "src/nips/blossom.ts",
@@ -102,7 +104,11 @@ export default defineConfig({
     },
   },
   test: {
-    include: wasmTest ? ["wasm-tests/**/*.ts"] : ["tests/**/*.{test,spec}.ts"],
+    include: wasmTest
+      ? ["wasm-tests/**/*.ts"]
+      : storeBench
+        ? ["bench/**/*.ts"]
+        : ["tests/**/*.{test,spec}.ts"],
     exclude: ["3rdparty/**", "node_modules/**", "dist/**"],
   },
   lint: {

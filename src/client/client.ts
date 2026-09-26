@@ -17,6 +17,7 @@ import type { NostrSigner } from "../signer/types.ts";
 import { toStorageError, type StorageError } from "../storage/error.ts";
 import { MemoryEventStore } from "../storage/memory.ts";
 import type { EventStore } from "../storage/types.ts";
+import { ReactiveEventStore } from "../store/reactive.ts";
 import { ClientBuilder } from "./builder.ts";
 import {
   fetchPrivateMessages,
@@ -51,6 +52,7 @@ export class Client {
   readonly loaders: Loaders;
   readonly gossip: Gossip;
   readonly storage: EventStore;
+  readonly index: ReactiveEventStore;
   onstorageerror: ((err: StorageError) => void) | null;
   #signer: NostrSigner | undefined;
   #relays: string[];
@@ -64,6 +66,7 @@ export class Client {
     this.#relays = [...(opts.relays ?? [])];
     this.gossip = opts.gossip ?? new Gossip();
     this.storage = opts.storage ?? new MemoryEventStore();
+    this.index = opts.index ?? new ReactiveEventStore();
     this.#persistEvents = opts.persistEvents ?? true;
     this.onstorageerror = opts.onstorageerror ?? null;
     const autoAuth = opts.automaticAuth ?? Boolean(opts.signer);
@@ -156,10 +159,12 @@ export class Client {
   }
 
   /**
-   * Unified ingest pipeline: gossip + replaceable loader cache immediately;
-   * storage writes are coalesced into a single-flight `putMany`.
+   * Unified ingest pipeline: reactive index first (sync), then gossip +
+   * replaceable loader cache; storage writes are coalesced into a
+   * single-flight `putMany`.
    */
-  observe(event: Event): void {
+  observe(event: Event, relayUrl?: string): void {
+    this.index.add(event, relayUrl);
     this.#ingestMeta(event);
     if (!this.#persistEvents) return;
     this.#persistQueue.push(event);
@@ -172,6 +177,7 @@ export class Client {
     for (const event of events) {
       if (seen.has(event.id)) continue;
       seen.add(event.id);
+      this.index.add(event);
       this.#ingestMeta(event);
       if (this.#persistEvents) this.#persistQueue.push(event);
     }
@@ -365,13 +371,25 @@ export class Client {
     const byId = new Map<string, Event>();
 
     if (opts?.localFirst) {
+      // Reactive index first, then persisted storage (hydrated into the index).
+      for (const e of this.index.query(filters)) byId.set(e.id, e);
       try {
         const local = await this.storage.query(filters);
-        for (const e of local) byId.set(e.id, e);
+        for (const e of local) {
+          byId.set(e.id, e);
+          if (shouldObserve) this.index.add(e);
+        }
       } catch (err) {
         this.onstorageerror?.(toStorageError(err));
       }
     }
+
+    // Every inbound event lands in the index (with its relay URL) before the
+    // caller's onevent runs; dedupe + persistence happen in ingest/observe.
+    const onevent = (event: Event, relayUrl: string) => {
+      if (shouldObserve) this.index.add(event, relayUrl);
+      opts?.onevent?.(event, relayUrl);
+    };
 
     const ingest = (events: Event[]) => {
       for (const e of events) {
@@ -385,7 +403,7 @@ export class Client {
         await this.pool.fetch(this.#defaultRelays(opts?.relays), filters, {
           timeoutMs: opts?.timeoutMs,
           signal: opts?.signal,
-          onevent: opts?.onevent,
+          onevent,
         }),
       );
       return sortedEvents([...byId.values()]);
@@ -395,7 +413,7 @@ export class Client {
       await fetchGossip(this.pool, this.gossip, filters, () => this.#defaultRelays(), {
         timeoutMs: opts?.timeoutMs,
         signal: opts?.signal,
-        onevent: opts?.onevent,
+        onevent,
       }),
     );
     return sortedEvents([...byId.values()]);
@@ -419,14 +437,19 @@ export class Client {
     const shouldObserve = this.#wantObserve(opts?.observe);
 
     const wrapEvent = (event: Event, relayUrl: string) => {
-      if (shouldObserve) this.observe(event);
+      if (shouldObserve) this.observe(event, relayUrl);
       opts?.onevent?.(event, relayUrl);
+    };
+
+    const wrapReceived = (id: string, relayUrl: string) => {
+      if (shouldObserve) this.index.markSeen(id, relayUrl);
+      opts?.receivedEvent?.(id, relayUrl);
     };
 
     if (!opts?.gossip || opts.relays) {
       return this.pool.subscribe(this.#defaultRelays(opts?.relays), filters, {
         onevent: wrapEvent,
-        receivedEvent: opts?.receivedEvent,
+        receivedEvent: wrapReceived,
         oneose: opts?.oneose,
         onclose: opts?.onclose,
         signal: opts?.signal,
@@ -437,7 +460,7 @@ export class Client {
 
     return subscribeGossip(this.pool, this.gossip, filters, () => this.#defaultRelays(), {
       onevent: wrapEvent,
-      receivedEvent: opts?.receivedEvent,
+      receivedEvent: wrapReceived,
       oneose: opts?.oneose,
       onclose: opts?.onclose,
       signal: opts?.signal,
@@ -461,7 +484,7 @@ export class Client {
       pool: this.pool,
       gossip: this.gossip,
       hydrateGossip: (pubkeys) => this.hydrateGossip(pubkeys),
-      observe: (event) => this.observe(event),
+      observe: (event, relayUrl) => this.observe(event, relayUrl),
       assertAlive: () => this.#assertAlive(),
       requireNip59Crypto: () => this.#requireNip59Crypto(),
       throwIfAborted: (signal) => this.#throwIfAborted(signal),

@@ -6,6 +6,22 @@ Layered TypeScript Nostr library: events, keys, filters, signers, relays, storag
 
 See [docs/](docs/).
 
+## Reactive store
+
+`@qntx/nostr/store` provides `ReactiveEventStore`, a synchronous in-memory index with `useSyncExternalStore`-compatible watches. Every `Client` owns one (`client.index`); events from subscriptions, fetches, and publishes land in it before caller callbacks run.
+
+```ts
+import { ReactiveEventStore } from "@qntx/nostr/store";
+
+const store = new ReactiveEventStore();
+const watch = store.watchQuery([{ kinds: [1], authors: [pubkey] }]);
+const unsubscribe = watch.subscribe(() => render(watch.getSnapshot()));
+store.add(event, "wss://relay.example"); // batched notification, one per microtask
+store.seenOn(event.id); // relay URLs that delivered this event
+```
+
+Snapshots are referentially stable until a relevant write. LRU eviction (default 50k events) never drops events pinned by a subscribed watch or the latest replaceable/addressable version.
+
 ## Testing
 
 `@qntx/nostr/testing` ships a transport-agnostic fake relay (NIP-01 EVENT/REQ/COUNT plus NIP-42 auth, NIP-50 `search`, and NIP-77 `NEG-*`) for in-process tests and for serving over a real `ws` socket:
