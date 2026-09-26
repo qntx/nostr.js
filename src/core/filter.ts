@@ -49,6 +49,7 @@ export function matchFilter(filter: Filter, event: Event): boolean {
   return true;
 }
 
+/** True when the event matches any of the filters (NIP-01 OR semantics). */
 export function matchFilters(filters: readonly Filter[], event: Event): boolean {
   for (const filter of filters) {
     if (matchFilter(filter, event)) return true;
@@ -118,11 +119,6 @@ export function getFilterLimit(filter: Filter): number {
   return limit;
 }
 
-/** Shallow-clone a filter (for per-relay narrowing). */
-export function cloneFilter(filter: Filter): Filter {
-  return { ...filter };
-}
-
 const HEX_LIST_KEYS = new Set(["ids", "authors", "#e", "#p"]);
 
 /** Lowercase hex lists and sort every array. Omits undefined so `[]` stays distinct from missing. */
@@ -148,6 +144,7 @@ export function canonicalizeFilter(filter: Filter): Filter {
   return out as Filter;
 }
 
+/** Apply {@link canonicalizeFilter} to each filter. */
 export function canonicalizeFilters(filters: readonly Filter[]): Filter[] {
   return filters.map(canonicalizeFilter);
 }

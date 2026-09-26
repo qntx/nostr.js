@@ -7,10 +7,10 @@ import {
   Keys,
   Kind,
   hexToBytes,
-  utf8Encoder,
   type Event,
   type Tag,
 } from "../src/index.ts";
+import { utf8Encoder } from "../src/core/util.ts";
 import {
   makeZapRequest,
   parseBolt11,
