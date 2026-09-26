@@ -5,6 +5,13 @@
  * `@qntx/nostr/core`, `/signer`, `/relay`, `/client`, `/storage`, `/loaders`, `/gossip`, `/nips/*`
  *
  * Heavy NIPs are `@qntx/nostr/nips/<id>` only. There is no `@qntx/nostr/nips` barrel.
+ *
+ * Runtime requirements: the host must provide `crypto.getRandomValues`,
+ * `TextEncoder`, a UTF-8 `TextDecoder`, WHATWG `URL`/`URLSearchParams`,
+ * `queueMicrotask`, `setTimeout`, and `AbortController`, plus `fetch` and
+ * `WebSocket` for network features. Node, browsers, and Expo/React Native
+ * (via `expo-crypto`/`react-native-quick-crypto` and Expo's `whatwg-url` fork)
+ * satisfy these; the library ships no polyfills.
  */
 
 // --- core (public) ---
