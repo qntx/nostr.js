@@ -258,6 +258,14 @@ export function kWayMerge(
   });
 }
 
+/**
+ * Cap on cursors opened per filter: beyond it a k-way merge degenerates into
+ * one request per match candidate. Past the cap the planner opens fewer,
+ * wider cursors and lets `accept` (matchFilter) enforce the remaining terms,
+ * so results and per-filter limits are unchanged.
+ */
+export const MAX_MERGE_CURSORS = 64;
+
 export function scanFilter(
   tx: IDBTransactionLike,
   filter: Filter,
@@ -274,29 +282,58 @@ export function scanFilter(
   }
 
   const events = tx.objectStore(EVENTS);
+  const fullScan: MergeOpener = eventCursor(
+    events.index("created_at"),
+    createdAtRange(filter.since, filter.until),
+  );
   const openers: MergeOpener[] = [];
   if (filter.authors && filter.kinds) {
-    const index = events.index("kind_pubkey_created_at");
-    for (const kind of filter.kinds) {
-      for (const pk of filter.authors) {
-        openers.push(
-          eventCursor(index, prefixRange([kind, pk.toLowerCase()], filter.since, filter.until)),
-        );
+    if (filter.authors.length * filter.kinds.length > MAX_MERGE_CURSORS) {
+      // One cursor per kind keeps the bound tight when the kind list is
+      // small; otherwise a single created_at scan still fits under the cap.
+      if (filter.kinds.length <= MAX_MERGE_CURSORS) {
+        const index = events.index("kind_created_at");
+        for (const kind of filter.kinds) {
+          openers.push(eventCursor(index, prefixRange([kind], filter.since, filter.until)));
+        }
+      } else {
+        openers.push(fullScan);
+      }
+    } else {
+      const index = events.index("kind_pubkey_created_at");
+      for (const kind of filter.kinds) {
+        for (const pk of filter.authors) {
+          openers.push(
+            eventCursor(index, prefixRange([kind, pk.toLowerCase()], filter.since, filter.until)),
+          );
+        }
       }
     }
   } else if (filter.authors) {
-    const index = events.index("pubkey_created_at");
-    for (const pk of filter.authors) {
-      openers.push(eventCursor(index, prefixRange([pk.toLowerCase()], filter.since, filter.until)));
+    if (filter.authors.length > MAX_MERGE_CURSORS) {
+      openers.push(fullScan);
+    } else {
+      const index = events.index("pubkey_created_at");
+      for (const pk of filter.authors) {
+        openers.push(
+          eventCursor(index, prefixRange([pk.toLowerCase()], filter.since, filter.until)),
+        );
+      }
     }
   } else if (filter.kinds) {
-    const index = events.index("kind_created_at");
-    for (const kind of filter.kinds) {
-      openers.push(eventCursor(index, prefixRange([kind], filter.since, filter.until)));
+    if (filter.kinds.length > MAX_MERGE_CURSORS) {
+      openers.push(fullScan);
+    } else {
+      const index = events.index("kind_created_at");
+      for (const kind of filter.kinds) {
+        openers.push(eventCursor(index, prefixRange([kind], filter.since, filter.until)));
+      }
     }
   } else {
     const tags = epTagPrefixes(filter);
-    if (tags.length > 0) {
+    if (tags.length > MAX_MERGE_CURSORS) {
+      openers.push(fullScan);
+    } else if (tags.length > 0) {
       const index = tx.objectStore(TAG_REFS).index("name_value_created");
       for (const tag of tags) {
         openers.push(
@@ -304,9 +341,7 @@ export function scanFilter(
         );
       }
     } else {
-      openers.push(
-        eventCursor(events.index("created_at"), createdAtRange(filter.since, filter.until)),
-      );
+      openers.push(fullScan);
     }
   }
   return kWayMerge(openers, accept, take);
