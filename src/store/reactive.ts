@@ -1,6 +1,7 @@
-import type { Event } from "../core/event.ts";
+import { itemCompare, type Event } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { filterFingerprint, matchFilters } from "../core/filter.ts";
+import { invokeSafely } from "../core/report.ts";
 import { formatEventAddress, eventAddress } from "../core/tag.ts";
 import { normalizeURL } from "../core/util.ts";
 import { MemoryIndex } from "../storage/memory-index.ts";
@@ -111,8 +112,11 @@ class WatchImpl<T> implements Watch<T>, WatchHandle {
   _notify(): void {
     // Do not sync #version here: subscribers will call getSnapshot, which
     // recomputes against the bumped store version and keeps the reference
-    // when the result is element-wise identical.
-    for (const onChange of this.#subscribers) onChange();
+    // when the result is element-wise identical. A throwing subscriber is
+    // reported and never aborts the remaining notifications.
+    for (const onChange of this.#subscribers) {
+      invokeSafely(onChange);
+    }
   }
 }
 
@@ -169,10 +173,14 @@ export class ReactiveEventStore {
 
   add(event: Event, relayUrl?: string): PutResult {
     const result = this.#index.put(event);
+    // seenOn keys are normalized ids — the stored event lowercases them.
+    const id = event.id.toLowerCase();
     if (relayUrl !== undefined && result !== "ephemeral" && result !== "rejected") {
-      this.#recordSeen(event.id, relayUrl);
+      this.#recordSeen(id, relayUrl);
     }
-    this.#evictIfNeeded();
+    // The just-inserted event must survive its own eviction pass even when
+    // every older entry is pinned by a subscribed watch snapshot.
+    this.#evictIfNeeded(id);
     return result;
   }
 
@@ -192,7 +200,9 @@ export class ReactiveEventStore {
 
   /** Bulk load (initial hydration): no seenOn, one batched notification. */
   hydrate(events: readonly Event[]): void {
-    for (const event of events) this.#index.put(event);
+    // Insert oldest-first so recency ends with the newest entries hottest.
+    const sorted = [...events].sort(itemCompare);
+    for (const event of sorted) this.#index.put(event);
     this.#evictIfNeeded();
   }
 
@@ -226,7 +236,9 @@ export class ReactiveEventStore {
 
   query(filters: readonly Filter[]): readonly Event[] {
     const events = this.#index.query(filters);
-    for (const event of events) this.#touch(event.id);
+    // Results come back newest-first; touch oldest→newest so the newest
+    // entries end up hottest in the recency order.
+    for (let i = events.length - 1; i >= 0; i -= 1) this.#touch(events[i]!.id);
     return events;
   }
 
@@ -303,6 +315,7 @@ export class ReactiveEventStore {
         return;
       case "query":
         this.#queryRegistry.delete(watch);
+        if (this.#queryCache.get(watch.key) === watch) this.#queryCache.delete(watch.key);
         return;
     }
   }
@@ -331,7 +344,9 @@ export class ReactiveEventStore {
     this._version += 1;
     this.#touch(event.id);
     this.#invalidateByEvent(event);
-    for (const listener of this.#insertListeners) listener(event);
+    for (const listener of this.#insertListeners) {
+      invokeSafely(() => listener(event));
+    }
   }
 
   #onRemove(event: Event): void {
@@ -376,9 +391,14 @@ export class ReactiveEventStore {
     if (this.#flushScheduled) return;
     this.#flushScheduled = true;
     queueMicrotask(() => {
+      // Keep the flag set while flushing: writes re-entered from a
+      // subscriber land in #dirty and are notified in the same pass.
+      while (this.#dirty.size > 0) {
+        const batch = [...this.#dirty];
+        this.#dirty.clear();
+        for (const watch of batch) watch._notify();
+      }
       this.#flushScheduled = false;
-      for (const watch of this.#dirty) watch._notify();
-      this.#dirty.clear();
     });
   }
 
@@ -397,13 +417,13 @@ export class ReactiveEventStore {
     return pinned;
   }
 
-  #evictIfNeeded(): void {
+  #evictIfNeeded(protectedId?: string): void {
     if (this.#index.size <= this.#maxEvents) return;
     const pinned = this.#pinnedIds();
     const evicting: string[] = [];
     for (const id of this.#recency) {
       if (this.#index.size - evicting.length <= this.#maxEvents) break;
-      if (pinned.has(id)) continue;
+      if (pinned.has(id) || id === protectedId) continue;
       const event = this.#index.get(id);
       if (event === undefined) continue;
       // Latest replaceable/addressable versions are never evicted.

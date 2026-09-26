@@ -2,7 +2,7 @@ import type { Event } from "../core/event.ts";
 import { itemCompare, sortEvents } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { matchFilter } from "../core/filter.ts";
-import { eventAddress } from "../core/tag.ts";
+import { eventAddress, formatEventAddress, parseEventAddress } from "../core/tag.ts";
 import { DeletionState } from "./deletion.ts";
 import { applyPutMemory, decidePut, outboxBoundKey, type PutLookup } from "./put.ts";
 import type { NegentropyItem, OutboxBound, PutResult } from "./types.ts";
@@ -77,7 +77,11 @@ export class MemoryIndex {
 
   /** Current event at a `kind:pubkey:d` coordinate (replaceable or addressable). */
   getByAddress(address: string): Event | undefined {
-    const id = this.#replaceable.get(address);
+    const coord = parseEventAddress(address);
+    if (!coord) return undefined;
+    const id = this.#replaceable.get(
+      formatEventAddress(coord.kind, coord.pubkey, coord.identifier),
+    );
     if (id === undefined) return undefined;
     const key = id.toLowerCase();
     if (this.#deletion.ids.has(key)) return undefined;
@@ -144,12 +148,23 @@ export class MemoryIndex {
     return n;
   }
 
-  /** True when the id is tombstoned or the coordinate has a deletion marker. */
+  /**
+   * True when the id is tombstoned, or the coordinate has a deletion marker
+   * that still covers the current event at that address: a replacement
+   * published after the marker's `until` clears the deletion. Coordinates are
+   * matched on the canonical lowercase pubkey.
+   */
   isDeleted(idOrAddress: string): boolean {
-    return (
-      this.#deletion.ids.has(idOrAddress.toLowerCase()) ||
-      this.#deletion.coordinates.has(idOrAddress)
-    );
+    if (this.#deletion.ids.has(idOrAddress.toLowerCase())) return true;
+    const coord = parseEventAddress(idOrAddress);
+    if (!coord) return false;
+    const address = formatEventAddress(coord.kind, coord.pubkey, coord.identifier);
+    const until = this.#deletion.coordinates.get(address);
+    if (until === undefined) return false;
+    const id = this.#replaceable.get(address);
+    if (id === undefined) return true;
+    const event = this.#byId.get(id.toLowerCase());
+    return event === undefined || event.created_at <= until;
   }
 
   getOutboxBound(pubkey: string, kind: number): OutboxBound | undefined {
