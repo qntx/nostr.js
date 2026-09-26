@@ -161,7 +161,6 @@ export class Nip46Signer implements NostrSigner {
   readonly #metadata: ClientMetadata | undefined;
   #relays: string[];
   readonly #listeners = new Map<string, PendingRequest>();
-  readonly #waitingAuth = new Set<string>();
   #sub: { close: (reason?: string) => void } | undefined;
   #open = false;
   #cachedRemotePubkey: string | undefined;
@@ -355,7 +354,7 @@ export class Nip46Signer implements NostrSigner {
             const payload = decrypt(event.content, this.#conversationKey);
             const { id, result, error } = decodeNip46Response(payload);
 
-            if (result === "auth_url" && this.#waitingAuth.has(id)) {
+            if (result === "auth_url" && this.#listeners.has(id)) {
               const listener = this.#listeners.get(id);
               if (!listener) return;
               if (error) invokeSafely(() => this.#onAuthUrl?.(error));
@@ -496,7 +495,6 @@ export class Nip46Signer implements NostrSigner {
       listener.reject(new Nip46Error("signer closed"));
     }
     this.#listeners.clear();
-    this.#waitingAuth.clear();
     this.#sub?.close("signer closed");
     this.#sub = undefined;
     if (this.#ownsPool) this.#pool.close();
@@ -524,7 +522,6 @@ export class Nip46Signer implements NostrSigner {
       const listener: PendingRequest = { resolve, reject, method };
       listener.timer = this.#requestTimer(id, listener, this.#timeoutMs);
       this.#listeners.set(id, listener);
-      this.#waitingAuth.add(id);
     });
 
     let replies;
@@ -550,7 +547,6 @@ export class Nip46Signer implements NostrSigner {
     if (!listener) return undefined;
     clearTimeout(listener.timer);
     this.#listeners.delete(id);
-    this.#waitingAuth.delete(id);
     return listener;
   }
 
