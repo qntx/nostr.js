@@ -1,10 +1,12 @@
+import { randomBytes } from "@noble/hashes/utils.js";
 import type { Event, EventTemplate, UnsignedEvent } from "../core/event.ts";
 import { signedMatchesUnsigned, validateSignedEvent } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
 import { SecretKey, finalizeEvent, getPublicKey, verifyEvent } from "../core/key.ts";
+import { invokeSafely } from "../core/report.ts";
 import { Tag } from "../core/tag.ts";
-import { isHex32 } from "../core/util.ts";
+import { bytesToHex, isHex32 } from "../core/util.ts";
 import { decrypt, encrypt, getConversationKey } from "../nips/nip44.ts";
 import {
   Nip46Error,
@@ -36,7 +38,10 @@ export type Nip46Transport = {
     filters: Filter[],
     opts?: Nip46SubscribeOptions,
   ): { close: (reason?: string) => void };
-  publish(relays: string[], event: Event): Promise<unknown>;
+  publish(
+    relays: string[],
+    event: Event,
+  ): Promise<readonly { result?: { ok: boolean; message: string }; error?: string }[]>;
   close(urls?: string[]): void;
 };
 
@@ -65,6 +70,11 @@ export type Nip46SignerOptions = {
   onAuthUrl?: (url: string) => void;
   /** Per-request timeout in ms. Default 30s. */
   timeoutMs?: number;
+  /**
+   * Timeout in ms applied after the bunker replies `auth_url`: the request keeps
+   * waiting for the real response until this elapses. Default 300s.
+   */
+  authTimeoutMs?: number;
   /** Requested permissions sent with `connect` (`method[:kind]` list). */
   perms?: string[];
   /** Client metadata sent with bunker-initiated `connect`. */
@@ -125,6 +135,13 @@ function resolveBunkerPointer(input: string | BunkerPointer): BunkerPointer {
   throw new Nip46Error("invalid bunker input (expected bunker:// URL or BunkerPointer)");
 }
 
+type PendingRequest = {
+  resolve: (v: string) => void;
+  reject: (e: Error) => void;
+  method: string;
+  timer?: ReturnType<typeof setTimeout>;
+};
+
 /**
  * NIP-46 remote signer (bunker / nostrconnect).
  * Implements {@link NostrSigner}; never holds the remote user's secret key.
@@ -139,22 +156,14 @@ export class Nip46Signer implements NostrSigner {
   readonly #conversationKey: Uint8Array;
   readonly #onAuthUrl: ((url: string) => void) | undefined;
   readonly #timeoutMs: number;
+  readonly #authTimeoutMs: number;
   readonly #perms: string[] | undefined;
   readonly #metadata: ClientMetadata | undefined;
   #relays: string[];
-  readonly #listeners = new Map<
-    string,
-    {
-      resolve: (v: string) => void;
-      reject: (e: Error) => void;
-      timer: ReturnType<typeof setTimeout>;
-    }
-  >();
+  readonly #listeners = new Map<string, PendingRequest>();
   readonly #waitingAuth = new Set<string>();
   #sub: { close: (reason?: string) => void } | undefined;
   #open = false;
-  #serial = 0;
-  #idPrefix = Math.random().toString(36).slice(2, 9);
   #cachedRemotePubkey: string | undefined;
 
   private constructor(
@@ -180,6 +189,7 @@ export class Nip46Signer implements NostrSigner {
     this.#conversationKey = getConversationKey(clientSecret.bytes, this.#pointer.pubkey);
     this.#onAuthUrl = opts.onAuthUrl;
     this.#timeoutMs = opts.timeoutMs ?? 30_000;
+    this.#authTimeoutMs = opts.authTimeoutMs ?? 300_000;
     this.#perms = opts.perms;
     this.#metadata = opts.metadata;
   }
@@ -346,16 +356,16 @@ export class Nip46Signer implements NostrSigner {
             const { id, result, error } = decodeNip46Response(payload);
 
             if (result === "auth_url" && this.#waitingAuth.has(id)) {
-              this.#waitingAuth.delete(id);
-              if (error) this.#onAuthUrl?.(error);
+              const listener = this.#listeners.get(id);
+              if (!listener) return;
+              if (error) invokeSafely(() => this.#onAuthUrl?.(error));
+              clearTimeout(listener.timer);
+              listener.timer = this.#requestTimer(id, listener, this.#authTimeoutMs);
               return;
             }
 
-            const listener = this.#listeners.get(id);
+            const listener = this.#dropRequest(id);
             if (!listener) return;
-            clearTimeout(listener.timer);
-            this.#listeners.delete(id);
-            this.#waitingAuth.delete(id);
             if (error) listener.reject(new Nip46Error(error));
             else if (result !== undefined) listener.resolve(result);
             else listener.reject(new Nip46Error("empty NIP-46 response"));
@@ -486,6 +496,7 @@ export class Nip46Signer implements NostrSigner {
       listener.reject(new Nip46Error("signer closed"));
     }
     this.#listeners.clear();
+    this.#waitingAuth.clear();
     this.#sub?.close("signer closed");
     this.#sub = undefined;
     if (this.#ownsPool) this.#pool.close();
@@ -495,8 +506,7 @@ export class Nip46Signer implements NostrSigner {
     if (!this.#open) throw new Nip46Error("signer is closed");
     if (!this.#sub) this.#startSubscription();
 
-    this.#serial += 1;
-    const id = `${this.#idPrefix}-${this.#serial}`;
+    const id = bytesToHex(randomBytes(16));
     const req: Nip46Request = { id, method, params };
     const encrypted = encrypt(encodeNip46Request(req), this.#conversationKey);
 
@@ -511,16 +521,43 @@ export class Nip46Signer implements NostrSigner {
     );
 
     const resultPromise = new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.#listeners.delete(id);
-        this.#waitingAuth.delete(id);
-        reject(new Nip46Error(`NIP-46 request timed out: ${method}`));
-      }, this.#timeoutMs);
-      this.#listeners.set(id, { resolve, reject, timer });
+      const listener: PendingRequest = { resolve, reject, method };
+      listener.timer = this.#requestTimer(id, listener, this.#timeoutMs);
+      this.#listeners.set(id, listener);
       this.#waitingAuth.add(id);
     });
 
-    await this.#pool.publish(this.#relays, event);
+    let replies;
+    try {
+      replies = await this.#pool.publish(this.#relays, event);
+    } catch (err) {
+      this.#dropRequest(id);
+      throw err;
+    }
+    if (!replies.some((reply) => reply.result?.ok)) {
+      const listener = this.#dropRequest(id);
+      const detail = replies
+        .map((reply) => reply.error ?? reply.result?.message)
+        .filter((message): message is string => Boolean(message))
+        .join("; ");
+      listener?.reject(new Nip46Error(`request not accepted by any relay: ${detail}`));
+    }
     return resultPromise;
+  }
+
+  #dropRequest(id: string): PendingRequest | undefined {
+    const listener = this.#listeners.get(id);
+    if (!listener) return undefined;
+    clearTimeout(listener.timer);
+    this.#listeners.delete(id);
+    this.#waitingAuth.delete(id);
+    return listener;
+  }
+
+  #requestTimer(id: string, listener: PendingRequest, ms: number): ReturnType<typeof setTimeout> {
+    return setTimeout(() => {
+      this.#dropRequest(id);
+      listener.reject(new Nip46Error(`NIP-46 request timed out: ${listener.method}`));
+    }, ms);
   }
 }

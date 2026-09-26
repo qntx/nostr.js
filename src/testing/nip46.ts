@@ -21,6 +21,8 @@ export type FakeNip46SignerOptions = {
   /** First answer `auth_url` (result) with this URL in the error field, then the real response. */
   authUrl?: string;
   authUrlMethods?: readonly string[];
+  /** Delay in ms before the real response after an `auth_url` reply. */
+  authReplyDelayMs?: number;
   /** Collected RPC requests (mutated as they arrive). */
   requests?: Array<{ method: string; params: string[] }>;
   /** `switch_relays` result. Default `"null"`. */
@@ -131,7 +133,17 @@ export function createFakeNip46Signer(opts: FakeNip46SignerOptions): FakeNip46Si
         default:
           error = `unsupported method ${req.method}`;
       }
-      reply(ws, opts.clientPubkey, req.id, result, error);
+      if (authPending.has(req.id) && opts.authReplyDelayMs !== undefined) {
+        const pendingId = req.id;
+        const pendingResult = result;
+        const pendingError = error;
+        setTimeout(
+          () => reply(ws, opts.clientPubkey, pendingId, pendingResult, pendingError),
+          opts.authReplyDelayMs,
+        );
+      } else {
+        reply(ws, opts.clientPubkey, req.id, result, error);
+      }
     } catch {
       handled.add(event.id);
     }
