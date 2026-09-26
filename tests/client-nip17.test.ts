@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   Client,
+  EventBuilder,
   Kind,
   Keys,
   KeysSigner,
@@ -12,6 +13,7 @@ import {
   type Filter,
   type PutResult,
 } from "../src/index.ts";
+import { normalizeURL } from "../src/core/util.ts";
 import { Nip17Error, dmRelayListEventBuilder } from "../src/nips/nip17.ts";
 import { encryptToPubkey } from "../src/nips/nip44.ts";
 import { createGiftWrap, createRumor, createSeal, eventToJson, wrap } from "../src/nips/nip59.ts";
@@ -827,5 +829,106 @@ describe("Client NIP-17", () => {
     expect(sent.wraps.every((w) => w.results.some((r) => r.result?.ok))).toBe(true);
 
     await alice.shutdown();
+  });
+});
+
+describe("issue #125", () => {
+  beforeEach(() => {
+    net = createFakeRelayNetwork();
+  });
+
+  afterEach(() => {
+    net.close();
+  });
+
+  test("#11 sync, outbox live, and DM paths write the index and seenOn", async () => {
+    const aliceKeys = Keys.fromSecretKey(ALICE_SK);
+    const bobKeys = Keys.fromSecretKey(BOB_SK);
+    const alice = new KeysSigner(aliceKeys);
+
+    // (a) Client.sync down-sync records the event and its relay in the index
+    const syncNote = EventBuilder.textNote("synced").createdAt(40).signWithKeys(aliceKeys);
+    net.relay("wss://sync-src.example").seed([syncNote]);
+    const syncClient = Client.builder()
+      .relays(["wss://sync-src.example"])
+      .websocketImplementation(net.websocketImplementation)
+      .enableReconnect(false)
+      .build();
+    await syncClient.connect();
+    const summary = await syncClient.sync({ kinds: [1] }, { timeoutMs: 2000 });
+    expect(summary.remote).toEqual([syncNote.id]);
+    expect(syncClient.index.get(syncNote.id)?.id).toBe(syncNote.id);
+    expect(syncClient.index.seenOn(syncNote.id)).toEqual([normalizeURL("wss://sync-src.example")]);
+    await syncClient.shutdown();
+
+    // (b) a Client.outbox live event is indexed with its relay
+    const outClient = Client.builder()
+      .relays(["wss://out.example"])
+      .websocketImplementation(net.websocketImplementation)
+      .enableReconnect(false)
+      .build();
+    const feed = outClient.outbox({ authors: [aliceKeys.publicKey], kinds: [Kind.TextNote] });
+    feed.startLive({ since: 0 });
+    await waitFor(() => clientFrames("wss://out.example").some((msg) => msg[0] === "REQ"));
+    const liveNote = EventBuilder.textNote("live outbox").createdAt(50).signWithKeys(aliceKeys);
+    deliver("wss://out.example", liveNote);
+    await waitFor(() => outClient.index.get(liveNote.id) !== undefined);
+    expect(outClient.index.seenOn(liveNote.id)).toEqual([normalizeURL("wss://out.example")]);
+    feed.close();
+    await outClient.shutdown();
+
+    // (c) fetchPrivateMessages records every relay that served the same wrap
+    const BOB_DM2 = "wss://bob-dm2.example";
+    net
+      .relay(IDX)
+      .seed([dmRelayListEventBuilder([BOB_DM, BOB_DM2]).createdAt(3).signWithKeys(bobKeys)]);
+    const wrap1 = await wrap(
+      alice,
+      bobKeys.publicKey,
+      createRumor(aliceKeys.publicKey, {
+        kind: Kind.PrivateDirectMessage,
+        content: "one",
+        tags: [["p", bobKeys.publicKey]],
+        created_at: 10,
+      }),
+    );
+    net.relay(BOB_DM).seed([wrap1]);
+    net.relay(BOB_DM2).seed([wrap1]);
+    const bob = Client.builder()
+      .signer(new KeysSigner(bobKeys))
+      .relays([IDX])
+      .websocketImplementation(net.websocketImplementation)
+      .enableReconnect(false)
+      .build();
+    await bob.connect();
+    const inbox = await bob.fetchPrivateMessages({ timeoutMs: 2000 });
+    expect(inbox).toHaveLength(1);
+    expect(bob.index.get(wrap1.id)?.id).toBe(wrap1.id);
+    const wantUrls = [normalizeURL(BOB_DM), normalizeURL(BOB_DM2)].sort();
+    expect([...bob.index.seenOn(wrap1.id)].sort()).toEqual(wantUrls);
+
+    // (d) subscribePrivateMessages records every relay that delivered the same wrap
+    const wrap2 = await wrap(
+      alice,
+      bobKeys.publicKey,
+      createRumor(aliceKeys.publicKey, {
+        kind: Kind.PrivateDirectMessage,
+        content: "two",
+        tags: [["p", bobKeys.publicKey]],
+        created_at: 11,
+      }),
+    );
+    net.relay(BOB_DM).seed([wrap2]);
+    net.relay(BOB_DM2).seed([wrap2]);
+    const got: string[] = [];
+    const sub = await bob.subscribePrivateMessages({
+      onevent: (msg) => got.push(msg.rumor.content),
+    });
+    await waitFor(() => bob.index.get(wrap2.id) !== undefined);
+    await waitQuiet(() => bob.index.seenOn(wrap2.id).length === 2, 100);
+    expect(got).toContain("two");
+    expect([...bob.index.seenOn(wrap2.id)].sort()).toEqual(wantUrls);
+    sub.close();
+    await bob.shutdown();
   });
 });

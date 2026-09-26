@@ -1,6 +1,6 @@
 import { EventBuilder } from "../core/builder.ts";
 import { sortedEvents, type Event, type EventTemplate, type UnsignedEvent } from "../core/event.ts";
-import { canonicalizeFilters, type Filter } from "../core/filter.ts";
+import { canonicalizeFilters, matchFilters, type Filter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
 import { normalizeURL } from "../core/util.ts";
 import { Gossip } from "../gossip/index.ts";
@@ -17,6 +17,7 @@ import { NoSignerError } from "../signer/error.ts";
 import type { NostrSigner } from "../signer/types.ts";
 import { toStorageError, type StorageError } from "../storage/error.ts";
 import { MemoryEventStore } from "../storage/memory.ts";
+import { MemoryIndex } from "../storage/memory-index.ts";
 import type { EventStore } from "../storage/types.ts";
 import { ReactiveEventStore } from "../store/reactive.ts";
 import { ClientBuilder } from "./builder.ts";
@@ -278,7 +279,10 @@ export class Client {
       kinds: opts.kinds,
       onEvent: opts.onEvent,
       maxRelaysPerAuthor: opts.maxRelaysPerAuthor,
-      observe: (event) => this.observe(event),
+      observe: (event, relayUrl) => this.observe(event, relayUrl),
+      seen: (event, relayUrl) => {
+        this.index.add(event, relayUrl);
+      },
       applySync: async (events) => {
         if (!this.#persistEvents) {
           for (const event of events) this.#ingestMeta(event);
@@ -383,15 +387,15 @@ export class Client {
     this.#assertAlive();
     const filters = canonicalizeFilters(Array.isArray(filter) ? filter : [filter]);
     const shouldObserve = this.#wantObserve(opts?.observe);
-    const byId = new Map<string, Event>();
+    const candidates: Event[] = [];
 
     if (opts?.localFirst) {
-      // Reactive index first, then persisted storage (hydrated into the index).
-      for (const e of this.index.query(filters)) byId.set(e.id, e);
+      // Persisted storage is merged with the index below; storage may hold a
+      // stale replaceable version, so it is only a candidate — the index wins.
       try {
         const local = await this.storage.query(filters);
         for (const e of local) {
-          byId.set(e.id, e);
+          candidates.push(e);
           if (shouldObserve) this.index.add(e);
         }
       } catch (err) {
@@ -406,32 +410,33 @@ export class Client {
       opts?.onevent?.(event, relayUrl);
     };
 
-    const ingest = (events: Event[]) => {
-      for (const e of events) {
-        byId.set(e.id, e);
-        if (shouldObserve) this.observe(e);
-      }
-    };
-
-    if (!opts?.gossip || opts.relays) {
-      ingest(
-        await this.pool.fetch(this.#defaultRelays(opts?.relays), filters, {
-          timeoutMs: opts?.timeoutMs,
-          signal: opts?.signal,
-          onevent,
-        }),
-      );
-      return sortedEvents([...byId.values()]);
+    const batch =
+      !opts?.gossip || opts.relays
+        ? await this.pool.fetch(this.#defaultRelays(opts?.relays), filters, {
+            timeoutMs: opts?.timeoutMs,
+            signal: opts?.signal,
+            onevent,
+          })
+        : await fetchGossip(this.pool, this.gossip, filters, () => this.#defaultRelays(), {
+            timeoutMs: opts?.timeoutMs,
+            signal: opts?.signal,
+            onevent,
+          });
+    for (const e of batch) {
+      candidates.push(e);
+      if (shouldObserve) this.observe(e);
     }
 
-    ingest(
-      await fetchGossip(this.pool, this.gossip, filters, () => this.#defaultRelays(), {
-        timeoutMs: opts?.timeoutMs,
-        signal: opts?.signal,
-        onevent,
-      }),
-    );
-    return sortedEvents([...byId.values()]);
+    // Merge through a scratch index so NIP-01 replaceable winners, kind-5
+    // deletions, dedupe and per-filter limits all apply to the result.
+    // Ephemeral kinds are never stored; matching ones join the result directly.
+    const tmp = new MemoryIndex();
+    const ephemeral = new Map<string, Event>();
+    const merged = opts?.localFirst ? [...this.index.query(filters), ...candidates] : candidates;
+    for (const e of merged) {
+      if (tmp.put(e) === "ephemeral" && matchFilters(filters, e)) ephemeral.set(e.id, e);
+    }
+    return sortedEvents([...tmp.query(filters), ...ephemeral.values()]);
   }
 
   /**
@@ -498,6 +503,7 @@ export class Client {
     return {
       pool: this.pool,
       gossip: this.gossip,
+      index: this.index,
       hydrateGossip: (pubkeys) => this.hydrateGossip(pubkeys),
       observe: (event, relayUrl) => this.observe(event, relayUrl),
       assertAlive: () => this.#assertAlive(),
@@ -512,6 +518,7 @@ export class Client {
     return {
       pool: this.pool,
       storage: this.storage,
+      index: this.index,
       persistEvents: this.#persistEvents,
       assertAlive: () => this.#assertAlive(),
       throwIfAborted: (signal) => this.#throwIfAborted(signal),

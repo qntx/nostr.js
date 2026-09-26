@@ -2,12 +2,14 @@ import type { Event } from "../core/event.ts";
 import { canonicalizeFilter, type Filter } from "../core/filter.ts";
 import type { Pool } from "../relay/pool.ts";
 import type { EventStore, PutResult } from "../storage/types.ts";
+import type { ReactiveEventStore } from "../store/reactive.ts";
 import { storageFromItems, type NegentropyStorageVector } from "../nips/nip77.ts";
 import { SyncDirection, type SyncOptions, type SyncSummary } from "./types.ts";
 
 export type SyncDeps = {
   pool: Pool;
   storage: EventStore;
+  index: ReactiveEventStore;
   persistEvents: boolean;
   assertAlive: () => void;
   throwIfAborted: (signal?: AbortSignal) => void;
@@ -123,6 +125,12 @@ export async function syncToRelay(
       const events = await deps.pool.fetch([url], [{ ids: batch }], {
         timeoutMs: opts?.timeoutMs,
         signal: opts?.signal,
+        // Index + seenOn track every received event, even when persistence is off.
+        onevent: shouldObserve
+          ? (event, relayUrl) => {
+              deps.index.add(event, relayUrl);
+            }
+          : undefined,
       });
       if (!shouldObserve) {
         for (const event of events) summary.received.push(event.id);
