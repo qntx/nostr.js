@@ -5,7 +5,13 @@ import { assertSubscriptionId, type CountResult } from "../core/message.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayConnectionError, RelayPublishError } from "./error.ts";
 import { fanIn, fetchRouted } from "./fan-in.ts";
-import { Relay, type PublishResult, type RelayOptions, type SubscribeOptions } from "./relay.ts";
+import {
+  Relay,
+  RelayStatus,
+  type PublishResult,
+  type RelayOptions,
+  type SubscribeOptions,
+} from "./relay.ts";
 import { isInsecureRelayUrl } from "./url.ts";
 import type { WebSocketConstructor } from "./websocket.ts";
 
@@ -63,7 +69,11 @@ export type PoolCountResult = {
 };
 
 function isIdle(relay: Relay): boolean {
-  return relay.subscriptionCount === 0 && relay.inFlightCount === 0;
+  return (
+    relay.status !== RelayStatus.Connecting &&
+    relay.subscriptionCount === 0 &&
+    relay.inFlightCount === 0
+  );
 }
 
 /**
@@ -103,6 +113,14 @@ export class Pool {
 
   setPinnedUrls(urls: readonly string[]): void {
     this.#pinned = new Set(urls.map(normalizeURL));
+  }
+
+  /**
+   * Drop cached AUTH rejections and re-fire pending challenges on every
+   * pooled relay, so a later `setSigner` takes effect without reconnect.
+   */
+  resetAuth(): void {
+    for (const relay of this.#relays.values()) relay.resetAuth();
   }
 
   cleanIdleRelays(): void {

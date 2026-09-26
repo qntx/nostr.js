@@ -27,8 +27,13 @@ export type OutboxFeedOptions = {
   fetchTimeoutMs?: number;
   /** Called for live events after observe, and for sync events returned by applySync. */
   onEvent?: (event: Event) => void;
-  /** Live ingest (e.g. `client.observe`). StartLive never putManys. */
-  observe?: (event: Event) => void;
+  /** Live ingest (e.g. `client.observe`) with the source relay URL. StartLive never putManys. */
+  observe?: (event: Event, relayUrl: string) => void;
+  /**
+   * Every receipt from every relay — live (including duplicates the feed's
+   * own dedupe skips) and sync fetch batches — for seenOn bookkeeping.
+   */
+  seen?: (event: Event, relayUrl: string) => void;
   /**
    * Sync path only. Awaited. Return events that should advance bounds.
    * Throw → sync throws, bounds unchanged.
@@ -112,7 +117,8 @@ export class OutboxFeed {
   readonly #maxRelays: number;
   readonly #timeoutMs: number;
   readonly #onEvent: ((event: Event) => void) | undefined;
-  readonly #observe: ((event: Event) => void) | undefined;
+  readonly #observe: ((event: Event, relayUrl: string) => void) | undefined;
+  readonly #seen: ((event: Event, relayUrl: string) => void) | undefined;
   readonly #applySync: ((events: readonly Event[]) => Promise<readonly Event[]>) | undefined;
   readonly #hydrate: ((pubkeys: readonly string[]) => Promise<void>) | undefined;
   readonly #bounds = new Map<string, OutboxBound>();
@@ -131,6 +137,7 @@ export class OutboxFeed {
     this.#timeoutMs = opts.fetchTimeoutMs ?? 4400;
     this.#onEvent = opts.onEvent;
     this.#observe = opts.observe;
+    this.#seen = opts.seen;
     this.#applySync = opts.applySync;
     this.#hydrate = opts.hydrate;
   }
@@ -198,6 +205,7 @@ export class OutboxFeed {
           const batch = await this.#pool.fetch([url], filters, {
             timeoutMs: this.#timeoutMs,
             signal: opts?.signal,
+            onevent: (event, relayUrl) => this.#seen?.(event, relayUrl),
           });
           for (const event of batch) byId.set(event.id, event);
         } catch {
@@ -256,10 +264,11 @@ export class OutboxFeed {
       closers.push(
         this.#pool.subscribe([url], [filter], {
           signal: opts?.signal,
-          onevent: (event) => {
+          onevent: (event, relayUrl) => {
+            this.#seen?.(event, relayUrl);
             if (seen.has(event.id)) return;
             seen.add(event.id);
-            this.#noteEvent(event);
+            this.#noteEvent(event, relayUrl);
           },
         }),
       );
@@ -361,7 +370,7 @@ export class OutboxFeed {
     ];
   }
 
-  #noteEvent(event: Event): void {
+  #noteEvent(event: Event, relayUrl: string): void {
     this.#updateBounds(event);
     const bound = this.#bounds.get(boundKey(event.pubkey, event.kind));
     if (bound) {
@@ -372,7 +381,7 @@ export class OutboxFeed {
         })
         .catch(() => {});
     }
-    this.#observe?.(event);
+    this.#observe?.(event, relayUrl);
     this.#onEvent?.(event);
   }
 

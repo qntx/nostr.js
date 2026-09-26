@@ -13,6 +13,7 @@ import {
   type Recipient,
 } from "../nips/nip17.ts";
 import { unwrap, type Nip59Crypto } from "../nips/nip59.ts";
+import type { ReactiveEventStore } from "../store/reactive.ts";
 import type {
   FetchPrivateMessagesOptions,
   PrivateMessageSendResult,
@@ -25,6 +26,7 @@ import type {
 export type DmDeps = {
   pool: Pool;
   gossip: Gossip;
+  index: ReactiveEventStore;
   hydrateGossip: (pubkeys: readonly string[]) => Promise<void>;
   observe: (event: Event, relayUrl?: string) => void;
   assertAlive: () => void;
@@ -113,7 +115,7 @@ export async function fetchPrivateMessages(
   await deps.hydrateGossip([self]);
   deps.throwIfAborted(opts?.signal);
   const relays = requireDmRelays(self, deps.gossip.dmRelays(self));
-  const urls = new Map<string, string>();
+  const urls = new Map<string, Set<string>>();
   const events = await deps.pool.fetch(
     relays,
     [
@@ -128,7 +130,9 @@ export async function fetchPrivateMessages(
       timeoutMs: opts?.timeoutMs,
       signal: opts?.signal,
       onevent: (event, relayUrl) => {
-        if (!urls.has(event.id)) urls.set(event.id, relayUrl);
+        let set = urls.get(event.id);
+        if (!set) urls.set(event.id, (set = new Set()));
+        set.add(relayUrl);
       },
     },
   );
@@ -137,8 +141,18 @@ export async function fetchPrivateMessages(
   for (const wrap of events) {
     try {
       const rumor = await unwrap(crypto, wrap);
-      if (deps.wantObserve(opts?.observe)) deps.observe(wrap, urls.get(wrap.id));
-      byRumor.set(rumor.id, { wrap, rumor, relayUrl: urls.get(wrap.id) });
+      const wrapUrls = urls.get(wrap.id);
+      const firstUrl = wrapUrls?.values().next().value;
+      if (deps.wantObserve(opts?.observe)) {
+        deps.observe(wrap, firstUrl);
+        // Every other relay that delivered the same wrap is recorded too.
+        if (wrapUrls) {
+          for (const url of wrapUrls) {
+            if (url !== firstUrl) deps.index.markSeen(wrap.id, url);
+          }
+        }
+      }
+      byRumor.set(rumor.id, { wrap, rumor, relayUrl: firstUrl });
     } catch {
       // junk / forgery / key mismatch — not stored
     }
@@ -165,6 +179,17 @@ export async function subscribePrivateMessages(
   const relays = requireDmRelays(self, deps.gossip.dmRelays(self));
 
   const seen = new Set<string>();
+  // Wrap ids processed (observed) already; receipts before that are buffered
+  // so every delivering relay URL lands in seenOn once the wrap is indexed.
+  const processed = new Set<string>();
+  const pendingUrls = new Map<string, string[]>();
+  const flushSeen = (wrapId: string): void => {
+    processed.add(wrapId);
+    const extra = pendingUrls.get(wrapId);
+    if (extra === undefined) return;
+    pendingUrls.delete(wrapId);
+    for (const url of extra) deps.index.markSeen(wrapId, url);
+  };
   let tail = Promise.resolve();
   let closed = false;
   const markClosed = (): void => {
@@ -185,6 +210,16 @@ export async function subscribePrivateMessages(
         opts?.onclose?.(reason);
       },
       eoseTimeoutMs: opts?.eoseTimeoutMs,
+      receivedEvent: (id, relayUrl) => {
+        if (closed) return;
+        if (processed.has(id)) {
+          deps.index.markSeen(id, relayUrl);
+          return;
+        }
+        const list = pendingUrls.get(id);
+        if (list === undefined) pendingUrls.set(id, [relayUrl]);
+        else if (!list.includes(relayUrl)) list.push(relayUrl);
+      },
       onevent: (wrap, relayUrl) => {
         if (closed) return;
         tail = tail
@@ -193,9 +228,13 @@ export async function subscribePrivateMessages(
             try {
               const rumor = await unwrap(crypto, wrap);
               if (closed) return;
-              if (seen.has(rumor.id)) return;
+              if (seen.has(rumor.id)) {
+                flushSeen(wrap.id);
+                return;
+              }
               seen.add(rumor.id);
               if (deps.wantObserve(opts?.observe)) deps.observe(wrap, relayUrl);
+              flushSeen(wrap.id);
               opts?.onevent?.({ wrap, rumor, relayUrl });
             } catch {
               // junk / forgery — not stored

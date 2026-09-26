@@ -1,5 +1,6 @@
 import type { Event } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
+import { invokeSafely } from "../core/report.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayClosedError } from "./error.ts";
 import type { Pool } from "./pool.ts";
@@ -54,7 +55,7 @@ export function fanIn(
       clearTimeout(eoseTimer);
       eoseTimer = undefined;
     }
-    opts.oneose?.();
+    invokeSafely(() => opts.oneose?.());
   };
 
   const markEose = (jobIndex: number, url: string) => {
@@ -77,12 +78,12 @@ export function fanIn(
     if (closed) return;
     settleClose();
     for (const c of closers) c.close(reason);
-    opts.onclose?.(reason ?? "closed by client");
+    invokeSafely(() => opts.onclose?.(reason ?? "closed by client"));
   };
 
   if (opts.signal?.aborted) {
     closed = true;
-    opts.onclose?.("aborted");
+    invokeSafely(() => opts.onclose?.("aborted"));
     return { close: closeAll };
   }
 
@@ -94,11 +95,18 @@ export function fanIn(
     const sub = relay.subscribe([...job.filters], {
       id: jobs.length === 1 ? job.id : undefined,
       closeOnEose: opts.closeOnEose,
-      alreadyHaveEvent: (id) => Boolean(opts.alreadyHaveEvent?.(id) || seen.has(id)),
-      receivedEvent: received === undefined ? undefined : (id) => received(id, relay.url),
+      alreadyHaveEvent: (id) => {
+        let have = seen.has(id);
+        invokeSafely(() => {
+          have = have || Boolean(opts.alreadyHaveEvent?.(id));
+        });
+        return have;
+      },
+      receivedEvent:
+        received === undefined ? undefined : (id) => invokeSafely(() => received(id, relay.url)),
       onevent: (event) => {
         seen.add(event.id);
-        opts.onevent?.(event, relay.url);
+        invokeSafely(() => opts.onevent?.(event, relay.url));
       },
       oneose: () => markEose(jobIndex, relay.url),
       onclose: (reason) => {
@@ -106,7 +114,7 @@ export function fanIn(
         pending -= 1;
         if (pending <= 0 && !closed) {
           settleClose();
-          opts.onclose?.(reason);
+          invokeSafely(() => opts.onclose?.(reason));
         }
       },
     });
@@ -115,13 +123,17 @@ export function fanIn(
 
   for (let jobIndex = 0; jobIndex < jobs.length; jobIndex++) {
     const job = jobs[jobIndex]!;
+    // Equivalent spellings of one relay URL attach exactly once per job.
+    const jobUrls = new Set<string>();
     for (const url of job.urls) {
       let key: string;
       try {
         key = normalizeURL(url);
       } catch {
-        key = url;
+        key = url; // invalid URL: ensureRelay fails it like a dead relay
       }
+      if (jobUrls.has(key)) continue;
+      jobUrls.add(key);
       pending += 1;
       const eoseKey = `${jobIndex}:${key}`;
       if (!eoseAttempted.has(eoseKey)) {
@@ -134,7 +146,7 @@ export function fanIn(
         pending -= 1;
         if (pending <= 0 && closers.length === 0 && !closed) {
           settleClose();
-          opts.onclose?.("all relays failed");
+          invokeSafely(() => opts.onclose?.("all relays failed"));
         }
       };
 
@@ -150,7 +162,7 @@ export function fanIn(
         }
       };
 
-      void pool.ensureRelay(url, { signal: opts.signal, timeoutMs: opts.connectTimeoutMs }).then(
+      void pool.ensureRelay(key, { signal: opts.signal, timeoutMs: opts.connectTimeoutMs }).then(
         (relay) => tryAttach(relay),
         () => {
           // ensureRelay rejected only — not tryAttach throws (those must not look like connect failure).
@@ -176,7 +188,7 @@ export function fanIn(
     queueMicrotask(() => {
       if (closed) return;
       settleClose();
-      opts.onclose?.("no relays");
+      invokeSafely(() => opts.onclose?.("no relays"));
     });
   }
 
@@ -196,26 +208,43 @@ export async function fetchRouted(
 ): Promise<Event[]> {
   const byId = new Map<string, Event>();
   await Promise.all(
-    jobs.flatMap((job) =>
-      job.urls.map(async (url) => {
+    jobs.flatMap((job) => {
+      const urls: string[] = [];
+      for (const raw of job.urls) {
+        let key: string;
+        try {
+          key = normalizeURL(raw);
+        } catch {
+          key = raw; // invalid URL: ensureRelay fails it like a dead relay
+        }
+        if (!urls.includes(key)) urls.push(key);
+      }
+      return urls.map(async (url) => {
+        let batch: Event[];
+        let relayUrl: string;
         try {
           const relay = await pool.ensureRelay(url, {
             signal: opts.signal,
             timeoutMs: opts.connectTimeoutMs,
           });
-          const batch = await relay.fetch([...job.filters], {
+          relayUrl = relay.url;
+          batch = await relay.fetch([...job.filters], {
             timeoutMs: opts.timeoutMs,
             signal: opts.signal,
           });
-          for (const event of batch) {
-            opts.onevent?.(event, relay.url);
-            if (!byId.has(event.id)) byId.set(event.id, event);
-          }
         } catch {
-          // skip failed relays
+          return; // skip failed relays
         }
-      }),
-    ),
+        // The whole batch lands before callbacks so a throwing onevent cannot
+        // drop events; listener errors are reported, never propagated.
+        for (const event of batch) {
+          if (!byId.has(event.id)) byId.set(event.id, event);
+        }
+        for (const event of batch) {
+          invokeSafely(() => opts.onevent?.(event, relayUrl));
+        }
+      });
+    }),
   );
   return [...byId.values()];
 }

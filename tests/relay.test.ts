@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import {
   EventBuilder,
   Keys,
+  KeysSigner,
   MessageError,
   Pool,
   Relay,
@@ -12,10 +13,13 @@ import {
   isInsecureRelayUrl,
   useWebSocketImplementation,
   verifyEvent,
+  type Event,
+  type EventTemplate,
 } from "../src/index.ts";
 import { NegentropyStorageVector, Nip77Error } from "../src/nips/nip77.ts";
 import type { WebSocketConstructor } from "../src/relay/websocket.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
+import { stubReportError } from "./helpers/report-error.ts";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -2538,14 +2542,24 @@ describe("live REQ coalescing", () => {
       },
     });
     const ws = MockWebSocket.last();
-    expect(() => ws.receive(JSON.stringify(["EVENT", a.id, note]))).toThrow("a-onevent");
-    expect(bEvents).toEqual([note.id]);
-    expect(() => ws.receive(JSON.stringify(["EOSE", a.id]))).toThrow("a-oneose");
-    expect(eoseB).toBe(1);
-    expect(() => ws.receive(JSON.stringify(["CLOSED", a.id, "bye"]))).toThrow("a-onclose");
-    expect(b.closed).toBe(true);
-    expect(a.closed).toBe(true);
-    relay.close();
+    const { reported, restore } = stubReportError();
+    try {
+      ws.receive(JSON.stringify(["EVENT", a.id, note]));
+      expect(bEvents).toEqual([note.id]);
+      ws.receive(JSON.stringify(["EOSE", a.id]));
+      expect(eoseB).toBe(1);
+      ws.receive(JSON.stringify(["CLOSED", a.id, "bye"]));
+      expect(b.closed).toBe(true);
+      expect(a.closed).toBe(true);
+      relay.close();
+    } finally {
+      restore();
+    }
+    expect(reported.map((err) => (err instanceof Error ? err.message : String(err)))).toEqual([
+      "a-onevent",
+      "a-oneose",
+      "a-onclose",
+    ]);
   });
 
   test("Pool.subscribe twice same URL+filters sends one REQ", async () => {
@@ -2605,5 +2619,78 @@ describe("live REQ coalescing", () => {
     a.close();
     b.close();
     pool.close();
+  });
+});
+
+describe("issue #125", () => {
+  test("#14 maxRelays does not close a relay that is still connecting", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor, maxRelays: 1 });
+    const results = await Promise.allSettled([
+      pool.ensureRelay("wss://a.example"),
+      pool.ensureRelay("wss://b.example"),
+      pool.ensureRelay("wss://c.example"),
+    ]);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled", "fulfilled"]);
+    pool.close();
+  });
+
+  test("#15 AUTH retries after a timed-out or rejected AUTH frame", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const signer = new KeysSigner(keys);
+    const sign = async (template: EventTemplate): Promise<Event> =>
+      signer.signEvent({ ...template, pubkey: keys.publicKey });
+
+    // a timed-out AUTH must not poison the challenge for the rest of the connection
+    const relay = await Relay.connect("wss://auth-timeout.example", {
+      websocketImplementation: MockWebSocketCtor,
+      publishTimeoutMs: 40,
+      enableReconnect: false,
+    });
+    const ws = MockWebSocket.last();
+    ws.receive(JSON.stringify(["AUTH", "chal"]));
+
+    let signs = 0;
+    const timedOutSign = async (template: EventTemplate): Promise<Event> => {
+      signs += 1;
+      return sign(template);
+    };
+    await expect(relay.auth(timedOutSign)).rejects.toThrow(/auth timed out/);
+    await expect(relay.auth(timedOutSign)).rejects.toThrow(/auth timed out/);
+    expect(signs).toBe(2);
+    expect(sentAuthEvents(ws)).toHaveLength(2);
+    relay.close();
+
+    // a rejected AUTH is cached for that challenge: a repeated auth() replays
+    // the rejection without signing again, until resetAuth() clears it
+    const relay2 = await Relay.connect("wss://auth-reject.example", {
+      websocketImplementation: MockWebSocketCtor,
+      publishTimeoutMs: 2000,
+      enableReconnect: false,
+    });
+    const ws2 = MockWebSocket.last();
+    ws2.receive(JSON.stringify(["AUTH", "chal2"]));
+
+    let signs2 = 0;
+    const sign2 = async (template: EventTemplate): Promise<Event> => {
+      signs2 += 1;
+      return sign(template);
+    };
+    const first = relay2.auth(sign2);
+    await waitUntil(() => sentAuthEvents(ws2).length === 1);
+    ws2.receive(JSON.stringify(["OK", sentAuthEvents(ws2)[0]!.id, false, "error: rejected"]));
+    expect((await first).ok).toBe(false);
+
+    const cached = await relay2.auth(sign2);
+    expect(cached.ok).toBe(false);
+    expect(signs2).toBe(1);
+    expect(sentAuthEvents(ws2)).toHaveLength(1);
+
+    relay2.resetAuth();
+    const second = relay2.auth(sign2);
+    await waitUntil(() => sentAuthEvents(ws2).length === 2);
+    ws2.receive(JSON.stringify(["OK", sentAuthEvents(ws2)[1]!.id, true, ""]));
+    expect((await second).ok).toBe(true);
+    expect(signs2).toBe(2);
+    relay2.close();
   });
 });

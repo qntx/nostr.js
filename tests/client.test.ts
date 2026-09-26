@@ -10,6 +10,7 @@ import {
   useWebSocketImplementation,
 } from "../src/index.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
+import { stubReportError } from "./helpers/report-error.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
 const SK2 = "0000000000000000000000000000000000000000000000000000000000000001";
@@ -909,10 +910,18 @@ describe("Client", () => {
     const outA = findWs("out-a.example")!;
     const outB = findWs("out-b.example")!;
     const def = findWs("default.example")!;
-    expect(() => closer.close()).toThrow(/boom/);
-    expect(hasClose(outA)).toBe(true);
-    expect(hasClose(outB)).toBe(true);
-    expect(hasClose(def)).toBe(true);
+    const { reported, restore } = stubReportError();
+    try {
+      closer.close();
+      expect(hasClose(outA)).toBe(true);
+      expect(hasClose(outB)).toBe(true);
+      expect(hasClose(def)).toBe(true);
+    } finally {
+      restore();
+    }
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toBeInstanceOf(Error);
+    expect((reported[0] as Error).message).toMatch(/boom/);
     await client.shutdown();
   });
 

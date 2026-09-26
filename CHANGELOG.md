@@ -26,6 +26,7 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 - `Relay.inFlightCount`: one-shot requests still awaiting a reply (publish ACK, COUNT, NEG); idle detection uses it alongside `subscriptionCount`.
 - `ClientOptions` / `ClientBuilder` forward `allowInsecure`, `trustedInsecureUrls`, `idleTimeoutMs`, `maxRelays`, and `pinnedUrls` to the pool. `Client.setSigner` accepts `undefined` to remove the signer.
 - `Pool.connectedUrls()` returns URLs whose relay is currently connected.
+- `Relay.resetAuth` / `Pool.resetAuth`: clear a cached AUTH rejection for the pending challenge and re-fire `onauth` so automatic auth can retry; `Client.setSigner` calls it so a new signer applies to already-connected relays. `OutboxFeedOptions.observe` now receives the relay URL and `OutboxFeedOptions.seen` fires for every event receipt from every relay (#125).
 - Blossom: `blobExists` (HEAD only; 2xx true, 404 false, other HTTP including 405 throws), `getBlob` (GET then sha256 verify), `healBlobUrl` (NIP-B7 SHOULD; uses the caller-supplied kind 10063 list for that author), `uploadToServers`.
 - `mergeCountHll`: register-wise max of NIP-45 HyperLogLog sketches. Empty input is 512 zero hex. Output is always lowercase 512 hex. No cardinality estimator. `Pool.count` does not auto-merge.
 - `Client.sync` / `Client.syncToRelay` (NIP-77) against `EventStore.negentropyItems`.
@@ -69,6 +70,7 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 - Pool `connectTimeoutMs` default is 5000.
 - `createEventLoader` batch fetches run in parallel.
 - `ClientError` for Client lifecycle (shutdown, no signer, no relays, abort).
+- `Client.fetchEvents` merges storage, index, and network results through NIP-01 semantics — replaceable/addressable winners, kind-5 deletions, id dedupe, and per-filter `limit` — instead of a plain id-keyed map (#125).
 - BREAKING: `ClientOptions.automaticAuth` defaults to `true` regardless of signer presence. The AUTH sign function reads the current signer at challenge time, so `setSigner()` applies to already-connected relays; a challenge with no signer is ignored (previously automatic auth was only enabled when a signer was passed in the constructor).
 - BREAKING: `PoolOptions.allowInsecure` defaults to `false`. `ws://` relays are rejected by `ensureRelay` unless listed in `trustedInsecureUrls` or `setAllowInsecure(true)` is called (previously allowed by default).
 
@@ -81,6 +83,14 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 
 ### Fixed
 
+- A throwing `onevent` no longer drops the rest of a relay fetch batch; user-callback errors are isolated via `reportError` across `fetchRouted`/`fanIn`, REQ dispatch, `Subscription.close`, and `ReactiveEventStore` watch/`onInsert` listeners (#125).
+- Equivalent relay URL spellings no longer duplicate fan-in attachments or `Client` relay entries: job URLs are normalized and deduped, and `Client` stores normalized `relays` (#125).
+- `maxRelays` no longer closes relays that are still connecting (#125).
+- `Relay.auth` caches the relay's settled OK verdict per challenge instead of the in-flight promise: a rejected AUTH replays the cached `OK false` without re-signing, while timeouts and send failures are not cached so the next `auth()` signs again (#125).
+- Fake relay (`src/testing`): per-filter `limit` and NIP-50 `search` are applied per filter in REQ/COUNT/NEG-OPEN, live delivery only fires for retained events, re-publishes answer `duplicate:`/`invalid:` correctly, and malformed AUTH/NEG-MSG frames no longer poison the session queue (#125).
+- `ReactiveEventStore`: `query`/`hydrate` keep newest entries hottest in LRU order, `add` never evicts the just-inserted event, re-entrant writes are notified within the same flush, `seenOn` records normalized ids, and `watchQuery` cache entries are released on unsubscribe (#125).
+- `MemoryIndex.isDeleted`/`getByAddress` canonicalize coordinates (lowercase pubkey), and a replacement newer than the tombstone's `until` clears the deletion (#125).
+- NIP-77 down-sync, outbox live/sync receipts, and `fetchPrivateMessages`/`subscribePrivateMessages` now write every received event into `client.index` and record each delivering relay in `seenOn` (#125).
 - EVENT `auth-required:` rearms the publish timeout after AUTH.
 - Extra live REQ while disconnected does not reset reconnect backoff.
 - `subscribePrivateMessages` close/abort skips later persist and `onevent`; junk wraps are not stored.

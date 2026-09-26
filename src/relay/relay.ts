@@ -142,8 +142,8 @@ export class Relay {
   #authedChallenge: string | undefined;
   /** Challenge value already answered on this connection; duplicates are not re-signed. */
   #answeredChallenge: string | undefined;
-  /** Promise for the AUTH frame sent for `#answeredChallenge` — replays its outcome. */
-  #answeredAuth: Promise<PublishResult> | undefined;
+  /** Settled OK verdict for `#answeredChallenge`; set only once the relay replies. */
+  #answeredResult: PublishResult | undefined;
   #authPromise: Promise<PublishResult> | undefined;
   #authSigner: ((template: EventTemplate) => Promise<Event>) | undefined;
   #intentionalClose = false;
@@ -367,7 +367,7 @@ export class Relay {
       this.#authPromise = undefined;
       this.#authedChallenge = undefined;
       this.#answeredChallenge = undefined;
-      this.#answeredAuth = undefined;
+      this.#answeredResult = undefined;
       if (!resubscribeAll(this.#live)) {
         this.#connected = false;
         this.#status = RelayStatus.Disconnected;
@@ -672,9 +672,15 @@ export class Relay {
         break;
       }
       case "AUTH": {
+        // A re-sent identical challenge keeps the in-flight/settled dedupe;
+        // only a new challenge value resets the answer state.
+        if (msg[1] !== this.#challenge) {
+          this.#authPromise = undefined;
+          this.#authedChallenge = undefined;
+          this.#answeredChallenge = undefined;
+          this.#answeredResult = undefined;
+        }
         this.#challenge = msg[1];
-        this.#authPromise = undefined;
-        this.#authedChallenge = undefined;
         this.onauth?.(msg[1]);
         break;
       }
@@ -831,10 +837,8 @@ export class Relay {
       throw new RelayError("no AUTH challenge received from relay", this.url);
     }
     if (this.#authPromise) return this.#authPromise;
-    if (this.#answeredChallenge === challenge && this.#answeredAuth !== undefined) {
-      const result = await this.#answeredAuth;
-      if (result.ok) this.#authedChallenge = challenge;
-      return result;
+    if (this.#answeredChallenge === challenge && this.#answeredResult !== undefined) {
+      return this.#answeredResult;
     }
 
     const pending = (async () => {
@@ -856,11 +860,23 @@ export class Relay {
           this.#publishes.delete(event.id);
           reject(new RelayPublishError("auth timed out", this.url));
         }, timeoutMs);
-        this.#publishes.set(event.id, { resolve, reject, timer, timeoutMs });
+        this.#publishes.set(event.id, {
+          resolve: (result) => {
+            // Cache the relay's settled verdict: a repeated challenge replays
+            // it without re-signing. Timeouts and send failures never reach
+            // here, so a later auth() signs again.
+            if (this.#challenge === challenge) {
+              this.#answeredChallenge = challenge;
+              this.#answeredResult = result;
+            }
+            resolve(result);
+          },
+          reject,
+          timer,
+          timeoutMs,
+        });
         try {
           this.#send(["AUTH", event]);
-          this.#answeredChallenge = challenge;
-          this.#answeredAuth = pending;
         } catch (err) {
           clearTimeout(timer);
           this.#publishes.delete(event.id);
@@ -875,6 +891,22 @@ export class Relay {
       return result;
     } finally {
       if (this.#authPromise === pending) this.#authPromise = undefined;
+    }
+  }
+
+  /**
+   * Clear a cached AUTH rejection for the current challenge so a later
+   * `auth()` signs again. A successful auth and in-flight answers are kept.
+   * When a challenge is pending and unanswered, `onauth` is re-fired so the
+   * pool's automatic auth can run once more.
+   */
+  resetAuth(): void {
+    if (this.#answeredResult !== undefined && !this.#answeredResult.ok) {
+      this.#answeredChallenge = undefined;
+      this.#answeredResult = undefined;
+    }
+    if (this.#challenge !== undefined && this.#challenge !== this.#authedChallenge) {
+      this.onauth?.(this.#challenge);
     }
   }
 
