@@ -242,6 +242,30 @@ describe("Negentropy algorithm", () => {
     expect((err as Nip77Error).message).toBe("negentropy exceeded max rounds");
     expect(nextCalls).toBe(MAX_NEG_ROUNDS);
   });
+
+  test("reconcile replies with the supported version byte on version mismatch", () => {
+    const storage = new NegentropyStorageVector();
+    storage.seal();
+    const neg = new Negentropy(storage);
+    // Any 0x60..0x6f version other than 0x61 negotiates a downgrade to 0x61.
+    for (const version of ["60", "62", "6f"]) {
+      const out = neg.reconcile(version);
+      expect(out.nextMessage).toBe("61");
+      expect(out.have).toEqual([]);
+      expect(out.need).toEqual([]);
+    }
+  });
+
+  test("reconcile throws on a version byte outside 0x60..0x6f", () => {
+    const storage = new NegentropyStorageVector();
+    storage.seal();
+    const neg = new Negentropy(storage);
+    expect(() => neg.reconcile("50")).toThrow(Nip77Error);
+    expect(() => neg.reconcile("50")).toThrow(/protocol version/);
+    expect(() => neg.reconcile("70")).toThrow(Nip77Error);
+    // An empty query has no version byte at all.
+    expect(() => neg.reconcile("")).toThrow(/parse ends prematurely/);
+  });
 });
 
 describe("Relay.negReconcile + Client.sync", () => {
@@ -270,6 +294,24 @@ describe("Relay.negReconcile + Client.sync", () => {
     expect(have).toEqual([localOnly.id]);
     expect(need).toEqual([remoteOnly.id]);
     relay.close();
+  });
+
+  test("fake relay answers an unsupported NEG version with NEG-MSG 61", async () => {
+    net.relay("wss://neg.example");
+    const ws = new net.websocketImplementation("wss://neg.example") as unknown as {
+      addEventListener(t: string, l: (ev: { data: string }) => void): void;
+      send(data: string): void;
+      close(): void;
+    };
+    const reply = new Promise<unknown>((resolve) => {
+      ws.addEventListener("message", (ev) => resolve(JSON.parse(ev.data)));
+      ws.addEventListener(
+        "open" as string,
+        (() => ws.send(JSON.stringify(["NEG-OPEN", "sub1", { kinds: [1] }, "62"]))) as never,
+      );
+    });
+    expect(await reply).toEqual(["NEG-MSG", "sub1", "61"]);
+    ws.close();
   });
 
   test("Client.sync down downloads remote-only events", async () => {
