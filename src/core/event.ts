@@ -101,9 +101,18 @@ export function getEventHash(event: UnsignedEvent): string {
   return bytesToHex(sha256(utf8Encoder.encode(serialized)));
 }
 
-function compareEventsDesc(a: Event, b: Event): number {
+/**
+ * NIP-01 newest-first order: `created_at` descending, then `id` in plain
+ * code-unit order (ids are canonical lowercase hex, so `<` is lexical order).
+ */
+export function compareEventsDesc(
+  a: { id: string; created_at: number },
+  b: { id: string; created_at: number },
+): number {
   if (a.created_at !== b.created_at) return b.created_at - a.created_at;
-  return a.id.localeCompare(b.id);
+  if (a.id < b.id) return -1;
+  if (a.id > b.id) return 1;
+  return 0;
 }
 
 /**

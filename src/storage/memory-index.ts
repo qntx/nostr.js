@@ -1,5 +1,5 @@
 import type { Event } from "../core/event.ts";
-import { itemCompare, sortEvents } from "../core/event.ts";
+import { compareEventsDesc, itemCompare, sortEvents } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { matchFilter } from "../core/filter.ts";
 import { eventAddress, formatEventAddress, parseEventAddress } from "../core/tag.ts";
@@ -385,6 +385,5 @@ function removeFromSet<K>(map: Map<K, Set<string>>, key: K, id: string): void {
 }
 
 function queryItemOrder(a: NegentropyItem, b: NegentropyItem): number {
-  if (a.created_at !== b.created_at) return b.created_at - a.created_at;
-  return a.id.localeCompare(b.id);
+  return compareEventsDesc(a, b);
 }

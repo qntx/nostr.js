@@ -1,5 +1,5 @@
 import type { Event } from "../core/event.ts";
-import { isReplaceableWinner, validateSignedEvent } from "../core/event.ts";
+import { isReplaceableWinner, itemCompare, validateSignedEvent } from "../core/event.ts";
 import { Kind } from "../core/kind.ts";
 import { eventAddress } from "../core/tag.ts";
 import { DeletionState, planDeletion } from "./deletion.ts";
@@ -81,9 +81,7 @@ export function migrateV1Events(tx: IDBTransactionLike, events: Event[]): void {
 
   const byId = new Map(valid.map((e) => [e.id, e]));
   const deletion = new DeletionState();
-  const dels = valid
-    .filter((e) => e.kind === Kind.EventDeletion)
-    .sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+  const dels = valid.filter((e) => e.kind === Kind.EventDeletion).sort(itemCompare);
   for (const del of dels) {
     const plan = planDeletion(del, (id) => byId.get(id));
     deletion.absorb(plan);

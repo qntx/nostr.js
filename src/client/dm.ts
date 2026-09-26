@@ -1,4 +1,5 @@
 import type { Event } from "../core/event.ts";
+import { itemCompare } from "../core/event.ts";
 import { Kind } from "../core/kind.ts";
 import type { EventBuilder } from "../core/builder.ts";
 import type { Gossip } from "../gossip/gossip.ts";
@@ -158,12 +159,7 @@ export async function fetchPrivateMessages(
     }
   }
 
-  return [...byRumor.values()].sort((a, b) => {
-    if (a.rumor.created_at !== b.rumor.created_at) {
-      return a.rumor.created_at - b.rumor.created_at;
-    }
-    return a.rumor.id.localeCompare(b.rumor.id);
-  });
+  return [...byRumor.values()].sort((a, b) => itemCompare(a.rumor, b.rumor));
 }
 
 export async function subscribePrivateMessages(

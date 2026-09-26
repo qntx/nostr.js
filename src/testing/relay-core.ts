@@ -1,5 +1,5 @@
 import type { Event } from "../core/event.ts";
-import { validateSignedEvent } from "../core/event.ts";
+import { compareEventsDesc, validateSignedEvent } from "../core/event.ts";
 import { matchFilter, type Filter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
 import { bytesToHex, normalizeURL } from "../core/util.ts";
@@ -199,14 +199,14 @@ export class FakeRelayCore implements FakeRelay {
       const rows = (await this.#store.query([unbounded])).filter((event) =>
         searchMatch(filter, event),
       );
-      rows.sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id));
+      rows.sort(compareEventsDesc);
       const kept = filter.limit === undefined ? rows : rows.slice(0, filter.limit);
       for (const event of kept) {
         if (!seen.has(event.id)) seen.set(event.id, event);
       }
     }
     const matched = [...seen.values()];
-    matched.sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id));
+    matched.sort(compareEventsDesc);
     return matched;
   }
 

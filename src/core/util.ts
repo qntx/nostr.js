@@ -1,3 +1,7 @@
+import {
+  bytesToHex as nobleBytesToHex,
+  hexToBytes as nobleHexToBytes,
+} from "@noble/hashes/utils.js";
 import { HexError, UrlError } from "./error.ts";
 import { SECRET_KEY_BYTES } from "./limits.ts";
 
@@ -9,24 +13,18 @@ const HEX64_RE = /^[0-9a-f]{128}$/;
 
 /** Lowercase hex encode. */
 export function bytesToHex(bytes: Uint8Array): string {
-  let out = "";
-  for (let i = 0; i < bytes.length; i++) {
-    out += bytes[i]!.toString(16).padStart(2, "0");
-  }
-  return out;
+  return nobleBytesToHex(bytes);
 }
 
 /** Decode lowercase or mixed-case hex to bytes. */
 export function hexToBytes(hex: string): Uint8Array {
-  const normalized = hex.toLowerCase();
-  if (normalized.length % 2 !== 0 || !/^[0-9a-f]+$/.test(normalized)) {
-    throw new HexError(`invalid hex string of length ${hex.length}`);
+  try {
+    return nobleHexToBytes(hex);
+  } catch (cause) {
+    throw new HexError(`invalid hex string of length ${hex.length}`, {
+      cause: cause instanceof Error ? cause : undefined,
+    });
   }
-  const out = new Uint8Array(normalized.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(normalized.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
 }
 
 /** True when value is canonical NIP-01 lowercase hex of 32 bytes (64 chars). */

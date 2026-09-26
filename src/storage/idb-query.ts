@@ -1,5 +1,5 @@
 import type { Event } from "../core/event.ts";
-import { sortEvents } from "../core/event.ts";
+import { compareEventsDesc, sortEvents } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { StorageError } from "./error.ts";
 import { reqOf } from "./idb-helpers.ts";
@@ -15,14 +15,6 @@ import {
   type IDBTransactionLike,
   type TagRef,
 } from "./idb-types.ts";
-
-function compareEventsDesc(
-  a: { id: string; created_at: number },
-  b: { id: string; created_at: number },
-): number {
-  if (a.created_at !== b.created_at) return b.created_at - a.created_at;
-  return a.id.localeCompare(b.id);
-}
 
 export function prefixRange(
   prefix: readonly (string | number)[],
