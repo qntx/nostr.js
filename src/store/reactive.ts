@@ -167,8 +167,6 @@ export class ReactiveEventStore {
     });
   }
 
-  // --- writes -----------------------------------------------------------
-
   add(event: Event, relayUrl?: string): PutResult {
     const result = this.#index.put(event);
     if (relayUrl !== undefined && result !== "ephemeral" && result !== "rejected") {
@@ -210,8 +208,6 @@ export class ReactiveEventStore {
     this.#invalidateAll();
   }
 
-  // --- reads ------------------------------------------------------------
-
   get(id: string): Event | undefined {
     const event = this.#index.get(id);
     if (event) this.#touch(event.id);
@@ -245,8 +241,6 @@ export class ReactiveEventStore {
   get size(): number {
     return this.#index.size;
   }
-
-  // --- watches ----------------------------------------------------------
 
   watchEvent(id: string): Watch<Event | undefined> {
     const key = id.toLowerCase();
@@ -284,8 +278,6 @@ export class ReactiveEventStore {
     };
   }
 
-  // --- internal watch registry (used by WatchImpl) ----------------------
-
   _register(watch: WatchHandle): void {
     switch (watch.kind) {
       case "event":
@@ -314,8 +306,6 @@ export class ReactiveEventStore {
         return;
     }
   }
-
-  // --- internals ---------------------------------------------------------
 
   #touch(id: string): void {
     if (this.#recency.delete(id)) this.#recency.add(id);
