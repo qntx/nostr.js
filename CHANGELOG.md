@@ -26,6 +26,8 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 - `Relay.inFlightCount`: one-shot requests still awaiting a reply (publish ACK, COUNT, NEG); idle detection uses it alongside `subscriptionCount`.
 - `ClientOptions` / `ClientBuilder` forward `allowInsecure`, `trustedInsecureUrls`, `idleTimeoutMs`, `maxRelays`, and `pinnedUrls` to the pool. `Client.setSigner` accepts `undefined` to remove the signer.
 - `Pool.connectedUrls()` returns URLs whose relay is currently connected.
+- `RelayTimeoutError` (`RelayError` subclass): every relay timeout — connect, publish, auth, COUNT (initial and post-AUTH retry), NIP-77 session — rejects with it (#130).
+- `Nip46SignerOptions.authTimeoutMs` (default 300s): timeout applied after the bunker answers `auth_url` for a pending request, which keeps waiting for the real response (#130).
 - `Relay.resetAuth` / `Pool.resetAuth`: clear a cached AUTH rejection for the pending challenge and re-fire `onauth` so automatic auth can retry; `Client.setSigner` calls it so a new signer applies to already-connected relays. `OutboxFeedOptions.observe` now receives the relay URL and `OutboxFeedOptions.seen` fires for every event receipt from every relay (#125).
 - Blossom: `blobExists` (HEAD only; 2xx true, 404 false, other HTTP including 405 throws), `getBlob` (GET then sha256 verify), `healBlobUrl` (NIP-B7 SHOULD; uses the caller-supplied kind 10063 list for that author), `uploadToServers`.
 - `mergeCountHll`: register-wise max of NIP-45 HyperLogLog sketches. Empty input is 512 zero hex. Output is always lowercase 512 hex. No cardinality estimator. `Pool.count` does not auto-merge.
@@ -76,6 +78,13 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 - `createEventLoader` batch fetches run in parallel.
 - `ClientError` for Client lifecycle (shutdown, no signer, no relays, abort).
 - `Client.fetchEvents` merges storage, index, and network results through NIP-01 semantics — replaceable/addressable winners, kind-5 deletions, id dedupe, and per-filter `limit` — instead of a plain id-keyed map (#125).
+- **BREAKING**: Every abort-aware API now rejects with `signal.reason` (falling back to an `AbortError`-named `Error`) instead of a synthesized `RelayConnectionError`/`Nip13Error`/`ClientError`. `fetchRouted`/`Pool.fetch`/`Pool.count`/`Client.fetchEvents` and outbox `sync` reject on abort instead of resolving partial results; subscription `onclose("aborted")` reason strings are unchanged (#130).
+- **BREAKING**: `Nip46Transport.publish` must return `Promise<readonly { result?: { ok: boolean; message: string }; error?: string }[]>` (satisfied by `Pool.publish`). When no relay accepts the request event, `Nip46Signer` fails fast with `Nip46Error("request not accepted by any relay: …")` instead of waiting for the timeout (#130).
+- **BREAKING**: `RelayError` takes `options?: ErrorOptions` (passed to `super`, so `cause` works) and all timeout rejections use `RelayTimeoutError` (#130).
+- `signEvent`/`finalizeEvent` accept a `Keys` instance and reuse its cached public key; `KeysSigner.signEvent` no longer re-derives the pubkey (#130).
+- NIP-19 encoders validate input: hex fields go through `assertHex32`, `nsecEncode` requires 32 bytes, `kind` must be an integer in `0..2^32-1`, and TLV values over 255 bytes throw `Nip19Error` instead of writing a corrupt length byte (#130).
+- `Nip07Signer.getPublicKey` validates the extension's answer with `assertHex32` (#130).
+- NIP-46 request ids are 128-bit random hex (`randomBytes`), dropping the predictable counter (#130).
 - BREAKING: `ClientOptions.automaticAuth` defaults to `true` regardless of signer presence. The AUTH sign function reads the current signer at challenge time, so `setSigner()` applies to already-connected relays; a challenge with no signer is ignored (previously automatic auth was only enabled when a signer was passed in the constructor).
 - BREAKING: `PoolOptions.allowInsecure` defaults to `false`. `ws://` relays are rejected by `ensureRelay` unless listed in `trustedInsecureUrls` or `setAllowInsecure(true)` is called (previously allowed by default).
 
@@ -96,6 +105,8 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 - `ReactiveEventStore`: `query`/`hydrate` keep newest entries hottest in LRU order, `add` never evicts the just-inserted event, re-entrant writes are notified within the same flush, `seenOn` records normalized ids, and `watchQuery` cache entries are released on unsubscribe (#125).
 - `MemoryIndex.isDeleted`/`getByAddress` canonicalize coordinates (lowercase pubkey), and a replacement newer than the tombstone's `until` clears the deletion (#125).
 - NIP-77 down-sync, outbox live/sync receipts, and `fetchPrivateMessages`/`subscribePrivateMessages` now write every received event into `client.index` and record each delivering relay in `seenOn` (#125).
+- `Nip46Signer`: an `auth_url` reply re-arms the request under `authTimeoutMs` instead of consuming it, `close()` clears pending auth waits, and `onAuthUrl` (plus `Relay.onnotice`/`onclose`/`onauth`/`onreconnect`, `PoolOptions.onIdleRelaysClosed`, `Client.onstorageerror`, `OutboxFeed` `onEvent`/`observe`/`seen`) throwing is isolated via `reportError` (#130).
+- `Relay.fetch` aborted mid-flight rejects with `signal.reason` instead of resolving a partial batch (#130).
 - EVENT `auth-required:` rearms the publish timeout after AUTH.
 - Extra live REQ while disconnected does not reset reconnect backoff.
 - `subscribePrivateMessages` close/abort skips later persist and `onevent`; junk wraps are not stored.

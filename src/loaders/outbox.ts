@@ -4,6 +4,8 @@ import type { Filter } from "../core/filter.ts";
 import { sortedEvents } from "../core/event.ts";
 import { Kind } from "../core/kind.ts";
 import { normalizeURL } from "../core/util.ts";
+import { throwIfAborted } from "../core/abort.ts";
+import { invokeSafely } from "../core/report.ts";
 import type { Gossip } from "../gossip/gossip.ts";
 import type { Pool } from "../relay/pool.ts";
 import { toStorageError } from "../storage/error.ts";
@@ -198,18 +200,19 @@ export class OutboxFeed {
     const byId = new Map<string, Event>();
     await Promise.all(
       [...byRelay.entries()].map(async ([url, authors]) => {
-        if (opts?.signal?.aborted) return;
+        throwIfAborted(opts?.signal);
 
         const filters = this.#syncFilters(authors, opts);
         try {
           const batch = await this.#pool.fetch([url], filters, {
             timeoutMs: this.#timeoutMs,
             signal: opts?.signal,
-            onevent: (event, relayUrl) => this.#seen?.(event, relayUrl),
+            onevent: (event, relayUrl) => invokeSafely(() => this.#seen?.(event, relayUrl)),
           });
           for (const event of batch) byId.set(event.id, event);
-        } catch {
-          // skip failed relay
+        } catch (err) {
+          // An abort rejects the whole sync; per-relay failures are skipped.
+          if (opts?.signal?.aborted) throw err;
         }
       }),
     );
@@ -229,7 +232,7 @@ export class OutboxFeed {
     for (const event of applied) {
       this.#updateBounds(event);
       dirty.add(boundKey(event.pubkey, event.kind));
-      this.#onEvent?.(event);
+      invokeSafely(() => this.#onEvent?.(event));
     }
     await this.#persistBounds(dirty);
     return sortedEvents(unique);
@@ -265,7 +268,7 @@ export class OutboxFeed {
         this.#pool.subscribe([url], [filter], {
           signal: opts?.signal,
           onevent: (event, relayUrl) => {
-            this.#seen?.(event, relayUrl);
+            invokeSafely(() => this.#seen?.(event, relayUrl));
             if (seen.has(event.id)) return;
             seen.add(event.id);
             this.#noteEvent(event, relayUrl);
@@ -381,8 +384,8 @@ export class OutboxFeed {
         })
         .catch(() => {});
     }
-    this.#observe?.(event, relayUrl);
-    this.#onEvent?.(event);
+    invokeSafely(() => this.#observe?.(event, relayUrl));
+    invokeSafely(() => this.#onEvent?.(event));
   }
 
   async #persistBounds(keys: Iterable<string>): Promise<void> {

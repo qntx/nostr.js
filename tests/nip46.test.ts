@@ -11,6 +11,7 @@ import {
   createFakeRelayNetwork,
   type FakeRelayNetwork,
 } from "../src/testing/index.ts";
+import { stubReportError } from "./helpers/report-error.ts";
 
 const BUNKER_SK = "0000000000000000000000000000000000000000000000000000000000000001";
 const CLIENT_SK = "0000000000000000000000000000000000000000000000000000000000000002";
@@ -373,7 +374,7 @@ describe("Nip46Signer", () => {
                 subClosed = true;
               },
             }),
-            publish: async () => {},
+            publish: async () => [{ result: { ok: true, message: "" } }],
             close: () => {
               poolClosed = true;
             },
@@ -484,6 +485,112 @@ describe("Nip46Signer", () => {
       expect(signer.bunker.relays).toEqual(["wss://new.example"]);
       await signer.logout();
     } finally {
+      remote.close();
+    }
+  });
+});
+
+describe("issue #130", () => {
+  test("auth_url keeps the request alive past timeoutMs and resolves on the later response", async () => {
+    const clientPk = getPublicKey(CLIENT_SK);
+    const authUrls: string[] = [];
+    const remote = createFakeNip46Signer({
+      network: net,
+      relayUrl: "wss://bunker.example",
+      bunkerSk: BUNKER_SK,
+      userSk: USER_SK,
+      clientPubkey: clientPk,
+      authUrl: "https://auth.example/approve",
+      authUrlMethods: ["ping"],
+      authReplyDelayMs: 150,
+    });
+
+    try {
+      const signer = Nip46Signer.fromBunker(
+        {
+          pubkey: getPublicKey(BUNKER_SK),
+          relays: ["wss://bunker.example"],
+          secret: null,
+        },
+        {
+          clientSecretKey: CLIENT_SK,
+          createPool: testPool,
+          timeoutMs: 60,
+          authTimeoutMs: 2000,
+          onAuthUrl: (u) => authUrls.push(u),
+        },
+      );
+      const started = Date.now();
+      await expect(signer.ping()).resolves.toBeUndefined();
+      expect(Date.now() - started).toBeGreaterThanOrEqual(140);
+      expect(authUrls).toEqual(["https://auth.example/approve"]);
+      await signer.close();
+    } finally {
+      remote.close();
+    }
+  });
+
+  test("publish rejected by every relay fails fast", async () => {
+    const signer = Nip46Signer.fromBunker(
+      {
+        pubkey: getPublicKey(BUNKER_SK),
+        relays: ["wss://bunker.example"],
+        secret: null,
+      },
+      {
+        clientSecretKey: CLIENT_SK,
+        createPool: () => ({
+          subscribe: () => ({ close: () => {} }),
+          publish: async () => [
+            { error: "blocked: spam" },
+            { result: { ok: false, message: "restricted: no" } },
+          ],
+          close: () => {},
+        }),
+        timeoutMs: 500,
+      },
+    );
+    await expect(signer.ping()).rejects.toThrow(
+      /request not accepted by any relay: blocked: spam; restricted: no/,
+    );
+    await signer.close();
+  });
+
+  test("throwing onAuthUrl is reported and the request still resolves", async () => {
+    const { reported, restore } = stubReportError();
+    const clientPk = getPublicKey(CLIENT_SK);
+    const boom = new Error("auth callback boom");
+    const remote = createFakeNip46Signer({
+      network: net,
+      relayUrl: "wss://bunker.example",
+      bunkerSk: BUNKER_SK,
+      userSk: USER_SK,
+      clientPubkey: clientPk,
+      authUrl: "https://auth.example/approve",
+      authUrlMethods: ["ping"],
+    });
+
+    try {
+      const signer = Nip46Signer.fromBunker(
+        {
+          pubkey: getPublicKey(BUNKER_SK),
+          relays: ["wss://bunker.example"],
+          secret: null,
+        },
+        {
+          clientSecretKey: CLIENT_SK,
+          createPool: testPool,
+          timeoutMs: 2000,
+          onAuthUrl: () => {
+            throw boom;
+          },
+        },
+      );
+      await expect(signer.ping()).resolves.toBeUndefined();
+      expect(reported).toEqual([boom]);
+      await signer.close();
+    } finally {
+      restore();
       remote.close();
     }
   });

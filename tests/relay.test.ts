@@ -8,6 +8,7 @@ import {
   Relay,
   RelayClosedError,
   RelayStatus,
+  RelayTimeoutError,
   SUBSCRIPTION_ID_MAX_CHARS,
   WasmVerifyPoisonedError,
   isInsecureRelayUrl,
@@ -317,7 +318,9 @@ describe("Relay", () => {
     await sleep(80);
     expect(settled).toBe(false);
     ws.receive(JSON.stringify(["OK", authFrame[1].id, true, ""]));
-    await expect(publishP).rejects.toThrow(/publish timed out/);
+    const timeoutErr = await captureError(publishP);
+    expect(timeoutErr).toBeInstanceOf(RelayTimeoutError);
+    expect((timeoutErr as Error).message).toMatch(/publish timed out/);
     relay.close();
   });
 
@@ -2654,8 +2657,11 @@ describe("issue #125", () => {
       signs += 1;
       return sign(template);
     };
-    await expect(relay.auth(timedOutSign)).rejects.toThrow(/auth timed out/);
-    await expect(relay.auth(timedOutSign)).rejects.toThrow(/auth timed out/);
+    const firstAuthErr = await captureError(relay.auth(timedOutSign));
+    expect(firstAuthErr).toBeInstanceOf(RelayTimeoutError);
+    expect((firstAuthErr as Error).message).toMatch(/auth timed out/);
+    const secondAuthErr = await captureError(relay.auth(timedOutSign));
+    expect(secondAuthErr).toBeInstanceOf(RelayTimeoutError);
     expect(signs).toBe(2);
     expect(sentAuthEvents(ws)).toHaveLength(2);
     relay.close();
@@ -2692,5 +2698,101 @@ describe("issue #125", () => {
     expect((await second).ok).toBe(true);
     expect(signs2).toBe(2);
     relay2.close();
+  });
+});
+
+describe("issue #130", () => {
+  test("connect timeout rejects with RelayTimeoutError", async () => {
+    MockWebSocket.autoConnect = false;
+    const relay = new Relay("wss://connect-timeout.example", {
+      websocketImplementation: MockWebSocketCtor,
+      connectTimeoutMs: 30,
+      enableReconnect: false,
+    });
+    const err = await captureError(relay.connect());
+    expect(err).toBeInstanceOf(RelayTimeoutError);
+    expect((err as Error).message).toMatch(/connection timed out/);
+    relay.close();
+  });
+
+  test("connect aborts with signal.reason", async () => {
+    MockWebSocket.autoConnect = false;
+    const relay = new Relay("wss://connect-abort.example", {
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: false,
+    });
+    const ac = new AbortController();
+    const reason = new Error("cancelled by caller");
+    const connectP = relay.connect({ signal: ac.signal });
+    ac.abort(reason);
+    await expect(connectP).rejects.toBe(reason);
+    relay.close();
+  });
+
+  test("publish timeout rejects with RelayTimeoutError", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const relay = await Relay.connect("wss://pub-timeout.example", {
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: false,
+    });
+    const note = EventBuilder.textNote("never acked").createdAt(2).signWithKeys(keys);
+    const err = await captureError(relay.publish(note, { timeoutMs: 40 }));
+    expect(err).toBeInstanceOf(RelayTimeoutError);
+    expect((err as Error).message).toMatch(/publish timed out/);
+    relay.close();
+  });
+
+  test("Relay.fetch aborts mid-flight with signal.reason", async () => {
+    const relay = await Relay.connect("wss://fetch-abort.example", {
+      websocketImplementation: MockWebSocketCtor,
+      enableReconnect: false,
+    });
+    const ac = new AbortController();
+    const reason = new Error("user aborted");
+    const fetchP = relay.fetch([{ kinds: [1] }], { timeoutMs: 2000, signal: ac.signal });
+    ac.abort(reason);
+    await expect(fetchP).rejects.toBe(reason);
+    relay.close();
+  });
+
+  test("Pool.fetch aborts mid-flight with signal.reason", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+    const ac = new AbortController();
+    const reason = new Error("user aborted");
+    const fetchP = pool.fetch(["wss://pool-abort.example"], [{ kinds: [1] }], {
+      timeoutMs: 2000,
+      signal: ac.signal,
+    });
+    await waitUntil(() => MockWebSocket.instances.length === 1);
+    ac.abort(reason);
+    await expect(fetchP).rejects.toBe(reason);
+    pool.close();
+  });
+
+  test("throwing onnotice and onclose are reported without breaking teardown", async () => {
+    const { reported, restore } = stubReportError();
+    try {
+      const relay = await Relay.connect("wss://cb-throw.example", {
+        websocketImplementation: MockWebSocketCtor,
+        enableReconnect: false,
+      });
+      const noticeBoom = new Error("notice boom");
+      const closeBoom = new Error("close boom");
+      relay.onnotice = () => {
+        throw noticeBoom;
+      };
+      relay.onclose = () => {
+        throw closeBoom;
+      };
+      MockWebSocket.last().receive(JSON.stringify(["NOTICE", "heads up"]));
+      expect(reported).toEqual([noticeBoom]);
+      expect(relay.connected).toBe(true);
+
+      relay.close();
+      expect(reported).toEqual([noticeBoom, closeBoom]);
+      expect(relay.status).toBe(RelayStatus.Closed);
+    } finally {
+      restore();
+    }
   });
 });

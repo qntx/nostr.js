@@ -379,4 +379,22 @@ describe("KeysSigner", () => {
       }),
     ).rejects.toThrow(/pubkey/);
   });
+
+  test("signs with the cached Keys public key (no re-derivation)", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const signer = new KeysSigner(keys);
+    // Forge the cached pubkey: a re-deriving signer would reject the unsigned
+    // event as a pubkey mismatch instead of signing it.
+    const forged = "ab".repeat(32);
+    (keys as { publicKey: string }).publicKey = forged;
+    const event = await signer.signEvent({
+      kind: 1,
+      tags: [],
+      content: "x",
+      created_at: 1,
+      pubkey: forged,
+    });
+    expect(event.pubkey).toBe(forged);
+    expect(event.sig).toMatch(/^[0-9a-f]{128}$/);
+  });
 });

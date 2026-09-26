@@ -8,6 +8,7 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { NostrError } from "../core/error.ts";
 import { serializeEvent, type UnsignedEvent } from "../core/event.ts";
 import { bytesToHex, utf8Encoder } from "../core/util.ts";
+import { abortReason } from "../core/abort.ts";
 
 export class Nip13Error extends NostrError {
   constructor(message: string, options?: ErrorOptions) {
@@ -76,7 +77,7 @@ export async function minePow(
 
   while (true) {
     if (signal?.aborted) {
-      throw new Nip13Error("mining aborted", { cause: signal.reason });
+      throw abortReason(signal);
     }
 
     const now = Math.floor(Date.now() / 1000);

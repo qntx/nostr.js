@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vite-plus/test";
 import { getEventHash, hexToBytes, type UnsignedEvent } from "../src/index.ts";
-import { Nip13Error, getPow, minePow } from "../src/nips/nip13.ts";
+import { getPow, minePow } from "../src/nips/nip13.ts";
 
 const NIP13_EXAMPLE_ID = "000006d8c378af1779d2feebc7603a125d99eca0ccf1085959b307f64e5dd358";
 
@@ -48,11 +48,10 @@ describe("nip13 minePow", () => {
     expect(unsigned.created_at).toBe(0);
   });
 
-  test("abort throws Nip13Error", async () => {
+  test("abort rejects with signal.reason", async () => {
     const controller = new AbortController();
-    controller.abort();
-    await expect(minePow(UNSIGNED, 32, { signal: controller.signal })).rejects.toBeInstanceOf(
-      Nip13Error,
-    );
+    const reason = new Error("user cancelled");
+    controller.abort(reason);
+    await expect(minePow(UNSIGNED, 32, { signal: controller.signal })).rejects.toBe(reason);
   });
 });

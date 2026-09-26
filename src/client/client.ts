@@ -3,6 +3,8 @@ import { sortedEvents, type Event, type EventTemplate, type UnsignedEvent } from
 import { canonicalizeFilters, matchFilters, type Filter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
 import { normalizeURL } from "../core/util.ts";
+import { throwIfAborted } from "../core/abort.ts";
+import { invokeSafely } from "../core/report.ts";
 import { Gossip } from "../gossip/index.ts";
 import {
   createLoaders,
@@ -228,7 +230,7 @@ export class Client {
         try {
           await this.storage.putMany(batch);
         } catch (err) {
-          this.onstorageerror?.(toStorageError(err));
+          invokeSafely(() => this.onstorageerror?.(toStorageError(err)));
         }
       }
     } finally {
@@ -401,7 +403,7 @@ export class Client {
           if (shouldObserve) this.index.add(e);
         }
       } catch (err) {
-        this.onstorageerror?.(toStorageError(err));
+        invokeSafely(() => this.onstorageerror?.(toStorageError(err)));
       }
     }
 
@@ -496,9 +498,7 @@ export class Client {
   }
 
   #throwIfAborted(signal?: AbortSignal): void {
-    if (!signal?.aborted) return;
-    if (signal.reason instanceof Error) throw signal.reason;
-    throw new ClientError("aborted");
+    throwIfAborted(signal);
   }
 
   #dmDeps(): DmDeps {

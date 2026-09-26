@@ -5,7 +5,9 @@ import {
   Kind,
   Keys,
   KeysSigner,
+  MemoryEventStore,
   MessageError,
+  RelayTimeoutError,
   relayListEventBuilder,
   useWebSocketImplementation,
 } from "../src/index.ts";
@@ -170,7 +172,7 @@ describe("Client", () => {
         sleep(3500).then(() => "pending" as const),
       ]);
       expect(status).toBe("pending");
-      await expect(pending).rejects.toThrow(/timed out/);
+      await expect(pending).rejects.toThrow(RelayTimeoutError);
     } finally {
       await client.shutdown();
     }
@@ -1175,5 +1177,67 @@ describe("Client", () => {
     const results = await publishP;
     expect(results.some((r) => r.result?.ok)).toBe(true);
     await client.shutdown();
+  });
+});
+
+describe("issue #130", () => {
+  test("fetchEvents aborts mid-flight with signal.reason", async () => {
+    const client = Client.builder()
+      .relays(["wss://abort.example"])
+      .websocketImplementation(MockWebSocketCtor)
+      .enableReconnect(false)
+      .build();
+    const ac = new AbortController();
+    const reason = new Error("user aborted");
+    const fetchP = client.fetchEvents({ kinds: [1] }, { signal: ac.signal });
+    await waitUntil(() => MockWebSocket.instances.length === 1);
+    ac.abort(reason);
+    await expect(fetchP).rejects.toBe(reason);
+    await client.shutdown();
+  });
+  test("throwing onstorageerror is reported and storage errors still surface", async () => {
+    const { reported, restore } = stubReportError();
+    const boom = new Error("callback boom");
+    try {
+      const inner = new MemoryEventStore();
+      const client = Client.builder()
+        .relays(["wss://a.example"])
+        .websocketImplementation(MockWebSocketCtor)
+        .enableReconnect(false)
+        .storage({
+          put: (e) => inner.put(e),
+          putMany: () => Promise.reject(new Error("disk full")),
+          get: (id) => inner.get(id),
+          query: (filters) => inner.query(filters),
+          count: (filters) => inner.count(filters),
+          negentropyItems: (filter) => inner.negentropyItems(filter),
+          remove: (ids) => inner.remove(ids),
+          clear: () => inner.clear(),
+          getOutboxBound: (pubkey, kind) => inner.getOutboxBound(pubkey, kind),
+          setOutboxBound: (pubkey, kind, bound) => inner.setOutboxBound(pubkey, kind, bound),
+        })
+        .onstorageerror(() => {
+          throw boom;
+        })
+        .build();
+      await client.connect();
+      const keys = Keys.fromSecretKey(SK);
+      const note = EventBuilder.textNote("hi").createdAt(1).signWithKeys(keys);
+      const fetchP = client.fetchEvents({ kinds: [1] }, { timeoutMs: 2000 });
+      await waitUntil(() => MockWebSocket.instances.length === 1);
+      const ws = MockWebSocket.last();
+      const req = ws.sent.map((s) => JSON.parse(s) as unknown[]).find((m) => m[0] === "REQ") as [
+        string,
+        string,
+      ];
+      ws.receive(JSON.stringify(["EVENT", req[1], note]));
+      ws.receive(JSON.stringify(["EOSE", req[1]]));
+      await fetchP;
+      await waitUntil(() => reported.length === 1);
+      expect(reported).toEqual([boom]);
+      await client.shutdown();
+    } finally {
+      restore();
+    }
   });
 });

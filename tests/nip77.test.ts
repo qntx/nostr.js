@@ -7,6 +7,7 @@ import {
   MemoryEventStore,
   MessageError,
   Relay,
+  RelayTimeoutError,
   SyncDirection,
   encodeClientMessage,
   parseClientMessage,
@@ -1054,7 +1055,7 @@ describe("Negentropy session timeout", () => {
     const started = Date.now();
     await expect(
       client.sync({ kinds: [1] }, { direction: SyncDirection.Down, timeoutMs: 80 }),
-    ).rejects.toThrow(/negentropy timed out/);
+    ).rejects.toThrow(RelayTimeoutError);
     const elapsed = Date.now() - started;
     expect(elapsed).toBeGreaterThanOrEqual(70);
     expect(elapsed).toBeLessThan(1500);
@@ -1070,9 +1071,16 @@ describe("Negentropy session timeout", () => {
       .enableReconnect(false)
       .build();
     await client.connect();
-    await expect(
-      client.sync({ kinds: [1] }, { direction: SyncDirection.Down, timeoutMs: 80 }),
-    ).rejects.toThrow(/negentropy timed out \(wss:\/\/silent-a\.example\/\)/);
+    const syncErr = await client
+      .sync({ kinds: [1] }, { direction: SyncDirection.Down, timeoutMs: 80 })
+      .then(
+        () => null,
+        (err: unknown) => err,
+      );
+    expect(syncErr).toBeInstanceOf(RelayTimeoutError);
+    expect((syncErr as Error).message).toMatch(
+      /negentropy timed out \(wss:\/\/silent-a\.example\/\)/,
+    );
     await client.shutdown();
   });
 });

@@ -1,6 +1,5 @@
 import type { Event, UnsignedEvent } from "../core/event.ts";
-import { CryptoError } from "../core/error.ts";
-import { Keys, SecretKey, getPublicKey, signEvent } from "../core/key.ts";
+import { Keys, SecretKey, signEvent } from "../core/key.ts";
 import * as nip04 from "../nips/nip04.ts";
 import * as nip44 from "../nips/nip44.ts";
 import type { NostrSigner } from "./types.ts";
@@ -23,11 +22,7 @@ export class KeysSigner implements NostrSigner {
   }
 
   async signEvent(unsigned: UnsignedEvent): Promise<Event> {
-    const expected = getPublicKey(this.#keys.secretKey);
-    if (unsigned.pubkey !== expected) {
-      throw new CryptoError("unsigned event pubkey does not match signer");
-    }
-    return signEvent(unsigned, this.#keys.secretKey);
+    return signEvent(unsigned, this.#keys);
   }
 
   async nip04Encrypt(peer: string, plaintext: string): Promise<string> {
