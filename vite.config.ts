@@ -15,6 +15,9 @@ export function applyPackExports(pkgExports: Record<string, unknown>): Record<st
       import: value,
     };
   }
+  // Re-append after the generated "./package.json" so the export order is
+  // identical whether or not the wasm entry was part of this build.
+  delete pkgExports["./wasm"];
   pkgExports["./wasm"] = {
     types: "./dist/wasm.d.mts",
     import: "./dist/wasm.mjs",
