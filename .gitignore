@@ -24,3 +24,6 @@ docs/*
 /target
 src/wasm/generated/
 src/wasm/nostr_crypto_wasm_bg.wasm
+
+# Hermes smoke bundle (built by scripts/hermes-smoke.sh, not committed)
+.hermes-smoke.iife.js
