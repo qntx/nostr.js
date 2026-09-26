@@ -4,6 +4,7 @@ import {
   Kind,
   Keys,
   MessageError,
+  UrlError,
   SUBSCRIPTION_ID_MAX_CHARS,
   SecretKey,
   assertSubscriptionId,
@@ -29,6 +30,7 @@ import {
   parseEventAddress,
   parseRelayMessage,
   serializeEvent,
+  normalizeURL,
   Tag,
   validateEvent,
   validateSignedEvent,
@@ -458,5 +460,21 @@ describe("messages", () => {
     const generated = createSubscriptionId();
     expect(generated).toMatch(/^[0-9a-f]{16}$/);
     expect(generated).not.toBe(createSubscriptionId());
+  });
+});
+
+describe("normalizeURL", () => {
+  test("rejects non-websocket schemes", () => {
+    expect(() => normalizeURL("ftp://x")).toThrow(UrlError);
+    expect(() => normalizeURL("ftp://x")).toThrow(/scheme/);
+  });
+
+  test("rewrites http(s) and canonicalizes the URL", () => {
+    expect(normalizeURL("https://Relay.Example:443/a//b/?z=1&a=2#f")).toBe(
+      "wss://relay.example/a/b?a=2&z=1",
+    );
+    expect(normalizeURL("http://Relay.Example")).toBe("ws://relay.example/");
+    expect(normalizeURL("wss://Relay.Example/")).toBe("wss://relay.example/");
+    expect(normalizeURL("Relay.Example")).toBe("wss://relay.example/");
   });
 });

@@ -60,6 +60,7 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 - `EventBuilder.reaction` emits `a` only when the target is addressable (NIP-25).
 - **BREAKING**: Event `id`/`pubkey`/`sig` must be canonical lowercase hex. `isHex32`/`isHex64` are strict lowercase predicates; `validateEvent`/`validateSignedEvent` reject uppercase fields, `serializeEvent`/`verifyEvent` no longer lowercase them, and wire parsing (`parseRelayMessage`/`parseClientMessage`) rejects non-canonical events. Caller input stays case-insensitive via `assertHex32` and lowercased lookups (#128).
 - **BREAKING**: `PutResult` gains `"invalid"`: `EventStore.put`/`MemoryIndex.put`/`ReactiveEventStore.add` return it for events failing `validateSignedEvent` instead of silently lowercasing and storing them. The fake relay answers `OK false "invalid: malformed event"` (#128).
+- **BREAKING**: `normalizeURL` throws `UrlError` for non-websocket schemes (`ftp:`, …); only `ws:`/`wss:` (and `http(s):` rewrites or bare hosts) are accepted (#128).
 - `bytesToHex`/`hexToBytes` delegate to `@noble/hashes` (`hexToBytes` still throws `HexError`); `createSubscriptionId` reuses `bytesToHex` (#128).
 - Event ordering drops `localeCompare`: `compareEventsDesc`/`itemCompare` order by `created_at` then plain `<` id compare over canonical lowercase ids (#128).
 - NIP-59 seals have empty tags.

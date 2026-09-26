@@ -57,7 +57,11 @@ export function assertSecretKeyBytes(bytes: Uint8Array): void {
 }
 
 /**
- * Normalize a relay URL to a stable form (wss preferred, no trailing slash, sorted query).
+ * Normalize a relay URL to a stable form: `http:`/`https:` are rewritten to
+ * `ws:`/`wss:` (a bare host gets `wss://`), any other scheme throws UrlError.
+ * The result has a lowercased host, the default port removed, duplicate path
+ * slashes collapsed, a sorted query, and no fragment. `URL` serialization keeps
+ * a trailing `/` on the root path (`wss://a.example/`).
  */
 export function normalizeURL(url: string): string {
   try {
@@ -66,6 +70,9 @@ export function normalizeURL(url: string): string {
     const p = new URL(input);
     if (p.protocol === "http:") p.protocol = "ws:";
     else if (p.protocol === "https:") p.protocol = "wss:";
+    if (p.protocol !== "ws:" && p.protocol !== "wss:") {
+      throw new UrlError(`unsupported relay URL scheme: ${p.protocol}`);
+    }
     p.pathname = p.pathname.replace(/\/+/g, "/");
     if (p.pathname.endsWith("/") && p.pathname.length > 1) {
       p.pathname = p.pathname.slice(0, -1);
@@ -77,6 +84,7 @@ export function normalizeURL(url: string): string {
     p.hash = "";
     return p.toString();
   } catch (cause) {
+    if (cause instanceof UrlError) throw cause;
     throw new UrlError(`invalid URL: ${url}`, {
       cause: cause instanceof Error ? cause : undefined,
     });
