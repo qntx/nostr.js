@@ -53,12 +53,15 @@ export class SecretKey {
   }
 }
 
+/** Lowercase hex-encoded secp256k1 public key (x-only, 64 chars). */
 export type PublicKey = string;
 
+/** Validate and normalize a hex public key; throws {@link HexError} on bad input. */
 export function publicKeyFromHex(hex: string): PublicKey {
   return assertHex32(hex, "public key");
 }
 
+/** Derive the public key for a secret key given as SecretKey, bytes, or hex. */
 export function getPublicKey(secretKey: SecretKey | Uint8Array | string): PublicKey {
   const bytes =
     secretKey instanceof SecretKey

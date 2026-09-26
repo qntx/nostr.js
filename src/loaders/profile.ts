@@ -4,6 +4,7 @@ import { Kind } from "../core/kind.ts";
 import { npubEncode } from "../nips/nip19.ts";
 import type { LoadStyle, ReplaceableLoader } from "./replaceable.ts";
 
+/** A profile-card view of a pubkey: identity fields plus the kind:0 event. */
 export type NostrUser = {
   pubkey: string;
   npub: string;
@@ -15,6 +16,7 @@ export type NostrUser = {
   fresh: boolean;
 };
 
+/** A {@link NostrUser} with no metadata — used when no kind:0 event exists. */
 export function bareNostrUser(pubkey: string): NostrUser {
   const pk = pubkey.toLowerCase();
   let npub: string;

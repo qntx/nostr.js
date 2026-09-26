@@ -10,6 +10,7 @@ import { formatEventAddress, parseEventAddress, Tag } from "../core/tag.ts";
 import { isHex32 } from "../core/util.ts";
 import type { AddressPointer, EventPointer, ProfilePointer } from "./nip19.ts";
 
+/** Parsed NIP-10 thread references from an event's `e`/`q`/`p` tags. */
 export type ThreadReferences = {
   /** Pointer to the root of the thread. */
   root: EventPointer | undefined;
@@ -177,6 +178,7 @@ export function parseThreadTags(event: Pick<Event, "tags">): ThreadReferences {
   return result;
 }
 
+/** Options for {@link buildReplyTags}. */
 export type ReplyTagsOptions = {
   /** Parent event being replied to. */
   parent: ReplyParent;

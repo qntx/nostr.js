@@ -34,6 +34,7 @@ import {
 import { decidePut, outboxBoundKey } from "./put.ts";
 import type { EventStore, NegentropyItem, OutboxBound, PutResult } from "./types.ts";
 
+/** Options for {@link IndexedDbEventStore}. */
 export type IndexedDbEventStoreOptions = {
   /** IndexedDB database name. */
   dbName?: string;

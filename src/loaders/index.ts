@@ -28,6 +28,7 @@ import type { ListLoaders } from "./lists.ts";
 import type { ProfileLoader } from "./profile.ts";
 import type { EventLoader } from "./event.ts";
 
+/** The loader surface returned by {@link createLoaders}. */
 export type Loaders = {
   follows: ListLoaders["follows"];
   muteList: ListLoaders["muteList"];
@@ -41,6 +42,7 @@ export type Loaders = {
   removeRelay(url: string): void;
 };
 
+/** Options for {@link createLoaders}. */
 export type CreateLoadersOptions = {
   pool: Pool;
   relays: readonly string[];

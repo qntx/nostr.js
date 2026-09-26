@@ -54,6 +54,7 @@ import {
   type WebSocketLike,
 } from "./websocket.ts";
 
+/** Relay lifecycle states. */
 export const RelayStatus = {
   Initialized: "initialized",
   Connecting: "connecting",
@@ -61,8 +62,10 @@ export const RelayStatus = {
   Disconnected: "disconnected",
   Closed: "closed",
 } as const;
+/** Union of the {@link RelayStatus} values. */
 export type RelayStatusName = (typeof RelayStatus)[keyof typeof RelayStatus];
 
+/** Per-relay options: socket override, verification, timeouts, reconnect, ping, NIP-42 auth. */
 export type RelayOptions = {
   websocketImplementation?: WebSocketConstructor;
   verifyEvent?: (event: Event) => boolean;
@@ -82,6 +85,7 @@ export type RelayOptions = {
   authSigner?: (template: EventTemplate) => Promise<Event>;
 };
 
+/** A relay's NIP-01 OK reply to a published event. */
 export type PublishResult = {
   ok: boolean;
   message: string;

@@ -45,6 +45,7 @@ export type Nip46Transport = {
   close(urls?: string[]): void;
 };
 
+/** Options for {@link Nip46Signer}: transport, timeouts, and relay hints. */
 export type Nip46SignerOptions = {
   /**
    * Shared transport. When set, the signer does not close it on {@link Nip46Signer.close}.

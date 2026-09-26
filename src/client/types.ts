@@ -10,14 +10,17 @@ import type { ReactiveEventStore } from "../store/reactive.ts";
 import type { ReplyTo } from "../nips/nip17.ts";
 import type { Rumor } from "../nips/nip59.ts";
 
+/** Direction of a {@link Client.sync} run: upload, download, or both. */
 export const SyncDirection = {
   Up: "up",
   Down: "down",
   Both: "both",
 } as const;
 
+/** Union of the {@link SyncDirection} values. */
 export type SyncDirectionName = (typeof SyncDirection)[keyof typeof SyncDirection];
 
+/** Options for {@link Client.sync} (NIP-77 set reconciliation). */
 export type SyncOptions = {
   relays?: readonly string[];
   direction?: SyncDirectionName;
@@ -35,6 +38,7 @@ export type SyncOptions = {
   observe?: boolean;
 };
 
+/** Outcome of a {@link Client.sync} run: ids compared, sent, received, and failures. */
 export type SyncSummary = {
   local: string[];
   remote: string[];
@@ -44,6 +48,7 @@ export type SyncSummary = {
   persistFailures: Record<string, string>;
 };
 
+/** Options for {@link Client.builder} / `ClientOptions` accepted by the builder. */
 export type ClientOptions = {
   signer?: NostrSigner;
   relays?: readonly string[];
@@ -150,6 +155,7 @@ export type PublishOptions = {
   observe?: boolean;
 };
 
+/** Options for sending a NIP-17 private message. */
 export type SendPrivateMessageOptions = {
   readonly subject?: string;
   readonly replyTo?: ReplyTo;
@@ -158,6 +164,7 @@ export type SendPrivateMessageOptions = {
   readonly observe?: boolean;
 };
 
+/** Result of sending a NIP-17 DM: the rumor plus per-recipient wrap publish results. */
 export type PrivateMessageSendResult = {
   rumor: Rumor;
   wraps: ReadonlyArray<{
@@ -167,6 +174,7 @@ export type PrivateMessageSendResult = {
   }>;
 };
 
+/** An unwrapped NIP-17 private message: the received gift wrap and its inner rumor. */
 export type ReceivedPrivateMessage = {
   wrap: Event;
   rumor: Rumor;
@@ -174,6 +182,7 @@ export type ReceivedPrivateMessage = {
   relayUrl?: string;
 };
 
+/** Options for fetching NIP-17 private-message history. */
 export type FetchPrivateMessagesOptions = {
   readonly since?: number;
   readonly until?: number;
@@ -182,6 +191,7 @@ export type FetchPrivateMessagesOptions = {
   readonly observe?: boolean;
 };
 
+/** Options for a live NIP-17 private-message subscription. */
 export type SubscribePrivateMessagesOptions = {
   readonly since?: number;
   readonly onevent?: (msg: ReceivedPrivateMessage) => void;

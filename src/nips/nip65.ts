@@ -5,14 +5,17 @@ import type { Tag } from "../core/tag.ts";
 import { EventBuilder } from "../core/builder.ts";
 import { normalizeURL } from "../core/util.ts";
 
+/** NIP-65 `r` tag marker: read-only, write-only, or unmarked (both). */
 export type RelayMarker = "read" | "write" | "readwrite";
 
+/** One NIP-65 relay-list entry: normalized URL plus read/write flags. */
 export type RelayListItem = {
   url: string;
   read: boolean;
   write: boolean;
 };
 
+/** The NIP-65 marker an item's read/write flags map to. */
 export function markerOf(item: RelayListItem): RelayMarker {
   if (item.read && item.write) return "readwrite";
   if (item.read) return "read";
@@ -66,10 +69,12 @@ export function relayListEventBuilder(items: RelayListItem[]): EventBuilder {
   return new EventBuilder(Kind.RelayList, "").tags(relayListToTags(items));
 }
 
+/** URLs of the read-enabled items. */
 export function readRelays(items: RelayListItem[]): string[] {
   return items.filter((i) => i.read).map((i) => i.url);
 }
 
+/** URLs of the write-enabled items. */
 export function writeRelays(items: RelayListItem[]): string[] {
   return items.filter((i) => i.write).map((i) => i.url);
 }

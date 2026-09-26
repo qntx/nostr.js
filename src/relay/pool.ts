@@ -17,6 +17,7 @@ import {
 import { isInsecureRelayUrl } from "./url.ts";
 import type { WebSocketConstructor } from "./websocket.ts";
 
+/** Pool-wide options applied to every managed relay. */
 export type PoolOptions = {
   websocketImplementation?: WebSocketConstructor;
   verifyEvent?: RelayOptions["verifyEvent"];
@@ -50,6 +51,7 @@ export type PoolOptions = {
   pinnedUrls?: readonly string[];
 };
 
+/** Per-relay publish outcome: the relay's OK reply or an error string. */
 export type PoolPublishResult = {
   url: string;
   result?: PublishResult;
@@ -62,6 +64,7 @@ export type PoolSubscribeOptions = Omit<SubscribeOptions, "onevent" | "receivedE
   receivedEvent?: (id: string, relayUrl: string) => void;
 };
 
+/** Per-relay NIP-45 COUNT result (or its error). */
 export type PoolCountResult = {
   url: string;
   count?: number;

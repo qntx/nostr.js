@@ -6,12 +6,14 @@ import type { RelayListItem } from "../nips/nip65.ts";
 import { parseRelayList } from "../nips/nip65.ts";
 import type { LoadStyle, ReplaceableLoader } from "./replaceable.ts";
 
+/** Result of a list loader: the source event, its decoded items, and freshness. */
 export type ListResult<T> = {
   event: Event | null;
   items: T[];
   fresh: boolean;
 };
 
+/** One muted entity decoded from a kind:10000 mute list. */
 export type MutedEntity =
   | { label: "pubkey"; value: string }
   | { label: "thread"; value: string }
