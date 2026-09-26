@@ -1254,11 +1254,8 @@ describe("alreadyHaveEvent / receivedEvent", () => {
 });
 
 describe("insecure URL policy", () => {
-  test("allowInsecure false rejects ws unless trusted", async () => {
-    const pool = new Pool({
-      websocketImplementation: MockWebSocketCtor,
-      allowInsecure: false,
-    });
+  test("ws:// is rejected by default unless trusted", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
     await expect(pool.ensureRelay("ws://evil.example")).rejects.toThrow(
       /insecure relay connection blocked/,
     );
@@ -1268,8 +1265,8 @@ describe("insecure URL policy", () => {
     pool.close();
   });
 
-  test("setAllowInsecure toggles the check", async () => {
-    const pool = new Pool({ websocketImplementation: MockWebSocketCtor });
+  test("allowInsecure true permits ws:// and setAllowInsecure toggles the check", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor, allowInsecure: true });
     const first = await pool.ensureRelay("ws://open.example");
     expect(first.connected).toBe(true);
     pool.close(["ws://open.example"]);
@@ -1278,6 +1275,60 @@ describe("insecure URL policy", () => {
       /insecure relay connection blocked/,
     );
     pool.close();
+  });
+});
+
+describe("pool relay cap and pinning", () => {
+  test("maxRelays closes the least-recently-used idle relay but keeps busy ones", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor, maxRelays: 2 });
+    try {
+      await pool.ensureRelay("wss://old.example");
+      const busy = await pool.ensureRelay("wss://busy.example");
+      busy.subscribe([{ kinds: [1] }]);
+      expect(busy.subscriptionCount).toBe(1);
+
+      await pool.ensureRelay("wss://new.example");
+      expect(pool.listRelays()).not.toContain("wss://old.example/");
+      expect(pool.listRelays()).toContain("wss://busy.example/");
+      expect(pool.listRelays()).toContain("wss://new.example/");
+    } finally {
+      pool.close();
+    }
+  });
+
+  test("cap is soft: with no idle relay the connect still succeeds", async () => {
+    const pool = new Pool({ websocketImplementation: MockWebSocketCtor, maxRelays: 1 });
+    try {
+      const busy = await pool.ensureRelay("wss://busy.example");
+      busy.subscribe([{ kinds: [1] }]);
+      await pool.ensureRelay("wss://second.example");
+      expect(pool.listRelays()).toHaveLength(2);
+    } finally {
+      pool.close();
+    }
+  });
+
+  test("pinned relays survive the cap and idle cleanup", async () => {
+    const pool = new Pool({
+      websocketImplementation: MockWebSocketCtor,
+      maxRelays: 1,
+      idleTimeoutMs: 10,
+      pinnedUrls: ["wss://pin.example"],
+    });
+    try {
+      await pool.ensureRelay("wss://pin.example");
+      await pool.ensureRelay("wss://a.example");
+      await pool.ensureRelay("wss://b.example");
+      expect(pool.listRelays()).toContain("wss://pin.example/");
+      expect(pool.listRelays()).toContain("wss://b.example/");
+      expect(pool.listRelays()).not.toContain("wss://a.example/");
+
+      await sleep(20);
+      pool.cleanIdleRelays();
+      expect(pool.listRelays()).toContain("wss://pin.example/");
+    } finally {
+      pool.close();
+    }
   });
 });
 
@@ -2130,6 +2181,31 @@ describe("Pool aggregated EOSE", () => {
     await waitUntil(() => sentMessages(ws).some((m) => m[0] === "AUTH"));
     expect(calls).toBe(1);
     pool.close();
+  });
+
+  test("a repeated identical challenge does not send a second AUTH frame", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const pool = new Pool({
+      websocketImplementation: MockWebSocketCtor,
+      automaticallyAuth: () => async (template) =>
+        EventBuilder.textNote("")
+          .kind(template.kind)
+          .tags(template.tags)
+          .content(template.content)
+          .createdAt(template.created_at)
+          .signWithKeys(keys),
+    });
+    try {
+      await pool.ensureRelay("wss://auth-dup.example");
+      const ws = MockWebSocket.last();
+      ws.receive(JSON.stringify(["AUTH", "same-challenge"]));
+      await waitUntil(() => sentMessages(ws).some((m) => m[0] === "AUTH"));
+      ws.receive(JSON.stringify(["AUTH", "same-challenge"]));
+      await sleep(30);
+      expect(sentMessages(ws).filter((m) => m[0] === "AUTH")).toHaveLength(1);
+    } finally {
+      pool.close();
+    }
   });
 });
 

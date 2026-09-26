@@ -12,10 +12,12 @@ import {
   IndexedDbEventStore,
   MemoryEventStore,
   Nip19Error,
+  NoSignerError,
   NostrError,
   OutboxError,
   OutboxFeed,
   Pool,
+  Relay,
   RelayClosedError,
   RelayPublishError,
   StorageError,
@@ -367,5 +369,30 @@ describe("ClientError", () => {
     expect(err).toBe(reason);
     expect(err).not.toBeInstanceOf(ClientError);
     expect(err).not.toBeInstanceOf(CryptoError);
+  });
+});
+
+describe("NoSignerError", () => {
+  test("is a NostrError and the relay ignores the challenge", async () => {
+    MockWebSocket.reset();
+    useWebSocketImplementation(MockWebSocketCtor);
+    try {
+      const relay = await Relay.connect("wss://nosign.example", {
+        websocketImplementation: MockWebSocketCtor,
+      });
+      const ws = MockWebSocket.last();
+      ws.receive(JSON.stringify(["AUTH", "chal"]));
+      const result = await relay.auth(() =>
+        Promise.reject(new NoSignerError("no signer configured for AUTH")),
+      );
+      expect(result.ok).toBe(false);
+      expect(result.message).toContain("no signer");
+      expect(new NoSignerError("x")).toBeInstanceOf(NostrError);
+      expect(ws.sent.filter((s) => (JSON.parse(s) as unknown[])[0] === "AUTH")).toHaveLength(0);
+      expect(relay.connected).toBe(true);
+      relay.close();
+    } finally {
+      MockWebSocket.reset();
+    }
   });
 });

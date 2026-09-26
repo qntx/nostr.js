@@ -24,13 +24,22 @@ export type PoolOptions = {
    * send them. Return null to skip a given relay URL.
    */
   automaticallyAuth?: (relayURL: string) => null | ((event: EventTemplate) => Promise<Event>);
-  /** When false, ensureRelay rejects isInsecureRelayUrl unless trusted. Default true (allow). */
+  /** When false (default), ensureRelay rejects isInsecureRelayUrl unless trusted. */
   allowInsecure?: boolean;
   trustedInsecureUrls?: readonly string[];
   /** Close unused relays. Unset/0 = disabled. */
   idleTimeoutMs?: number;
   idleCleanupIntervalMs?: number;
   onIdleRelaysClosed?: (urls: string[]) => void;
+  /**
+   * Soft cap on connected non-pinned relays. When `ensureRelay` would create a
+   * new non-pinned relay at the cap, the least-recently-used idle one is closed
+   * first (idle = no subscriptions and no in-flight requests). If none is idle
+   * the connect proceeds anyway — the cap never fails a request.
+   */
+  maxRelays?: number;
+  /** Normalized URLs never closed by idle cleanup or `maxRelays` eviction. */
+  pinnedUrls?: readonly string[];
 };
 
 export type PoolPublishResult = {
@@ -53,6 +62,10 @@ export type PoolCountResult = {
   error?: string;
 };
 
+function isIdle(relay: Relay): boolean {
+  return relay.subscriptionCount === 0 && relay.inFlightCount === 0;
+}
+
 /**
  * Multi-relay coordinator: connection reuse, cross-relay event dedup, fan-out publish.
  */
@@ -64,11 +77,13 @@ export class Pool {
   #idleTimer: ReturnType<typeof setInterval> | undefined;
   #allowInsecure: boolean;
   #trustedInsecure: Set<string>;
+  #pinned: Set<string>;
 
   constructor(opts: PoolOptions = {}) {
     this.#opts = opts;
-    this.#allowInsecure = opts.allowInsecure ?? true;
+    this.#allowInsecure = opts.allowInsecure ?? false;
     this.#trustedInsecure = new Set((opts.trustedInsecureUrls ?? []).map(normalizeURL));
+    this.#pinned = new Set((opts.pinnedUrls ?? []).map(normalizeURL));
     this.#idleTimeoutMs = opts.idleTimeoutMs ?? 0;
     if (this.#idleTimeoutMs > 0) {
       this.#idleTimer = setInterval(
@@ -86,12 +101,16 @@ export class Pool {
     this.#trustedInsecure = new Set(urls.map(normalizeURL));
   }
 
+  setPinnedUrls(urls: readonly string[]): void {
+    this.#pinned = new Set(urls.map(normalizeURL));
+  }
+
   cleanIdleRelays(): void {
     if (this.#idleTimeoutMs <= 0) return;
     const now = Date.now();
     const idle: string[] = [];
     for (const [url, relay] of this.#relays) {
-      if (relay.subscriptionCount > 0) continue;
+      if (this.#pinned.has(url) || !isIdle(relay)) continue;
       const last = this.#lastActivity.get(url) ?? 0;
       if (!relay.connected || now - last >= this.#idleTimeoutMs) {
         idle.push(url);
@@ -122,6 +141,30 @@ export class Pool {
     this.#idleTimer = undefined;
   }
 
+  /**
+   * Soft cap: closing the least-recently-used idle non-pinned relay when a new
+   * non-pinned relay would push the count past `maxRelays`. Busy relays are
+   * never evicted; with none idle the cap is exceeded rather than failing.
+   */
+  #enforceMaxRelays(incoming: string): void {
+    const cap = this.#opts.maxRelays;
+    if (cap === undefined || this.#pinned.has(incoming)) return;
+    let count = 0;
+    let oldestUrl: string | undefined;
+    let oldestAt = Number.POSITIVE_INFINITY;
+    for (const [url, relay] of this.#relays) {
+      if (this.#pinned.has(url)) continue;
+      count += 1;
+      if (!isIdle(relay)) continue;
+      const at = this.#lastActivity.get(url) ?? 0;
+      if (at < oldestAt) {
+        oldestAt = at;
+        oldestUrl = url;
+      }
+    }
+    if (count >= cap && oldestUrl !== undefined) this.close([oldestUrl]);
+  }
+
   async ensureRelay(
     url: string,
     opts?: { signal?: AbortSignal; timeoutMs?: number },
@@ -130,6 +173,7 @@ export class Pool {
     this.#rejectInsecure(url, norm);
     let relay = this.#relays.get(norm);
     if (!relay) {
+      this.#enforceMaxRelays(norm);
       const signFn = this.#opts.automaticallyAuth?.(norm) ?? undefined;
       const created = new Relay(norm, {
         websocketImplementation: this.#opts.websocketImplementation,

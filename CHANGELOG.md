@@ -20,6 +20,11 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 - Opt-in `@qntx/nostr/wasm`: `await loadNostrWasm()` then `Client.builder().verifyEvent(wasm.verifyEvent)`. Noble remains default. No auto-detect. Instantiate failure throws. Verify only. Live EVENT verify is sync after init. A `Worker` is not a drop-in (`alreadyHaveEvent` / watermarks). v1 requires WASM SIMD (`simd128`). CSP: `'wasm-unsafe-eval'` on `script-src` (WASM compile, not JS `eval()`). `build` stays `vp pack`. `build:wasm` needs wasm-capable clang (macOS: Homebrew llvm, not Apple clang). Sibling CI `wasm` job.
 - `Client` / `ClientBuilder` forward `verifyEvent`, `enablePing`, `pingIntervalMs`, and `pingTimeoutMs` to `Pool`. `verifyEvent` is `(event: Event) => boolean` and is called synchronously on EVENT. Ping stays off by default.
 - `Client.subscribe` and `subscribePrivateMessages` accept `eoseTimeoutMs` (no default). The timer fires `oneose` once; it does not close the subscription.
+- `NoSignerError` (`NostrError` subclass): thrown by a lazy AUTH sign function when no signer is configured at challenge time. `Relay` catches it and ignores the challenge — no AUTH frame, connection stays open.
+- `PoolOptions.maxRelays`: soft cap on connected non-pinned relays. At the cap, `ensureRelay` first closes the least-recently-used idle relay (no subscriptions, no in-flight requests); with none idle it still connects.
+- `PoolOptions.pinnedUrls` + `Pool.setPinnedUrls`: relays never closed by idle cleanup or `maxRelays` eviction.
+- `Relay.inFlightCount`: one-shot requests still awaiting a reply (publish ACK, COUNT, NEG); idle detection uses it alongside `subscriptionCount`.
+- `ClientOptions` / `ClientBuilder` forward `allowInsecure`, `trustedInsecureUrls`, `idleTimeoutMs`, `maxRelays`, and `pinnedUrls` to the pool. `Client.setSigner` accepts `undefined` to remove the signer.
 - `Pool.connectedUrls()` returns URLs whose relay is currently connected.
 - Blossom: `blobExists` (HEAD only; 2xx true, 404 false, other HTTP including 405 throws), `getBlob` (GET then sha256 verify), `healBlobUrl` (NIP-B7 SHOULD; uses the caller-supplied kind 10063 list for that author), `uploadToServers`.
 - `mergeCountHll`: register-wise max of NIP-45 HyperLogLog sketches. Empty input is 512 zero hex. Output is always lowercase 512 hex. No cardinality estimator. `Pool.count` does not auto-merge.
@@ -64,6 +69,8 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 - Pool `connectTimeoutMs` default is 5000.
 - `createEventLoader` batch fetches run in parallel.
 - `ClientError` for Client lifecycle (shutdown, no signer, no relays, abort).
+- BREAKING: `ClientOptions.automaticAuth` defaults to `true` regardless of signer presence. The AUTH sign function reads the current signer at challenge time, so `setSigner()` applies to already-connected relays; a challenge with no signer is ignored (previously automatic auth was only enabled when a signer was passed in the constructor).
+- BREAKING: `PoolOptions.allowInsecure` defaults to `false`. `ws://` relays are rejected by `ensureRelay` unless listed in `trustedInsecureUrls` or `setAllowInsecure(true)` is called (previously allowed by default).
 
 ### Removed
 

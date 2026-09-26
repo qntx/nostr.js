@@ -280,6 +280,7 @@ describe("serveFakeRelay over real ws", () => {
         .signer(new KeysSigner(keys))
         .relays([served.url])
         .websocketImplementation(globalThis.WebSocket as unknown as WebSocketConstructor)
+        .trustedInsecureUrls([served.url])
         .enableReconnect(false)
         .build();
       await client.connect();

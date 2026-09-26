@@ -52,6 +52,36 @@ export class ClientBuilder {
     return this;
   }
 
+  /** Allow `ws://` relays. Default false. */
+  allowInsecure(allow: boolean): this {
+    this.#opts = { ...this.#opts, allowInsecure: allow };
+    return this;
+  }
+
+  /** `ws://` URLs allowed despite `allowInsecure` being off. */
+  trustedInsecureUrls(urls: readonly string[]): this {
+    this.#opts = { ...this.#opts, trustedInsecureUrls: urls };
+    return this;
+  }
+
+  /** Close idle relays after this many ms. Unset = disabled. */
+  idleTimeoutMs(ms: number): this {
+    this.#opts = { ...this.#opts, idleTimeoutMs: ms };
+    return this;
+  }
+
+  /** Soft cap on connected non-pinned relays. */
+  maxRelays(n: number): this {
+    this.#opts = { ...this.#opts, maxRelays: n };
+    return this;
+  }
+
+  /** Relays never closed by idle cleanup or `maxRelays` eviction. */
+  pinnedUrls(urls: readonly string[]): this {
+    this.#opts = { ...this.#opts, pinnedUrls: urls };
+    return this;
+  }
+
   enableReconnect(enabled: boolean): this {
     this.#opts = { ...this.#opts, enableReconnect: enabled };
     return this;
