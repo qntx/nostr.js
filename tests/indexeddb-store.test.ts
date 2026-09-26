@@ -140,10 +140,7 @@ describe("IndexedDbEventStore", () => {
     await store.put(foreign);
     expect(await store.get(note.id)).toBeDefined();
 
-    const del = EventBuilder.deletion([], "gone", {
-      kinds: [0],
-      addresses: [`0:${keys.publicKey}:`],
-    })
+    const del = EventBuilder.deletion([{ address: `0:${keys.publicKey}:` }], "gone")
       .createdAt(15)
       .signWithKeys(keys);
     await store.put(del);
@@ -500,10 +497,7 @@ describe("IndexedDbEventStore", () => {
     await seedIdbV1("coord-leak", [meta1, meta2]);
     const store = new IndexedDbEventStore({ dbName: "coord-leak" });
     await store.open();
-    const del = EventBuilder.deletion([], "gone", {
-      kinds: [0],
-      addresses: [`0:${keys.publicKey}:`],
-    })
+    const del = EventBuilder.deletion([{ address: `0:${keys.publicKey}:` }], "gone")
       .createdAt(25)
       .signWithKeys(keys);
     expect(await store.put(del)).toBe("deleted");

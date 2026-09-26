@@ -2,7 +2,7 @@ import { EventValidationError } from "./error.ts";
 import type { Event, EventTemplate, UnsignedEvent } from "./event.ts";
 import { Kind, isAddressableKind, isReplaceableKind } from "./kind.ts";
 import { Keys, finalizeEvent } from "./key.ts";
-import { Tag, formatEventAddress, getDTag } from "./tag.ts";
+import { Tag, formatEventAddress, getDTag, parseEventAddress } from "./tag.ts";
 import { normalizeURL } from "./util.ts";
 
 function hasProtectedTag(event: Event): boolean {
@@ -64,19 +64,32 @@ export class EventBuilder {
     return b;
   }
 
+  /**
+   * Kind-5 deletion. Each target is a bare event id string (or
+   * `{ id, kind }`), or `{ address }` for a `kind:pubkey:d` coordinate.
+   * Known kinds are emitted as deduped `k` tags (NIP-09 SHOULD).
+   */
   static deletion(
-    ids: string[],
+    targets: readonly (string | { id: string; kind?: number } | { address: string })[],
     reason = "",
-    opts?: { kinds?: readonly number[]; addresses?: readonly string[] },
   ): EventBuilder {
     const b = new EventBuilder(Kind.EventDeletion, reason);
-    for (const id of ids) b.#tags.push(Tag.e(id));
-    if (opts?.kinds) {
-      for (const kind of opts.kinds) b.#tags.push(Tag.k(kind));
+    const kinds = new Set<number>();
+    for (const target of targets) {
+      if (typeof target === "string") {
+        b.#tags.push(Tag.e(target));
+        continue;
+      }
+      if ("address" in target) {
+        const parsed = parseEventAddress(target.address);
+        if (parsed) kinds.add(parsed.kind);
+        b.#tags.push(Tag.a(target.address));
+        continue;
+      }
+      b.#tags.push(Tag.e(target.id));
+      if (target.kind !== undefined) kinds.add(target.kind);
     }
-    if (opts?.addresses) {
-      for (const address of opts.addresses) b.#tags.push(Tag.a(address));
-    }
+    for (const kind of kinds) b.#tags.push(Tag.k(kind));
     return b;
   }
 

@@ -424,7 +424,7 @@ describe("issue #125", () => {
       .tag(["d", "z"])
       .createdAt(1)
       .signWithKeys(keys);
-    const del = EventBuilder.deletion([], "gone", { addresses: [coord] })
+    const del = EventBuilder.deletion([{ address: coord }], "gone")
       .createdAt(2)
       .signWithKeys(keys);
     const v3 = EventBuilder.textNote("after")
