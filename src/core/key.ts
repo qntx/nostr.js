@@ -101,13 +101,23 @@ function resolveSecretKeyBytes(secretKey: SecretKey | Uint8Array | string): Uint
   return secretKey;
 }
 
+function resolveSigningKey(secretKey: SecretKey | Uint8Array | string | Keys): {
+  bytes: Uint8Array;
+  publicKey?: PublicKey;
+} {
+  if (secretKey instanceof Keys) {
+    return { bytes: secretKey.secretKey.bytes, publicKey: secretKey.publicKey };
+  }
+  return { bytes: resolveSecretKeyBytes(secretKey) };
+}
+
 /** Fill pubkey/id/sig on a template and return a signed event. */
 export function finalizeEvent(
   template: EventTemplate,
-  secretKey: SecretKey | Uint8Array | string,
+  secretKey: SecretKey | Uint8Array | string | Keys,
 ): Event {
-  const sk = resolveSecretKeyBytes(secretKey);
-  const pubkey = bytesToHex(schnorr.getPublicKey(sk));
+  const { bytes: sk, publicKey } = resolveSigningKey(secretKey);
+  const pubkey = publicKey ?? bytesToHex(schnorr.getPublicKey(sk));
   const unsigned: UnsignedEvent = {
     kind: template.kind,
     tags: template.tags,
@@ -124,14 +134,14 @@ export function finalizeEvent(
  */
 export function signEvent(
   unsigned: UnsignedEvent,
-  secretKey: SecretKey | Uint8Array | string,
+  secretKey: SecretKey | Uint8Array | string | Keys,
 ): Event {
-  const sk = resolveSecretKeyBytes(secretKey);
+  const { bytes: sk, publicKey } = resolveSigningKey(secretKey);
   if (!validateEvent(unsigned)) {
     throw new CryptoError("cannot sign invalid unsigned event");
   }
 
-  const expected = bytesToHex(schnorr.getPublicKey(sk));
+  const expected = publicKey ?? bytesToHex(schnorr.getPublicKey(sk));
   if (unsigned.pubkey !== expected) {
     throw new CryptoError("unsigned event pubkey does not match secret key");
   }
