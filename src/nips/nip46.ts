@@ -7,7 +7,7 @@
 import { assertHex32, isHex32 } from "../core/util.ts";
 import { NostrError } from "../core/error.ts";
 
-export const BUNKER_REGEX = /^bunker:\/\/([0-9a-fA-F]{64})\??([?/\w:.=&%-]*)$/;
+export const BUNKER_REGEX: RegExp = /^bunker:\/\/([0-9a-fA-F]{64})\??([?/\w:.=&%-]*)$/;
 
 export type BunkerPointer = {
   /** Remote signer / bunker public key (hex). */

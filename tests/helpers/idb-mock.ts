@@ -49,12 +49,17 @@ export function installIdbMock(): IdbMock {
   };
 
   class MockKeyRange {
-    constructor(
-      readonly lower: unknown,
-      readonly upper: unknown,
-      readonly lowerOpen = false,
-      readonly upperOpen = false,
-    ) {}
+    readonly lower: unknown;
+    readonly upper: unknown;
+    readonly lowerOpen: boolean;
+    readonly upperOpen: boolean;
+
+    constructor(lower: unknown, upper: unknown, lowerOpen = false, upperOpen = false) {
+      this.lower = lower;
+      this.upper = upper;
+      this.lowerOpen = lowerOpen;
+      this.upperOpen = upperOpen;
+    }
     static bound(
       lower: unknown,
       upper: unknown,
@@ -90,11 +95,12 @@ export function installIdbMock(): IdbMock {
     #scheduled = false;
     #aborted = false;
     #backup = new Map<string, Map<string, Row>>();
+    private db: MockDb;
+    private names: string[] | "all";
 
-    constructor(
-      private db: MockDb,
-      private names: string[] | "all",
-    ) {
+    constructor(db: MockDb, names: string[] | "all") {
+      this.db = db;
+      this.names = names;
       const list = names === "all" ? db.storeNames() : names;
       for (const name of list) {
         const data = db.getStore(name);
@@ -190,11 +196,15 @@ export function installIdbMock(): IdbMock {
   }
 
   class MockIndex {
-    constructor(
-      private data: StoreData,
-      private keyPath: string | string[],
-      private tx: MockTx,
-    ) {}
+    private data: StoreData;
+    private keyPath: string | string[];
+    private tx: MockTx;
+
+    constructor(data: StoreData, keyPath: string | string[], tx: MockTx) {
+      this.data = data;
+      this.keyPath = keyPath;
+      this.tx = tx;
+    }
 
     openCursor(range?: MockKeyRange, direction: "next" | "prev" = "next") {
       return openCursor(
@@ -213,11 +223,15 @@ export function installIdbMock(): IdbMock {
   }
 
   class MockStore {
-    constructor(
-      private data: StoreData,
-      private tx: MockTx,
-      private name: string,
-    ) {}
+    private data: StoreData;
+    private tx: MockTx;
+    private name: string;
+
+    constructor(data: StoreData, tx: MockTx, name: string) {
+      this.data = data;
+      this.tx = tx;
+      this.name = name;
+    }
 
     createIndex(name: string, keyPath: string | string[]) {
       this.data.indexes.set(name, keyPath);
@@ -308,7 +322,11 @@ export function installIdbMock(): IdbMock {
       contains: (name: string) => this.rec.stores.has(name),
     };
 
-    constructor(private rec: PersistedDb) {}
+    private rec: PersistedDb;
+
+    constructor(rec: PersistedDb) {
+      this.rec = rec;
+    }
 
     getStore(name: string) {
       return this.rec.stores.get(name);

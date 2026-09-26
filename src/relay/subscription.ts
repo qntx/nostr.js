@@ -17,6 +17,7 @@ export type SubscriptionHandlers = {
   receivedEvent?: (id: string) => void;
 };
 
+/** Options for {@link Relay.subscribe}: event handlers plus REQ behavior. */
 export type SubscribeOptions = SubscriptionHandlers & {
   id?: string;
   /**
@@ -44,14 +45,12 @@ export class Subscription {
   /** Inclusive NIP-01 `since` watermark from verified EVENTs. */
   lastCreatedAt: number | undefined;
   /** Event ids at `lastCreatedAt` (same-second reconnect dedup). Not all seen ids. */
-  readonly idsAtWatermark = new Set<string>();
+  readonly idsAtWatermark: Set<string> = new Set();
+  readonly #sendClose: (id: string) => void;
   #abort: (() => void) | undefined;
 
-  constructor(
-    filters: Filter[],
-    opts: SubscribeOptions,
-    private readonly sendClose: (id: string) => void,
-  ) {
+  constructor(filters: Filter[], opts: SubscribeOptions, sendClose: (id: string) => void) {
+    this.#sendClose = sendClose;
     this.id = createSubscriptionId(opts.id);
     this.filters = filters;
     this.closeOnEose = opts.closeOnEose === true;
@@ -78,7 +77,7 @@ export class Subscription {
     if (this.closed) return;
     this.closed = true;
     this.#abort?.();
-    this.sendClose(this.id);
+    this.#sendClose(this.id);
     invokeSafely(() => this.handlers.onclose?.(reason));
   }
 

@@ -6,6 +6,7 @@ import { parseDmRelayList } from "../nips/nip17.ts";
 import { parseRelayList, type RelayListItem } from "../nips/nip65.ts";
 import { normalizeURL } from "../core/util.ts";
 
+/** Relay routing state for one pubkey: NIP-65 outbox/inbox plus NIP-17 DM relays. */
 export type PubkeyRoutes = {
   /** Relays the user writes to (outbox). NIP-65. */
   write: string[];
@@ -23,6 +24,7 @@ export type PubkeyRoutes = {
   dmListId?: string;
 };
 
+/** A filter split by gossip routes: per-relay narrowed filters plus the unrouted remainder. */
 export type RoutedFilter = {
   /** url → already-narrowed filter. Empty when nothing routed. */
   perRelay: Map<string, Filter>;
@@ -102,7 +104,7 @@ export class Gossip {
   setRoutes(
     pubkey: string,
     items: RelayListItem[],
-    updatedAt = Math.floor(Date.now() / 1000),
+    updatedAt: number = Math.floor(Date.now() / 1000),
     eventId?: string,
   ): boolean {
     const pk = pubkey.toLowerCase();
@@ -148,7 +150,7 @@ export class Gossip {
   setDmRoutes(
     pubkey: string,
     relays: readonly string[],
-    updatedAt = Math.floor(Date.now() / 1000),
+    updatedAt: number = Math.floor(Date.now() / 1000),
     eventId?: string,
   ): boolean {
     const pk = pubkey.toLowerCase();

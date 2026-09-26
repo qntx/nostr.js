@@ -5,8 +5,8 @@ import {
 import { HexError, UrlError } from "./error.ts";
 import { SECRET_KEY_BYTES } from "./limits.ts";
 
-export const utf8Encoder = new TextEncoder();
-export const utf8Decoder = new TextDecoder();
+export const utf8Encoder: TextEncoder = new TextEncoder();
+export const utf8Decoder: TextDecoder = new TextDecoder();
 
 const HEX32_RE = /^[0-9a-f]{64}$/;
 const HEX64_RE = /^[0-9a-f]{128}$/;

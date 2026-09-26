@@ -54,7 +54,7 @@ export class Nip05Error extends NostrError {
  * Matches optional local@domain.
  * Groups: 1=local (optional), 2=domain.
  */
-export const NIP05_REGEX = /^(?:([a-z0-9._-]+)@)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)$/i;
+export const NIP05_REGEX: RegExp = /^(?:([a-z0-9._-]+)@)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)$/i;
 
 export function isNip05(value: unknown): value is string {
   if (typeof value !== "string") return false;

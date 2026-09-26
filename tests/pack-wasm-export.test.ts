@@ -42,7 +42,7 @@ describe("package.json wasm publish", () => {
   });
 
   test("build:wasm fails closed when dist/*.wasm is missing", () => {
-    const script = readPkg().scripts["build:wasm"];
+    const script = readPkg().scripts["build:wasm"]!;
     expect(script).toBe(
       "bash scripts/build-wasm.sh && WASM_PACK=1 vp pack && ls dist/*.wasm >/dev/null",
     );
@@ -52,7 +52,7 @@ describe("package.json wasm publish", () => {
   });
 
   test("bun run build does not set WASM_PACK", () => {
-    const build = readPkg().scripts.build;
+    const build = readPkg().scripts.build!;
     expect(build).toBe("vp pack");
     expect(build.includes("WASM_PACK")).toBe(false);
     expect(build.includes("build:wasm")).toBe(false);

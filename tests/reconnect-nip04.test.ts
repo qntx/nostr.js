@@ -31,7 +31,7 @@ function reqFilters(ws: MockWebSocket): Array<[string, string, ...Record<string,
 
 class FailReqSocket extends MockWebSocket {
   static failNextReq = false;
-  send(data: string): void {
+  override send(data: string): void {
     const msg = JSON.parse(data) as unknown[];
     if (FailReqSocket.failNextReq && msg[0] === "REQ") {
       FailReqSocket.failNextReq = false;

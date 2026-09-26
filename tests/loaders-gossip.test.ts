@@ -204,7 +204,11 @@ describe("Gossip", () => {
   test("routes are LRU-bounded by maxPubkeys; lookups and writes refresh recency", () => {
     const gossip = new Gossip({ maxPubkeys: 3 });
     const items = [{ url: "wss://r.example", read: true, write: true }];
-    const [a, b, c, d, e] = ["a", "b", "c", "d", "e"].map((x) => x.repeat(64));
+    const a = "a".repeat(64);
+    const b = "b".repeat(64);
+    const c = "c".repeat(64);
+    const d = "d".repeat(64);
+    const e = "e".repeat(64);
     gossip.setRoutes(a, items, 1);
     gossip.setRoutes(b, items, 1);
     gossip.setRoutes(c, items, 1);

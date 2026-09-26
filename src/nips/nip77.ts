@@ -119,7 +119,7 @@ function encodeVarInt(n: number): EncodedBuf {
     value >>>= 7;
   }
   digits.reverse();
-  for (let i = 0; i < digits.length - 1; i++) digits[i] |= 128;
+  for (let i = 0; i < digits.length - 1; i++) digits[i]! |= 128;
   return new EncodedBuf(new Uint8Array(digits));
 }
 
@@ -271,7 +271,7 @@ export class Negentropy {
   #lastTimestampIn = 0;
   #lastTimestampOut = 0;
 
-  constructor(storage: NegentropyStorageVector, frameSizeLimit = DEFAULT_FRAME_SIZE_LIMIT) {
+  constructor(storage: NegentropyStorageVector, frameSizeLimit: number = DEFAULT_FRAME_SIZE_LIMIT) {
     if (frameSizeLimit !== 0 && frameSizeLimit < 4096) {
       throw new Nip77Error("frameSizeLimit too small");
     }
