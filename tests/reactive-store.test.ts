@@ -6,6 +6,8 @@ import { MemoryIndex } from "../src/storage/memory-index.ts";
 import { stubReportError } from "./helpers/report-error.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
+const SK2 = "0000000000000000000000000000000000000000000000000000000000000001";
+const SK3 = "0000000000000000000000000000000000000000000000000000000000000002";
 
 const keys = Keys.fromSecretKey(SK);
 
@@ -272,12 +274,12 @@ describe("ReactiveEventStore watches", () => {
 });
 
 describe("ReactiveEventStore LRU", () => {
-  test("evicts oldest beyond maxEvents, never watched or replaceable events", () => {
+  test("evicts oldest beyond maxEvents; watched survive, replaceable winners leave watermarks", () => {
     const store = new ReactiveEventStore({ maxEvents: 5 });
     const watched = note("watched", 0);
-    const replaceable = meta(1);
+    const profile = meta(1);
     store.add(watched);
-    store.add(replaceable);
+    store.add(profile);
     const watch = store.watchEvent(watched.id);
     watch.subscribe(() => {});
     watch.getSnapshot();
@@ -290,13 +292,52 @@ describe("ReactiveEventStore LRU", () => {
     }
 
     expect(store.size).toBeLessThanOrEqual(5);
-    // watched + replaceable survive regardless of recency
+    // watched survives regardless of recency
     expect(store.get(watched.id)?.id).toBe(watched.id);
-    expect(store.get(replaceable.id)?.id).toBe(replaceable.id);
+    // the replaceable winner was evicted; only its watermark remains
+    expect(store.get(profile.id)).toBeUndefined();
+    expect(store.getByAddress(`0:${keys.publicKey}:`)).toBeUndefined();
+    // stale versions stay rejected; re-adding the evicted winner re-inserts it
+    const older = EventBuilder.metadata({ name: "old" }).createdAt(0).signWithKeys(keys);
+    expect(store.add(older)).toBe("rejected");
+    expect(store.add(profile)).toBe("accepted");
+    expect(store.getByAddress(`0:${keys.publicKey}:`)?.id).toBe(profile.id);
     // oldest unwatched regular events are gone
     expect(store.get(rest[0]!.id)).toBeUndefined();
     // eviction does not tombstone
     expect(store.isDeleted(rest[0]!.id)).toBe(false);
+  });
+
+  test("maxEvents 2 keeps evicting kind-0 profiles of different pubkeys; pinned survive", () => {
+    const k1 = Keys.fromSecretKey(SK);
+    const k2 = Keys.fromSecretKey(SK2);
+    const k3 = Keys.fromSecretKey(SK3);
+    const profile = (k: Keys, t: number) =>
+      EventBuilder.metadata({ name: `n${t}` })
+        .createdAt(t)
+        .signWithKeys(k);
+
+    const store = new ReactiveEventStore({ maxEvents: 2 });
+    const p1 = profile(k1, 1);
+    const p2 = profile(k2, 1);
+    const p3 = profile(k3, 1);
+    store.add(p1);
+    // pin k1's profile via a subscribed watchReplaceable snapshot
+    const watch = store.watchReplaceable(0, k1.publicKey);
+    watch.subscribe(() => {});
+    watch.getSnapshot();
+
+    store.add(p2); // just-inserted: protected for this pass
+    store.add(p3); // now p2 is the oldest unpinned entry and is evicted
+    expect(store.size).toBe(2);
+    expect(store.get(p2.id)).toBeUndefined();
+    expect(store.getByAddress(`0:${k2.publicKey}:`)).toBeUndefined();
+    expect(store.get(p1.id)?.id).toBe(p1.id);
+    expect(store.get(p3.id)?.id).toBe(p3.id);
+
+    // watermark: an older p2 version is rejected, the same id re-inserts
+    expect(store.add(profile(k2, 0))).toBe("rejected");
+    expect(store.add(p2)).toBe("accepted");
   });
 
   test("recent access protects events from eviction", () => {
@@ -496,5 +537,94 @@ describe("MemoryIndex maxTombstones (issue #134)", () => {
       .createdAt(5)
       .signWithKeys(keys);
     expect(index.put(stale)).toBe("accepted");
+  });
+});
+
+describe("MemoryIndex winner watermarks (issue #136)", () => {
+  const addr = `30001:${keys.publicKey}:w`;
+  const article = (d: string, t: number) =>
+    EventBuilder.textNote(`v${t}`).kind(30001).tag(["d", d]).createdAt(t).signWithKeys(keys);
+
+  test("evicted winner leaves a watermark: older rejected, newer accepted, same id re-inserted", () => {
+    const index = new MemoryIndex({ maxWatermarks: 10 });
+    const v1 = article("w", 1);
+    const v2 = article("w", 2);
+    const v3 = article("w", 3);
+    expect(index.put(v2)).toBe("accepted");
+    index.evict([v2.id]);
+    // only the watermark remains
+    expect(index.get(v2.id)).toBeUndefined();
+    expect(index.getByAddress(addr)).toBeUndefined();
+    // older than the watermark → rejected
+    expect(index.put(v1)).toBe("rejected");
+    // the watermarked id itself re-inserts
+    expect(index.put(v2)).toBe("accepted");
+    expect(index.getByAddress(addr)?.id).toBe(v2.id);
+    // evict again, then a newer version wins and drops the watermark
+    index.evict([v2.id]);
+    expect(index.put(v3)).toBe("accepted");
+    expect(index.getByAddress(addr)?.id).toBe(v3.id);
+  });
+
+  test("remove() drops a matching watermark", () => {
+    const index = new MemoryIndex({ maxWatermarks: 10 });
+    const v1 = article("w", 1);
+    const v2 = article("w", 2);
+    index.put(v2);
+    index.evict([v2.id]);
+    index.remove([v2.id]);
+    // without the watermark the older version is accepted again
+    expect(index.put(v1)).toBe("accepted");
+    expect(index.getByAddress(addr)?.id).toBe(v1.id);
+  });
+
+  test("a kind-5 e-tag deletion drops the winner's watermark", () => {
+    const index = new MemoryIndex({ maxWatermarks: 10 });
+    const v1 = article("w", 1);
+    const v2 = article("w", 2);
+    index.put(v2);
+    index.evict([v2.id]);
+    index.put(kind5([v2], 3));
+    expect(index.put(v1)).toBe("accepted");
+  });
+
+  test("clear() drops all watermarks", () => {
+    const index = new MemoryIndex({ maxWatermarks: 10 });
+    const v1 = article("w", 1);
+    const v2 = article("w", 2);
+    index.put(v2);
+    index.evict([v2.id]);
+    index.clear();
+    expect(index.put(v1)).toBe("accepted");
+  });
+
+  test("watermarks trim FIFO; the oldest evicted winner can be re-accepted", () => {
+    const index = new MemoryIndex({ maxWatermarks: 2 });
+    const a1 = article("a", 1);
+    const a2 = article("a", 2);
+    const b1 = article("b", 1);
+    const b2 = article("b", 2);
+    const c1 = article("c", 1);
+    const c2 = article("c", 2);
+    index.put(a2);
+    index.put(b2);
+    index.put(c2);
+    index.evict([a2.id]);
+    index.evict([b2.id]);
+    index.evict([c2.id]); // exceeds the cap → "a" watermark trimmed
+    expect(index.put(a1)).toBe("accepted");
+    expect(index.put(b1)).toBe("rejected");
+    expect(index.put(c1)).toBe("rejected");
+  });
+
+  test("a stale version rejected while stored stays rejected via the watermark", () => {
+    const index = new MemoryIndex({ maxWatermarks: 10 });
+    const v1 = article("w", 1);
+    const v2 = article("w", 2);
+    index.put(v2);
+    expect(index.put(v1)).toBe("rejected");
+    index.evict([v1.id, v2.id]); // v1 was never stored; v2's winner watermark remains
+    expect(index.put(v1)).toBe("rejected");
+    expect(index.put(v2)).toBe("accepted");
   });
 });
