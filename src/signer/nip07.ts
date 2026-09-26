@@ -2,6 +2,7 @@ import type { Event, EventTemplate, UnsignedEvent } from "../core/event.ts";
 import { signedMatchesUnsigned, validateSignedEvent } from "../core/event.ts";
 import { CryptoError } from "../core/error.ts";
 import { verifyEvent } from "../core/key.ts";
+import { assertHex32 } from "../core/util.ts";
 import type { NostrSigner } from "./types.ts";
 
 /**
@@ -59,10 +60,13 @@ export class Nip07Signer implements NostrSigner {
 
   async getPublicKey(): Promise<string> {
     const pk = await this.#resolve().getPublicKey();
-    if (typeof pk !== "string" || pk.length !== 64) {
-      throw new CryptoError("NIP-07 getPublicKey returned an invalid pubkey");
+    try {
+      return assertHex32(pk, "pubkey");
+    } catch (err) {
+      throw new CryptoError("NIP-07 getPublicKey returned an invalid pubkey", {
+        cause: err instanceof Error ? err : undefined,
+      });
     }
-    return pk.toLowerCase();
   }
 
   async signEvent(unsigned: UnsignedEvent): Promise<Event> {
