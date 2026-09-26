@@ -108,8 +108,11 @@ Version is `0.1.0`. `0.0.1` was the local `npm publish`. Tag `v0.1.0` runs `publ
 - `MemoryIndexOptions.maxTombstones` now bounds all three deletion-state collections — tombstoned event ids, pending e-tag ids, and coordinate tombstones — each FIFO by insertion (re-absorbing a coordinate moves it to the newest end). `ReactiveEventStore` keeps its 100_000 default, now applied to all three; `MemoryEventStore` stays unbounded. After trimming, an old deleted event or replaceable version can be re-accepted (#134).
 - NIP-10 `buildReplyTags` omits the root `e` tag pubkey hint when the root author is unknown instead of falling back to the parent's pubkey (#132).
 - `tests/fixtures/nip44.vectors.json` is the official vector file (sha256 matches the checksum published in 44.md) and the suite consumes `valid.get_message_keys`, `valid.encrypt_decrypt_long_msg`, the extended-prefix boundary table, and all `invalid.*` entries (#132).
+- TypeScript strictness: `tsconfig` enables `erasableSyntaxOnly`, `noUncheckedIndexedAccess`, `noImplicitOverride`, and `isolatedDeclarations`; every root export carries a one-line TSDoc summary. `check:pkg` (`WASM_PACK=1 vp pack && publint && attw --pack . --profile esm-only`) validates the published package and runs at the end of `build:wasm` (the `./wasm` export is always declared, so the check needs the wasm dist entry; `prepublishOnly` stays exactly `bun run build:wasm` for the setup-wasm reusable workflow). Refs #126.
 
 ### Removed
+
+- **BREAKING**: `isMarkedVerified`, `utf8Encoder`, and `utf8Decoder` are no longer exported from the root entry or `./core`; `cloneFilter` is deleted (it had no callers). Internal users import from `core/util.ts`/`core/event.ts` directly. Refs #126.
 
 - **BREAKING**: Loader internals are no longer exported: `DataLoader`, `LoaderError`, `LoaderContext`, `LoaderContextOptions`, `ReplaceableCache`, `createReplaceableLoader`, `createListLoaders`, `createProfileLoader`, and `createEventLoader` are internal to `src/loaders/`; `Loaders.context` is gone. Refs #136.
 - Dual-key DM kinds 10044 / 4454 / 4455.
