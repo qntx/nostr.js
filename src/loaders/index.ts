@@ -1,26 +1,20 @@
+import type { Event } from "../core/event.ts";
 import type { Pool } from "../relay/pool.ts";
+import type { ReactiveEventStore } from "../store/reactive.ts";
 import { LoaderContext } from "./context.ts";
 import { createEventLoader } from "./event.ts";
 import { createListLoaders } from "./lists.ts";
 import { createProfileLoader } from "./profile.ts";
-import type { ReplaceableCache } from "./cache.ts";
+import { createReplaceableLoader, type ReplaceableLoader } from "./replaceable.ts";
 
-export { DataLoader, LoaderError } from "./dataloader.ts";
-export { ReplaceableCache } from "./cache.ts";
-export { LoaderContext, type LoaderContextOptions } from "./context.ts";
 export {
-  createReplaceableLoader,
   type LoadStyle,
+  type ReplaceableLoader,
   type ReplaceableLoadResult,
 } from "./replaceable.ts";
-export { createListLoaders, type ListResult, type ListLoaders, type MutedEntity } from "./lists.ts";
-export {
-  createProfileLoader,
-  bareNostrUser,
-  type NostrUser,
-  type ProfileLoader,
-} from "./profile.ts";
-export { createEventLoader, type EventLoader, type EventRef } from "./event.ts";
+export { type ListResult, type ListLoaders, type MutedEntity } from "./lists.ts";
+export { bareNostrUser, type NostrUser, type ProfileLoader } from "./profile.ts";
+export { type EventLoader, type EventRef } from "./event.ts";
 export {
   OutboxError,
   OutboxFeed,
@@ -35,19 +29,29 @@ import type { ProfileLoader } from "./profile.ts";
 import type { EventLoader } from "./event.ts";
 
 export type Loaders = {
-  context: LoaderContext;
   follows: ListLoaders["follows"];
   muteList: ListLoaders["muteList"];
   relayList: ListLoaders["relayList"];
   dmRelayList: ListLoaders["dmRelayList"];
   profile: ProfileLoader["load"];
   event: EventLoader["load"];
+  /** Generic replaceable loader for any kind; memoized per kind. */
+  replaceable: (kind: number) => ReplaceableLoader;
+  addRelay(url: string): void;
+  removeRelay(url: string): void;
 };
 
 export type CreateLoadersOptions = {
   pool: Pool;
   relays: readonly string[];
-  cache?: ReplaceableCache;
+  /** The reactive index loaders read from and feed fetched events into. */
+  index: ReactiveEventStore;
+  /**
+   * Inbound-event sink for fetched events; defaults to `index.add`. Client
+   * wires its single ingest path so loader fetches get gossip meta and
+   * persistence like every other inbound event.
+   */
+  ingest?: (event: Event, relayUrl: string) => void;
   staleAfterSec?: number;
   fetchTimeoutMs?: number;
 };
@@ -55,16 +59,27 @@ export type CreateLoadersOptions = {
 /** Build an instance-scoped loader suite (no module globals). */
 export function createLoaders(opts: CreateLoadersOptions): Loaders {
   const context = new LoaderContext(opts);
-  const lists = createListLoaders(context);
-  const profile = createProfileLoader(context);
+  const byKind = new Map<number, ReplaceableLoader>();
+  const replaceable = (kind: number): ReplaceableLoader => {
+    let loader = byKind.get(kind);
+    if (loader === undefined) {
+      loader = createReplaceableLoader(context, kind);
+      byKind.set(kind, loader);
+    }
+    return loader;
+  };
+  const lists = createListLoaders(replaceable);
+  const profile = createProfileLoader(replaceable);
   const event = createEventLoader(context);
   return {
-    context,
     follows: (pubkey, o) => lists.follows(pubkey, o),
     muteList: (pubkey, o) => lists.muteList(pubkey, o),
     relayList: (pubkey, o) => lists.relayList(pubkey, o),
     dmRelayList: (pubkey, o) => lists.dmRelayList(pubkey, o),
     profile: (pubkey, o) => profile.load(pubkey, o),
     event: (ref) => event.load(ref),
+    replaceable,
+    addRelay: (url) => context.addRelay(url),
+    removeRelay: (url) => context.removeRelay(url),
   };
 }

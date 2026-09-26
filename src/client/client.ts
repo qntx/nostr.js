@@ -1,7 +1,6 @@
 import { EventBuilder } from "../core/builder.ts";
 import { sortedEvents, type Event, type EventTemplate, type UnsignedEvent } from "../core/event.ts";
 import { canonicalizeFilters, matchFilters, type Filter } from "../core/filter.ts";
-import { Kind } from "../core/kind.ts";
 import { normalizeURL } from "../core/util.ts";
 import { throwIfAborted } from "../core/abort.ts";
 import { invokeSafely } from "../core/report.ts";
@@ -107,6 +106,8 @@ export class Client {
     this.loaders = createLoaders({
       pool: this.pool,
       relays: this.#relays,
+      index: this.index,
+      ingest: (event, relayUrl) => this.#ingest(event, relayUrl),
     });
   }
 
@@ -136,14 +137,14 @@ export class Client {
     const normalized = normalizeURL(url);
     if (!this.#relays.includes(normalized)) {
       this.#relays.push(normalized);
-      this.loaders.context.addRelay(normalized);
+      this.loaders.addRelay(normalized);
     }
   }
 
   removeRelay(url: string): void {
     const normalized = normalizeURL(url);
     this.#relays = this.#relays.filter((r) => r !== normalized);
-    this.loaders.context.removeRelay(normalized);
+    this.loaders.removeRelay(normalized);
     this.pool.close([normalized]);
   }
 
@@ -159,7 +160,6 @@ export class Client {
     this.#shutdown = true;
     while (this.#flushing) await this.#flushing;
     this.pool.close();
-    this.loaders.context.cache.clear();
   }
 
   #assertAlive(): void {
@@ -193,8 +193,8 @@ export class Client {
 
   /**
    * The single inbound-event pipeline: reactive index add (with the source
-   * relay URL recorded in seenOn), gossip + replaceable loader cache meta,
-   * then the persistence decision. `persist: false` skips the storage queue
+   * relay URL recorded in seenOn), gossip routing meta, then the
+   * persistence decision. `persist: false` skips the storage queue
    * for callers that persist via their own awaited `putMany` (down-sync);
    * `meta: false` is a pure sighting/index add.
    */
@@ -213,15 +213,6 @@ export class Client {
 
   #ingestMeta(event: Event): void {
     this.gossip.ingest(event);
-    if (
-      event.kind === Kind.Metadata ||
-      event.kind === Kind.Contacts ||
-      event.kind === Kind.MuteList ||
-      event.kind === Kind.RelayList ||
-      event.kind === Kind.DirectMessageRelaysList
-    ) {
-      this.loaders.context.cache.putIfNewer(event);
-    }
   }
 
   #armFlush(): void {

@@ -1,6 +1,14 @@
 import { describe, expect, test } from "vite-plus/test";
-import { EventBuilder, Keys, Pool, naddrEncode, type Filter } from "../src/index.ts";
-import { createEventLoader, LoaderContext } from "../src/loaders/index.ts";
+import {
+  EventBuilder,
+  Keys,
+  Pool,
+  ReactiveEventStore,
+  naddrEncode,
+  type Filter,
+} from "../src/index.ts";
+import { LoaderContext } from "../src/loaders/context.ts";
+import { createEventLoader } from "../src/loaders/event.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
 const ID1 = "11".repeat(32);
@@ -36,6 +44,15 @@ function idsOf(filters: Filter[]): string[] {
   return [...ids];
 }
 
+function makeCtx(pool: Pool, relays: string[] = [RELAY]): LoaderContext {
+  return new LoaderContext({
+    pool,
+    relays,
+    index: new ReactiveEventStore(),
+    fetchTimeoutMs: FETCH_TIMEOUT_MS,
+  });
+}
+
 describe("createEventLoader overlapping fetches", () => {
   test("two distinct ids load()ed in one tick overlap fetches", async () => {
     expect(ID1).not.toBe(ID2);
@@ -58,9 +75,7 @@ describe("createEventLoader overlapping fetches", () => {
         inflight -= 1;
       }
     };
-    const loader = createEventLoader(
-      new LoaderContext({ pool, relays: [RELAY], fetchTimeoutMs: FETCH_TIMEOUT_MS }),
-    );
+    const loader = createEventLoader(makeCtx(pool));
 
     const p1 = loader.load(ID1);
     const p2 = loader.load(ID2);
@@ -101,9 +116,7 @@ describe("createEventLoader overlapping fetches", () => {
         inflight -= 1;
       }
     };
-    const loader = createEventLoader(
-      new LoaderContext({ pool, relays: [RELAY], fetchTimeoutMs: FETCH_TIMEOUT_MS }),
-    );
+    const loader = createEventLoader(makeCtx(pool));
 
     const p1 = loader.load(ID1);
     const p2 = loader.load({ id: ID1, relays: ["wss://hint.example"] });
@@ -116,7 +129,7 @@ describe("createEventLoader overlapping fetches", () => {
     expect(inflight).toBe(0);
   });
 
-  test("hints change relay URLs not cache identity", async () => {
+  test("hints change relay URLs; a miss is never cached", async () => {
     const pool = new Pool();
     const seen: string[][] = [];
     let fetchCalls = 0;
@@ -125,29 +138,33 @@ describe("createEventLoader overlapping fetches", () => {
       seen.push([...relays]);
       return [];
     };
-    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
+    const loader = createEventLoader(makeCtx(pool));
     const hint = "wss://hint.example";
     expect(await loader.load({ id: ID1, relays: [hint] })).toBeUndefined();
     expect(fetchCalls).toBe(1);
     expect(seen).toEqual([[hint, RELAY]]);
     expect(await loader.load(ID1)).toBeUndefined();
-    expect(fetchCalls).toBe(1);
+    expect(fetchCalls).toBe(2);
+    expect(seen).toEqual([[hint, RELAY], [RELAY]]);
   });
 
-  test("resolved miss is cached; clearAll fetches again", async () => {
+  test("a miss does not block a later fetch from resolving", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const event = EventBuilder.textNote("late").createdAt(1).signWithKeys(keys);
     const pool = new Pool();
     let fetchCalls = 0;
-    pool.fetch = async () => {
+    pool.fetch = async (_relays, _filters, opts) => {
       fetchCalls += 1;
+      if (fetchCalls > 1) opts?.onevent?.(event, RELAY);
       return [];
     };
-    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
-    expect(await loader.load(ID1)).toBeUndefined();
+    const loader = createEventLoader(makeCtx(pool));
+    expect(await loader.load(event.id)).toBeUndefined();
     expect(fetchCalls).toBe(1);
-    expect(await loader.load(ID1)).toBeUndefined();
-    expect(fetchCalls).toBe(1);
-    loader.clearAll();
-    expect(await loader.load(ID1)).toBeUndefined();
+    expect((await loader.load(event.id))?.id).toBe(event.id);
+    expect(fetchCalls).toBe(2);
+    // Now the index holds it — no further fetch needed.
+    expect(await loader.load(event.id)).toEqual(event);
     expect(fetchCalls).toBe(2);
   });
 
@@ -168,7 +185,7 @@ describe("createEventLoader overlapping fetches", () => {
         inflight -= 1;
       }
     };
-    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
+    const loader = createEventLoader(makeCtx(pool));
 
     expect(await loader.load(ID1)).toBeUndefined();
     expect(inflight).toBe(0);
@@ -185,7 +202,7 @@ describe("createEventLoader overlapping fetches", () => {
       fetchCalls += 1;
       return [];
     };
-    const loader = createEventLoader(new LoaderContext({ pool, relays: [] }));
+    const loader = createEventLoader(makeCtx(pool, []));
     expect(await loader.load(ID1)).toBeUndefined();
     expect(fetchCalls).toBe(0);
   });
@@ -197,31 +214,29 @@ describe("createEventLoader overlapping fetches", () => {
       seen.push([...relays]);
       return [];
     };
-    const loader = createEventLoader(new LoaderContext({ pool, relays: [] }));
+    const loader = createEventLoader(makeCtx(pool, []));
     const hint = "wss://hint.example";
     expect(await loader.load({ id: ID1, relays: [hint] })).toBeUndefined();
     expect(seen).toEqual([[hint]]);
   });
 
-  test("picks newest created_at when older is listed first", async () => {
+  test("index winner selection: newer version of an addressable ref wins", async () => {
     const keys = Keys.fromSecretKey(SK);
-    const older = EventBuilder.textNote("old").createdAt(1).signWithKeys(keys);
-    const newer = EventBuilder.textNote("new").createdAt(99).signWithKeys(keys);
-    expect(older.created_at).toBe(1);
-    expect(newer.created_at).toBe(99);
-    expect(older.id).not.toBe(newer.id);
+    const older = new EventBuilder(30023, "old").tag(["d", "x"]).createdAt(1).signWithKeys(keys);
+    const newer = new EventBuilder(30023, "new").tag(["d", "x"]).createdAt(99).signWithKeys(keys);
 
     const pool = new Pool();
     let fetchCalls = 0;
-    pool.fetch = async (_relays, filters) => {
+    pool.fetch = async (_relays, _filters, opts) => {
       fetchCalls += 1;
-      expect(idsOf(filters)).toEqual([older.id]);
+      opts?.onevent?.(older, RELAY);
+      opts?.onevent?.(newer, RELAY);
       return [older, newer];
     };
-    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
-    const result = await loader.load(older.id);
+    const loader = createEventLoader(makeCtx(pool));
+    const result = await loader.load({ kind: 30023, pubkey: keys.publicKey, identifier: "x" });
     expect(fetchCalls).toBe(1);
-    expect(result).toEqual(newer);
+    expect(result?.id).toBe(newer.id);
   });
 
   test("empty pool.fetch result is undefined", async () => {
@@ -231,7 +246,7 @@ describe("createEventLoader overlapping fetches", () => {
       fetchCalls += 1;
       return [];
     };
-    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
+    const loader = createEventLoader(makeCtx(pool));
     expect(await loader.load(ID1)).toBeUndefined();
     expect(fetchCalls).toBe(1);
   });
@@ -244,7 +259,7 @@ describe("createEventLoader overlapping fetches", () => {
       fetchCalls += 1;
       throw boom;
     };
-    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
+    const loader = createEventLoader(makeCtx(pool));
     const err = await captureError(loader.load(ID1));
     expect(fetchCalls).toBe(1);
     expect(err).toBe(boom);
@@ -263,7 +278,7 @@ describe("createEventLoader overlapping fetches", () => {
       seen.push(f);
       return [];
     };
-    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
+    const loader = createEventLoader(makeCtx(pool));
     const pubkey = keys.publicKey;
     expect(await loader.load({ kind: 30023, pubkey, identifier: "" })).toBeUndefined();
     expect(seen).toHaveLength(1);
@@ -272,7 +287,6 @@ describe("createEventLoader overlapping fetches", () => {
     expect(seen[0]!.authors).toEqual([pubkey.toLowerCase()]);
     expect(seen[0]!.kinds).toEqual([30023]);
 
-    loader.clearAll();
     const naddr = naddrEncode({ kind: 30023, pubkey, identifier: "" });
     expect(await loader.load(naddr)).toBeUndefined();
     expect(seen).toHaveLength(2);
@@ -292,7 +306,7 @@ describe("createEventLoader overlapping fetches", () => {
       seen.push(f);
       return [];
     };
-    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
+    const loader = createEventLoader(makeCtx(pool));
     const pubkey = keys.publicKey;
     expect(await loader.load({ kind: 0, pubkey, identifier: "" })).toBeUndefined();
     expect(seen).toHaveLength(1);
@@ -307,7 +321,6 @@ describe("createEventLoader overlapping fetches", () => {
     expect(seen[1]!["#d"]).toBeUndefined();
     expect(seen[1]!.kinds).toEqual([0]);
 
-    loader.clearAll();
     const naddr = naddrEncode({ kind: 0, pubkey, identifier: "" });
     expect(await loader.load(naddr)).toBeUndefined();
     expect(seen).toHaveLength(3);
@@ -317,27 +330,25 @@ describe("createEventLoader overlapping fetches", () => {
     expect(seen[2]!.kinds).toEqual([0]);
   });
 
-  test("two events same created_at, lower id wins", async () => {
+  test("two addressable versions same created_at, lower id wins", async () => {
     const keys = Keys.fromSecretKey(SK);
-    const a = EventBuilder.textNote("a").createdAt(50).signWithKeys(keys);
-    const b = EventBuilder.textNote("b").createdAt(50).signWithKeys(keys);
-    expect(a.created_at).toBe(50);
-    expect(b.created_at).toBe(50);
+    const a = new EventBuilder(30023, "a").tag(["d", "x"]).createdAt(50).signWithKeys(keys);
+    const b = new EventBuilder(30023, "b").tag(["d", "x"]).createdAt(50).signWithKeys(keys);
     expect(a.id).not.toBe(b.id);
     const winner = a.id < b.id ? a : b;
     const loser = a.id < b.id ? b : a;
-    expect(loser.id > winner.id).toBe(true);
 
     const pool = new Pool();
     let fetchCalls = 0;
-    pool.fetch = async () => {
+    pool.fetch = async (_relays, _filters, opts) => {
       fetchCalls += 1;
+      opts?.onevent?.(loser, RELAY);
+      opts?.onevent?.(winner, RELAY);
       return [loser, winner];
     };
-    const loader = createEventLoader(new LoaderContext({ pool, relays: [RELAY] }));
-    const result = await loader.load(loser.id);
+    const loader = createEventLoader(makeCtx(pool));
+    const result = await loader.load({ kind: 30023, pubkey: keys.publicKey, identifier: "x" });
     expect(fetchCalls).toBe(1);
-    expect(result).toEqual(winner);
     expect(result?.id).toBe(winner.id);
   });
 });

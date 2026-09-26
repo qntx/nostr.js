@@ -1,22 +1,31 @@
+import type { Event } from "../core/event.ts";
 import type { Pool } from "../relay/pool.ts";
-import { ReplaceableCache } from "./cache.ts";
+import type { ReactiveEventStore } from "../store/reactive.ts";
 
 export type LoaderContextOptions = {
   pool: Pool;
   /** Fallback / discovery relays when no per-user routing is known. */
   relays: readonly string[];
-  cache?: ReplaceableCache;
-  /** Max age (seconds) before a cached replaceable is considered stale. Default 2 days. */
+  /** The reactive index loaders read from and feed fetched events into. */
+  index: ReactiveEventStore;
+  /**
+   * Inbound-event sink for fetched events. Defaults to `index.add`; Client
+   * supplies its single ingest path so loader fetches get gossip meta and
+   * persistence like every other inbound event.
+   */
+  ingest?: (event: Event, relayUrl: string) => void;
+  /** Max age (seconds) before a fetched replaceable is considered stale. Default 2 days. */
   staleAfterSec?: number;
   fetchTimeoutMs?: number;
 };
 
 /**
- * Explicit dependency bag for loaders — never a module-level singleton.
+ * Internal dependency bag for loaders — never a module-level singleton.
  */
 export class LoaderContext {
   readonly pool: Pool;
-  readonly cache: ReplaceableCache;
+  readonly index: ReactiveEventStore;
+  readonly ingest: (event: Event, relayUrl: string) => void;
   readonly staleAfterSec: number;
   readonly fetchTimeoutMs: number;
   #relays: string[];
@@ -24,7 +33,8 @@ export class LoaderContext {
   constructor(opts: LoaderContextOptions) {
     this.pool = opts.pool;
     this.#relays = [...opts.relays];
-    this.cache = opts.cache ?? new ReplaceableCache();
+    this.index = opts.index;
+    this.ingest = opts.ingest ?? ((event, relayUrl) => this.index.add(event, relayUrl));
     this.staleAfterSec = opts.staleAfterSec ?? 60 * 60 * 24 * 2;
     this.fetchTimeoutMs = opts.fetchTimeoutMs ?? 4400;
   }

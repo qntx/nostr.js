@@ -205,15 +205,13 @@ export {
   OutboxFeed,
   groupAuthorsByOutboxRelay,
   bareNostrUser,
-  DataLoader,
-  LoaderError,
-  LoaderContext,
-  ReplaceableCache,
   type Loaders,
   type ListResult,
   type NostrUser,
   type MutedEntity,
   type LoadStyle,
+  type ReplaceableLoader,
+  type ReplaceableLoadResult,
   type OutboxFeedOptions,
 } from "./loaders/index.ts";
 export { Gossip, type RoutedFilter, type PubkeyRoutes } from "./gossip/index.ts";

@@ -6,11 +6,14 @@ import {
   Keys,
   Kind,
   Pool,
+  ReactiveEventStore,
   createLoaders,
   relayListEventBuilder,
   useWebSocketImplementation,
 } from "../src/index.ts";
 import { dmRelayListEventBuilder, parseDmRelayList } from "../src/nips/nip17.ts";
+import { normalizeURL } from "../src/core/util.ts";
+import { createFakeRelayNetwork } from "../src/testing/index.ts";
 import { MockWebSocket, MockWebSocketCtor } from "./helpers/mock-ws.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
@@ -48,6 +51,15 @@ function respondReplaceables(
       resolve();
     }, 15);
   });
+}
+
+async function waitUntil(pred: () => boolean, timeoutMs = 500): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (pred()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("timeout waiting for condition");
 }
 
 describe("Gossip", () => {
@@ -188,6 +200,30 @@ describe("Gossip", () => {
     expect(orphan.perRelay.size).toBe(0);
     expect(orphan.remainder?.authors).toEqual([Keys.fromSecretKey(SK2).publicKey]);
   });
+
+  test("routes are LRU-bounded by maxPubkeys; lookups and writes refresh recency", () => {
+    const gossip = new Gossip({ maxPubkeys: 3 });
+    const items = [{ url: "wss://r.example", read: true, write: true }];
+    const [a, b, c, d, e] = ["a", "b", "c", "d", "e"].map((x) => x.repeat(64));
+    gossip.setRoutes(a, items, 1);
+    gossip.setRoutes(b, items, 1);
+    gossip.setRoutes(c, items, 1);
+    // a lookup moves "a" to the newest end
+    expect(gossip.outboxRelays(a)).toEqual(["wss://r.example/"]);
+    // inserting "d" drops the oldest ("b")
+    gossip.setRoutes(d, items, 1);
+    expect(gossip.size).toBe(3);
+    expect(gossip.getRoutes(b)).toBeUndefined();
+    expect(gossip.getRoutes(a)).toBeDefined(); // this lookup refreshes "a"
+    // a setDmRoutes write also refreshes recency; order is now d, a, c
+    gossip.setDmRoutes(c, ["wss://dm.example"], 2);
+    gossip.setRoutes(e, items, 1);
+    expect(gossip.size).toBe(3);
+    expect(gossip.getRoutes(d)).toBeUndefined();
+    expect(gossip.getRoutes(c)?.dm).toEqual(["wss://dm.example/"]);
+    expect(gossip.getRoutes(a)).toBeDefined();
+    expect(gossip.getRoutes(e)).toBeDefined();
+  });
 });
 
 describe("Loaders", () => {
@@ -206,6 +242,7 @@ describe("Loaders", () => {
     const loaders = createLoaders({
       pool,
       relays: ["wss://idx.example"],
+      index: new ReactiveEventStore(),
     });
 
     const followsP = loaders.follows(keys.publicKey);
@@ -272,12 +309,9 @@ describe("Loaders", () => {
     expect(client.gossip.dmRelays(keys.publicKey).some((u) => u.includes("dm-a.example"))).toBe(
       true,
     );
-    expect(
-      client.loaders.context.cache.get({
-        kind: Kind.DirectMessageRelaysList,
-        pubkey: keys.publicKey,
-      })?.event?.id,
-    ).toBe(dm.id);
+    expect(client.index.getReplaceable(Kind.DirectMessageRelaysList, keys.publicKey)?.id).toBe(
+      dm.id,
+    );
 
     await client.shutdown();
   });
@@ -308,5 +342,206 @@ describe("Loaders", () => {
     expect(client.gossip.dmRelays(keys.publicKey).some((u) => u.includes("dm.example"))).toBe(true);
 
     await client.shutdown();
+  });
+});
+
+describe("loaders on the reactive index (issue #136)", () => {
+  test("a profile arriving via subscribe is returned by profile cache-only", async () => {
+    const net = createFakeRelayNetwork();
+    try {
+      const client = Client.builder()
+        .relays(["wss://idx.example"])
+        .websocketImplementation(net.websocketImplementation)
+        .enableReconnect(false)
+        .build();
+      const keys = Keys.fromSecretKey(SK);
+      const meta = EventBuilder.metadata({ name: "alice" }).createdAt(3).signWithKeys(keys);
+      net.relay("wss://idx.example").seed([meta]);
+
+      const closer = client.subscribe({ kinds: [0], authors: [keys.publicKey] });
+      await waitUntil(() => client.index.getReplaceable(0, keys.publicKey) !== undefined);
+      closer.close();
+
+      const user = await client.loaders.profile(keys.publicKey, { style: "cache-only" });
+      expect(user.event?.id).toBe(meta.id);
+      expect(user.metadata.name).toBe("alice");
+      expect(user.fresh).toBe(false);
+      await client.shutdown();
+    } finally {
+      net.close();
+    }
+  });
+
+  test("a loader network fetch records seenOn on the index", async () => {
+    const net = createFakeRelayNetwork();
+    try {
+      const client = Client.builder()
+        .relays(["wss://idx.example"])
+        .websocketImplementation(net.websocketImplementation)
+        .enableReconnect(false)
+        .build();
+      const keys = Keys.fromSecretKey(SK);
+      const meta = EventBuilder.metadata({ name: "bob" }).createdAt(4).signWithKeys(keys);
+      net.relay("wss://idx.example").seed([meta]);
+
+      const res = await client.loaders.profile(keys.publicKey);
+      expect(res.event?.id).toBe(meta.id);
+      expect(res.fresh).toBe(true);
+      expect(client.index.seenOn(meta.id)).toEqual([normalizeURL("wss://idx.example")]);
+      await client.shutdown();
+    } finally {
+      net.close();
+    }
+  });
+
+  test("default style does not refetch within staleAfterSec, including after a miss", async () => {
+    const net = createFakeRelayNetwork();
+    try {
+      const pool = new Pool({ websocketImplementation: net.websocketImplementation });
+      const index = new ReactiveEventStore();
+      const keys = Keys.fromSecretKey(SK);
+      const reqs = () =>
+        net
+          .relay("wss://idx.example")
+          .clientMessages()
+          .filter((m) => Array.isArray(m) && m[0] === "REQ").length;
+
+      const loaders = createLoaders({ pool, relays: ["wss://idx.example"], index });
+      const miss = await loaders.profile(keys.publicKey);
+      expect(miss.event).toBeNull();
+      expect(miss.fresh).toBe(true);
+      expect(reqs()).toBe(1);
+      // a recent miss counts as fresh: no refetch
+      const again = await loaders.profile(keys.publicKey);
+      expect(again.event).toBeNull();
+      expect(again.fresh).toBe(false);
+      expect(reqs()).toBe(1);
+      // force always fetches
+      await loaders.profile(keys.publicKey, { style: "force" });
+      expect(reqs()).toBe(2);
+
+      // an expired record refetches: staleAfterSec 0 never counts as fresh
+      const stale = createLoaders({
+        pool,
+        relays: ["wss://idx.example"],
+        index,
+        staleAfterSec: 0,
+      });
+      const meta = EventBuilder.metadata({ name: "alice" }).createdAt(5).signWithKeys(keys);
+      net.relay("wss://idx.example").seed([meta]);
+      const hit = await stale.profile(keys.publicKey);
+      expect(hit.event?.id).toBe(meta.id);
+      expect(hit.fresh).toBe(true);
+      expect(reqs()).toBe(3);
+      // same loader, same pubkey: the record is already expired → refetch
+      await stale.profile(keys.publicKey);
+      expect(reqs()).toBe(4);
+      // cache-only resolves the fetched value from the shared index
+      const cached = await stale.profile(keys.publicKey, { style: "cache-only" });
+      expect(cached.event?.id).toBe(meta.id);
+      pool.close();
+    } finally {
+      net.close();
+    }
+  });
+
+  test("loaders.replaceable(10063) resolves a generic replaceable kind", async () => {
+    const net = createFakeRelayNetwork();
+    try {
+      const pool = new Pool({ websocketImplementation: net.websocketImplementation });
+      const keys = Keys.fromSecretKey(SK);
+      const servers = new EventBuilder(10063, "")
+        .tag(["server", "https://cdn.example"])
+        .createdAt(7)
+        .signWithKeys(keys);
+      net.relay("wss://idx.example").seed([servers]);
+
+      const loaders = createLoaders({
+        pool,
+        relays: ["wss://idx.example"],
+        index: new ReactiveEventStore(),
+      });
+      expect(loaders.replaceable(10063)).toBe(loaders.replaceable(10063));
+      const res = await loaders.replaceable(10063)(keys.publicKey);
+      expect(res.event?.id).toBe(servers.id);
+      expect(res.fresh).toBe(true);
+      pool.close();
+    } finally {
+      net.close();
+    }
+  });
+
+  test("default style refetches when the fetched winner was evicted", async () => {
+    const net = createFakeRelayNetwork();
+    try {
+      const pool = new Pool({ websocketImplementation: net.websocketImplementation });
+      const index = new ReactiveEventStore({ maxEvents: 2 });
+      const keys = Keys.fromSecretKey(SK);
+      const meta = EventBuilder.metadata({ name: "alice" }).createdAt(5).signWithKeys(keys);
+      net.relay("wss://idx.example").seed([meta]);
+      const reqs = () =>
+        net
+          .relay("wss://idx.example")
+          .clientMessages()
+          .filter((m) => Array.isArray(m) && m[0] === "REQ").length;
+
+      const loaders = createLoaders({ pool, relays: ["wss://idx.example"], index });
+      const first = await loaders.profile(keys.publicKey);
+      expect(first.event?.id).toBe(meta.id);
+      expect(reqs()).toBe(1);
+
+      // evict the freshly fetched profile from the constrained index
+      for (let i = 0; i < 3; i++) {
+        index.add(
+          EventBuilder.textNote(`filler${i}`)
+            .createdAt(10 + i)
+            .signWithKeys(keys),
+        );
+      }
+      expect(index.getReplaceable(0, keys.publicKey)).toBeUndefined();
+
+      // the fresh fetch record was a hit, but the winner is gone → refetch
+      const second = await loaders.profile(keys.publicKey);
+      expect(second.event?.id).toBe(meta.id);
+      expect(second.fresh).toBe(true);
+      expect(reqs()).toBe(2);
+      pool.close();
+    } finally {
+      net.close();
+    }
+  });
+
+  test("loader fetches flow through client ingest: persisted and feed gossip", async () => {
+    const net = createFakeRelayNetwork();
+    try {
+      const client = Client.builder()
+        .relays(["wss://idx.example"])
+        .websocketImplementation(net.websocketImplementation)
+        .enableReconnect(false)
+        .build();
+      const keys = Keys.fromSecretKey(SK);
+      const meta = EventBuilder.metadata({ name: "alice" }).createdAt(5).signWithKeys(keys);
+      const list = relayListEventBuilder([{ url: "wss://out.example", read: true, write: true }])
+        .createdAt(6)
+        .signWithKeys(keys);
+      net.relay("wss://idx.example").seed([meta, list]);
+
+      // a fetched 10002 feeds gossip without a manual observe()
+      const relayList = await client.loaders.relayList(keys.publicKey);
+      expect(relayList.event?.id).toBe(list.id);
+      expect(client.gossip.outboxRelays(keys.publicKey)).toEqual(["wss://out.example/"]);
+
+      // a fetched profile lands in persistent storage after the flush
+      const user = await client.loaders.profile(keys.publicKey);
+      expect(user.event?.id).toBe(meta.id);
+      const stored = async () => (await client.storage.query([{ ids: [meta.id] }])).length === 1;
+      for (let i = 0; i < 100 && !(await stored()); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(await stored()).toBe(true);
+      await client.shutdown();
+    } finally {
+      net.close();
+    }
   });
 });
