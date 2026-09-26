@@ -164,13 +164,14 @@
   },
   "scripts": {
     "build": "vp pack",
-    "build:wasm": "bash scripts/build-wasm.sh && WASM_PACK=1 vp pack && ls dist/*.wasm >/dev/null",
+    "build:wasm": "bash scripts/build-wasm.sh && WASM_PACK=1 vp pack && ls dist/*.wasm >/dev/null && publint && attw --pack . --profile esm-only",
     "dev": "vp pack --watch",
     "test": "vp test",
     "test:wasm": "WASM_TEST=1 vp test wasm-tests/verify.ts wasm-tests/node-load.ts wasm-tests/sign.ts",
     "bench:wasm": "WASM_TEST=1 vp test wasm-tests/bench.ts",
     "bench:store": "STORE_BENCH=1 vp test bench/reactive-store.bench.ts",
     "check": "vp check",
+    "check:pkg": "WASM_PACK=1 vp pack && publint && attw --pack . --profile esm-only",
     "prepublishOnly": "bun run build:wasm",
     "pack:local": "vp pack && bun pm pack",
     "release": "bumpp --commit --tag --push",
@@ -183,9 +184,11 @@
     "@scure/base": "2.4.0"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
     "@types/node": "^26.6.2",
     "@types/ws": "8.18.1",
     "bumpp": "^12.3.0",
+    "publint": "^0.3.24",
     "typescript": "^7.0.2",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.2.9",
     "vite-plus": "^0.3.0",
