@@ -3,6 +3,7 @@ import { Kind, Keys, KeysSigner, normalizeURL, type Tag } from "../src/index.ts"
 import {
   Nip17Error,
   buildChatMessageRumor,
+  dmRelayListEventBuilder,
   dmRelayListToTags,
   normalizeRecipients,
   requireDmRelays,
@@ -132,6 +133,11 @@ describe("nip17 chat helpers", () => {
     const url = "wss://inbox.example";
     const tags: Tag[] = dmRelayListToTags([url, `${url}/`]);
     expect(tags).toEqual([["relay", normalizeURL(url)]]);
+  });
+
+  test("dmRelayListEventBuilder throws on an empty relay list", () => {
+    expect(() => dmRelayListEventBuilder([])).toThrow(Nip17Error);
+    expect(() => dmRelayListEventBuilder([])).toThrow(/at least one relay/);
   });
 
   test("requireDmRelays throws on empty list", () => {

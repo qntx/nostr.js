@@ -54,10 +54,16 @@ export class Nip05Error extends NostrError {
  * Matches optional local@domain.
  * Groups: 1=local (optional), 2=domain.
  */
-export const NIP05_REGEX = /^(?:([\w.+-]+)@)?([\w-]+(?:\.[\w-]+)+)$/;
+export const NIP05_REGEX = /^(?:([a-z0-9._-]+)@)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)$/i;
 
 export function isNip05(value: unknown): value is string {
-  return typeof value === "string" && NIP05_REGEX.test(value);
+  if (typeof value !== "string") return false;
+  try {
+    parseNip05(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -70,18 +76,7 @@ export function parseNip05(input: string): Nip05Address {
     throw new Nip05Error(`invalid NIP-05 identifier: ${input}`);
   }
   const localRaw = match[1] ?? NIP05_ROOT_LOCAL;
-  const local = localRaw.toLowerCase();
-  const domain = match[2].toLowerCase();
-
-  // NIP-05 local-part: a-z0-9-_.
-  if (!/^[a-z0-9._-]+$/.test(local)) {
-    throw new Nip05Error(`invalid NIP-05 local-part: ${localRaw}`);
-  }
-  if (!domain) {
-    throw new Nip05Error("NIP-05 domain must not be empty");
-  }
-
-  return { local, domain };
+  return { local: localRaw.toLowerCase(), domain: match[2].toLowerCase() };
 }
 
 /** Build the well-known HTTPS URL for an address. */

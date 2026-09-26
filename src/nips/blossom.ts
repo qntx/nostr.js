@@ -88,12 +88,24 @@ export function encodeAuthorizationHeader(event: Event): string {
   return `Nostr ${base64urlnopad.encode(utf8Encoder.encode(JSON.stringify(event)))}`;
 }
 
+/** Default BUD-11 human-readable content per verb. */
+const AUTH_VERB_MESSAGES: Record<BlossomAuthVerb, string> = {
+  upload: "Upload Blob",
+  delete: "Delete Blob",
+  list: "List Blobs",
+  get: "Get Blob",
+  media: "Upload Media",
+};
+
 export function createAuthTemplate(
   verb: BlossomAuthVerb,
   opts?: { sha256?: string; expiration?: number; message?: string },
 ): EventTemplate {
   if (!AUTH_VERBS.has(verb)) {
     throw new BlossomError(`invalid blossom auth verb: ${verb}`);
+  }
+  if (opts?.message !== undefined && opts.message.trim() === "") {
+    throw new BlossomError("blossom auth message must not be empty");
   }
   const expiration = opts?.expiration ?? Math.floor(Date.now() / 1000) + AUTH_EXPIRATION_SECS;
   const tags: Tag[] = [
@@ -107,7 +119,7 @@ export function createAuthTemplate(
     kind: Kind.BlobsAuth,
     created_at: Math.floor(Date.now() / 1000),
     tags,
-    content: opts?.message ?? "",
+    content: opts?.message ?? AUTH_VERB_MESSAGES[verb],
   };
 }
 
@@ -317,6 +329,9 @@ export function blossomServerListEventBuilder(servers: readonly string[]): Event
     if (!url || seen.has(url)) continue;
     seen.add(url);
     tags.push(["server", url]);
+  }
+  if (tags.length === 0) {
+    throw new BlossomError("server list requires at least one valid http(s) URL");
   }
   return new EventBuilder(Kind.BlossomServerList, "").tags(tags);
 }

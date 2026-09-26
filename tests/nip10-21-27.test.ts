@@ -245,6 +245,16 @@ describe("nip10", () => {
     expect(qTags).toEqual([["q", "66".repeat(32)]]);
   });
 
+  test("buildReplyTags omits root author hint when the root author is unknown", () => {
+    const rootId = "11".repeat(32);
+    const parent = signedNote(keysB, "child", [["e", rootId, "wss://root.example", "root"]]);
+    const tags = buildReplyTags({ parent, relayHint: "wss://parent.example" });
+    const rootTag = tags.find((t) => t[0] === "e" && t[3] === "root");
+    expect(rootTag).toEqual(["e", rootId, "wss://root.example", "root"]);
+    expect(rootTag?.[4]).toBeUndefined();
+    expect(rootTag?.[4]).not.toBe(parent.pubkey);
+  });
+
   test("replyTo requires kind 1", () => {
     const parent = signedNote(keysA, "hi");
     const kind6 = { ...parent, kind: Kind.Repost };

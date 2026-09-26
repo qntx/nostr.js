@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vite-plus/test";
 import { itemCompare, sortedEvents } from "../src/core/index.ts";
 import {
   EventBuilder,
+  EventValidationError,
   Keys,
   Kind,
   MemoryEventStore,
@@ -147,16 +148,16 @@ describe("nip65", () => {
     ]);
   });
 
-  test("relayListToTags both-false emits bare r (readwrite)", () => {
-    expect(relayListToTags([{ url: "wss://z.example", read: false, write: false }])).toEqual([
-      ["r", "wss://z.example"],
-    ]);
+  test("relayListToTags both-false throws", () => {
+    expect(() => relayListToTags([{ url: "wss://z.example", read: false, write: false }])).toThrow(
+      EventValidationError,
+    );
     expect(relayListToTags([{ url: "wss://z.example", read: true, write: true }])).toEqual([
       ["r", "wss://z.example"],
     ]);
     const keys = Keys.fromSecretKey(SK);
     const event = relayListEventBuilder([
-      { url: "wss://z.example", read: false, write: false },
+      { url: "wss://z.example", read: true, write: true },
     ]).signWithKeys(keys);
     expect(event.tags).toEqual([["r", "wss://z.example"]]);
     expect(parseRelayList(event)).toEqual([{ url: "wss://z.example/", read: true, write: true }]);
@@ -209,10 +210,7 @@ describe("MemoryEventStore", () => {
     const keys = Keys.fromSecretKey(SK);
     const meta = EventBuilder.metadata({ name: "v1" }).createdAt(10).signWithKeys(keys);
     await store.put(meta);
-    const del = EventBuilder.deletion([], "gone", {
-      kinds: [0],
-      addresses: [`0:${keys.publicKey}:`],
-    })
+    const del = EventBuilder.deletion([{ address: `0:${keys.publicKey}:` }], "gone")
       .createdAt(15)
       .signWithKeys(keys);
     expect(await store.put(del)).toBe("deleted");

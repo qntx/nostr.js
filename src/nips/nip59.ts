@@ -287,8 +287,11 @@ export async function unwrap(crypto: Nip44Decryptor, giftWrap: Event): Promise<R
   if (sealRaw.kind !== Kind.Seal) {
     throw new Nip59Error("expected seal");
   }
-  if (sealRaw.tags.length !== 0) {
-    throw new Nip59Error("seal tags must be empty");
+  // NIP-17: seals may carry an ["expiration", <unix ts>] tag for disappearing messages.
+  for (const tag of sealRaw.tags) {
+    if (tag[0] !== "expiration" || typeof tag[1] !== "string" || !/^\d+$/.test(tag[1])) {
+      throw new Nip59Error("seal tags must be empty");
+    }
   }
   if (!verifyEvent(sealRaw)) {
     throw new Nip59Error("seal signature");

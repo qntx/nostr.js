@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vite-plus/test";
 import { getEventHash, hexToBytes, type UnsignedEvent } from "../src/index.ts";
-import { getPow, minePow } from "../src/nips/nip13.ts";
+import { getPow, minePow, Nip13Error } from "../src/nips/nip13.ts";
 
 const NIP13_EXAMPLE_ID = "000006d8c378af1779d2feebc7603a125d99eca0ccf1085959b307f64e5dd358";
 
@@ -22,6 +22,13 @@ describe("nip13 getPow", () => {
     expect(getPow(hexToBytes(NIP13_EXAMPLE_ID))).toBe(getPow(NIP13_EXAMPLE_ID));
     expect(getPow("ac4f44bae06a45ebe88cfbd3c66358750159650a26c0d79e8ccaa92457fca4f6")).toBe(0);
     expect(getPow("0000000000000000006cfbd3c66358750159650a26c0d79e8ccaa92457fca4f6")).toBe(73);
+  });
+
+  test("non-hex or wrong-length string input throws Nip13Error", () => {
+    expect(() => getPow("not-hex")).toThrow(Nip13Error);
+    expect(() => getPow("zz".repeat(32))).toThrow(Nip13Error);
+    expect(() => getPow("ab".repeat(31))).toThrow(Nip13Error);
+    expect(() => getPow("")).toThrow(Nip13Error);
   });
 });
 

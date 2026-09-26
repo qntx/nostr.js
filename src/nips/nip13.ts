@@ -7,7 +7,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { NostrError } from "../core/error.ts";
 import { serializeEvent, type UnsignedEvent } from "../core/event.ts";
-import { bytesToHex, utf8Encoder } from "../core/util.ts";
+import { bytesToHex, isHex32, utf8Encoder } from "../core/util.ts";
 import { abortReason } from "../core/abort.ts";
 
 export class Nip13Error extends NostrError {
@@ -25,6 +25,9 @@ export type MinePowOptions = {
 /** Leading zero bits of a hex event id or raw sha256 bytes. */
 export function getPow(idOrHash: string | Uint8Array): number {
   if (typeof idOrHash === "string") {
+    if (!isHex32(idOrHash.toLowerCase())) {
+      throw new Nip13Error(`expected 64-char hex event id, got ${idOrHash.length} chars`);
+    }
     let count = 0;
     for (let i = 0; i < idOrHash.length; i += 8) {
       const chunk = Number.parseInt(idOrHash.substring(i, i + 8), 16);
