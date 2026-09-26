@@ -52,7 +52,11 @@ export type ClientOptions = {
   verifyEvent?: (event: Event) => boolean;
   connectTimeoutMs?: number;
   publishTimeoutMs?: number;
-  /** When true (default if signer present), answer NIP-42 AUTH automatically. */
+  /**
+   * When true (default), answer NIP-42 AUTH automatically. The signer is read
+   * at challenge time, so `setSigner()` applies to live connections; challenges
+   * received while no signer is set are ignored.
+   */
   automaticAuth?: boolean;
   /** When true (default), relays reconnect with backoff after disconnect. */
   enableReconnect?: boolean;
@@ -60,6 +64,16 @@ export type ClientOptions = {
   enablePing?: boolean;
   pingIntervalMs?: number;
   pingTimeoutMs?: number;
+  /** Forwarded to the pool: when false (default), `ws://` relays are rejected. */
+  allowInsecure?: boolean;
+  /** Forwarded to the pool: `ws://` URLs allowed despite `allowInsecure`. */
+  trustedInsecureUrls?: readonly string[];
+  /** Forwarded to the pool: close idle relays after this many ms. */
+  idleTimeoutMs?: number;
+  /** Forwarded to the pool: soft cap on connected non-pinned relays. */
+  maxRelays?: number;
+  /** Forwarded to the pool: relays never closed by idle cleanup or `maxRelays`. */
+  pinnedUrls?: readonly string[];
   gossip?: Gossip;
   /**
    * Local event store. Defaults to {@link MemoryEventStore}.

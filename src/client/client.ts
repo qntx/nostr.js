@@ -13,6 +13,7 @@ import {
 import type { Recipient } from "../nips/nip17.ts";
 import { isGiftWrapKind, requireNip59Crypto, type Nip59Crypto } from "../nips/nip59.ts";
 import { Pool, type PoolPublishResult } from "../relay/pool.ts";
+import { NoSignerError } from "../signer/error.ts";
 import type { NostrSigner } from "../signer/types.ts";
 import { toStorageError, type StorageError } from "../storage/error.ts";
 import { MemoryEventStore } from "../storage/memory.ts";
@@ -69,7 +70,6 @@ export class Client {
     this.index = opts.index ?? new ReactiveEventStore();
     this.#persistEvents = opts.persistEvents ?? true;
     this.onstorageerror = opts.onstorageerror ?? null;
-    const autoAuth = opts.automaticAuth ?? Boolean(opts.signer);
     this.pool = new Pool({
       websocketImplementation: opts.websocketImplementation,
       verifyEvent: opts.verifyEvent,
@@ -79,16 +79,23 @@ export class Client {
       connectTimeoutMs: opts.connectTimeoutMs,
       publishTimeoutMs: opts.publishTimeoutMs,
       enableReconnect: opts.enableReconnect ?? true,
-      automaticallyAuth: autoAuth
-        ? () => {
-            const signer = this.#signer;
-            if (!signer) return null;
-            return async (template) => {
+      allowInsecure: opts.allowInsecure,
+      trustedInsecureUrls: opts.trustedInsecureUrls,
+      idleTimeoutMs: opts.idleTimeoutMs,
+      maxRelays: opts.maxRelays,
+      pinnedUrls: opts.pinnedUrls,
+      // The sign function resolves the signer at challenge time, so
+      // setSigner() takes effect on already-connected relays; challenges
+      // without a signer are ignored by the relay (NoSignerError).
+      automaticallyAuth:
+        (opts.automaticAuth ?? true)
+          ? () => async (template) => {
+              const signer = this.#signer;
+              if (!signer) throw new NoSignerError("no signer configured for AUTH");
               const pk = await signer.getPublicKey();
               return signer.signEvent({ ...template, pubkey: pk });
-            };
-          }
-        : undefined,
+            }
+          : undefined,
     });
     this.loaders = createLoaders({
       pool: this.pool,
@@ -112,7 +119,7 @@ export class Client {
     return this.#shutdown;
   }
 
-  setSigner(signer: NostrSigner): void {
+  setSigner(signer: NostrSigner | undefined): void {
     this.#signer = signer;
   }
 

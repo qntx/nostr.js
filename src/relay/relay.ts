@@ -13,6 +13,7 @@ import {
 } from "../core/message.ts";
 import { Nip77Error, type NegentropyStorageVector } from "../nips/nip77.ts";
 import { isAuthRequired, makeAuthEvent } from "../nips/nip42.ts";
+import { NoSignerError } from "../signer/error.ts";
 import { normalizeURL } from "../core/util.ts";
 import { RelayClosedError, RelayConnectionError, RelayError, RelayPublishError } from "./error.ts";
 import {
@@ -139,6 +140,10 @@ export class Relay {
   #serial = 0;
   #challenge: string | undefined;
   #authedChallenge: string | undefined;
+  /** Challenge value already answered on this connection; duplicates are not re-signed. */
+  #answeredChallenge: string | undefined;
+  /** Promise for the AUTH frame sent for `#answeredChallenge` — replays its outcome. */
+  #answeredAuth: Promise<PublishResult> | undefined;
   #authPromise: Promise<PublishResult> | undefined;
   #authSigner: ((template: EventTemplate) => Promise<Event>) | undefined;
   #intentionalClose = false;
@@ -221,6 +226,11 @@ export class Relay {
   /** User subscriptions only; dummy ping REQs are not counted. */
   get subscriptionCount(): number {
     return this.#subs.size;
+  }
+
+  /** One-shot requests still awaiting a relay reply (EVENT ACK, COUNT, NEG). */
+  get inFlightCount(): number {
+    return this.#publishes.size + this.#counts.size + this.#neg.size;
   }
 
   static async connect(
@@ -356,6 +366,8 @@ export class Relay {
       this.#challenge = undefined;
       this.#authPromise = undefined;
       this.#authedChallenge = undefined;
+      this.#answeredChallenge = undefined;
+      this.#answeredAuth = undefined;
       if (!resubscribeAll(this.#live)) {
         this.#connected = false;
         this.#status = RelayStatus.Disconnected;
@@ -819,10 +831,23 @@ export class Relay {
       throw new RelayError("no AUTH challenge received from relay", this.url);
     }
     if (this.#authPromise) return this.#authPromise;
+    if (this.#answeredChallenge === challenge && this.#answeredAuth !== undefined) {
+      const result = await this.#answeredAuth;
+      if (result.ok) this.#authedChallenge = challenge;
+      return result;
+    }
 
     const pending = (async () => {
       const template = makeAuthEvent(this.url, challenge);
-      const event = await sign(template);
+      let event: Event;
+      try {
+        event = await sign(template);
+      } catch (err) {
+        // A lazy signer may legitimately have nothing to sign with; ignore the
+        // challenge quietly — the connection stays open without an AUTH frame.
+        if (err instanceof NoSignerError) return { ok: false, message: "auth: no signer" };
+        throw err;
+      }
       if (!this.#connected) throw new RelayClosedError("not connected", this.url);
       const timeoutMs = opts?.timeoutMs ?? this.#publishTimeoutMs;
 
@@ -834,6 +859,8 @@ export class Relay {
         this.#publishes.set(event.id, { resolve, reject, timer, timeoutMs });
         try {
           this.#send(["AUTH", event]);
+          this.#answeredChallenge = challenge;
+          this.#answeredAuth = pending;
         } catch (err) {
           clearTimeout(timer);
           this.#publishes.delete(event.id);
