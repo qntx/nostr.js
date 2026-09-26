@@ -1,5 +1,6 @@
 import { MessageError } from "../core/error.ts";
 import { abortReason, throwIfAborted } from "../core/abort.ts";
+import { invokeSafely } from "../core/report.ts";
 import type { Event, EventTemplate } from "../core/event.ts";
 import { canonicalizeFilters, type Filter } from "../core/filter.ts";
 import { assertSubscriptionId, type CountResult } from "../core/message.ts";
@@ -140,7 +141,7 @@ export class Pool {
     }
     if (idle.length === 0) return;
     this.close(idle);
-    this.#opts.onIdleRelaysClosed?.(idle);
+    invokeSafely(() => this.#opts.onIdleRelaysClosed?.(idle));
   }
 
   #touch(url: string): void {

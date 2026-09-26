@@ -2768,4 +2768,31 @@ describe("issue #130", () => {
     await expect(fetchP).rejects.toBe(reason);
     pool.close();
   });
+
+  test("throwing onnotice and onclose are reported without breaking teardown", async () => {
+    const { reported, restore } = stubReportError();
+    try {
+      const relay = await Relay.connect("wss://cb-throw.example", {
+        websocketImplementation: MockWebSocketCtor,
+        enableReconnect: false,
+      });
+      const noticeBoom = new Error("notice boom");
+      const closeBoom = new Error("close boom");
+      relay.onnotice = () => {
+        throw noticeBoom;
+      };
+      relay.onclose = () => {
+        throw closeBoom;
+      };
+      MockWebSocket.last().receive(JSON.stringify(["NOTICE", "heads up"]));
+      expect(reported).toEqual([noticeBoom]);
+      expect(relay.connected).toBe(true);
+
+      relay.close();
+      expect(reported).toEqual([noticeBoom, closeBoom]);
+      expect(relay.status).toBe(RelayStatus.Closed);
+    } finally {
+      restore();
+    }
+  });
 });

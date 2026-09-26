@@ -16,6 +16,7 @@ import { isAuthRequired, makeAuthEvent } from "../nips/nip42.ts";
 import { NoSignerError } from "../signer/error.ts";
 import { normalizeURL } from "../core/util.ts";
 import { abortReason, throwIfAborted } from "../core/abort.ts";
+import { invokeSafely } from "../core/report.ts";
 import {
   RelayClosedError,
   RelayConnectionError,
@@ -393,7 +394,7 @@ export class Relay {
       this.#reconnectAttempts = 0;
       if (this.#enablePing) this.#ping.start();
       else this.#ping.stop();
-      if (wasReconnect) this.onreconnect?.();
+      if (wasReconnect) invokeSafely(() => this.onreconnect?.());
       finish();
     };
     const onError = (): void => {
@@ -479,7 +480,7 @@ export class Relay {
       this.#detachSocketHandlers();
       this.#teardownSocket();
       this.#connected = false;
-      this.onclose?.();
+      invokeSafely(() => this.onclose?.());
     }
   }
 
@@ -551,7 +552,7 @@ export class Relay {
 
     if (!opts.fromConnectAttempt || this.#subs.size > 0) {
       closeAllSubscriptions(this.#live, reason);
-      if (!this.#intentionalClose) this.onclose?.();
+      if (!this.#intentionalClose) invokeSafely(() => this.onclose?.());
     }
 
     this.#status = RelayStatus.Closed;
@@ -674,7 +675,7 @@ export class Relay {
         break;
       }
       case "NOTICE": {
-        this.onnotice?.(msg[1]);
+        invokeSafely(() => this.onnotice?.(msg[1]));
         break;
       }
       case "AUTH": {
@@ -687,7 +688,7 @@ export class Relay {
           this.#answeredResult = undefined;
         }
         this.#challenge = msg[1];
-        this.onauth?.(msg[1]);
+        invokeSafely(() => this.onauth?.(msg[1]));
         break;
       }
       default:
@@ -713,7 +714,7 @@ export class Relay {
     } catch (e) {
       if (e instanceof WasmVerifyPoisonedError || e instanceof WebAssembly.RuntimeError) {
         this.#verifyDead = true;
-        this.onnotice?.("verify-poisoned: wasm instance aborted");
+        invokeSafely(() => this.onnotice?.("verify-poisoned: wasm instance aborted"));
         return false;
       }
       throw e;
@@ -912,7 +913,8 @@ export class Relay {
       this.#answeredResult = undefined;
     }
     if (this.#challenge !== undefined && this.#challenge !== this.#authedChallenge) {
-      this.onauth?.(this.#challenge);
+      const challenge = this.#challenge;
+      invokeSafely(() => this.onauth?.(challenge));
     }
   }
 
