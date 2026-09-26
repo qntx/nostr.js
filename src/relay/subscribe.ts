@@ -1,5 +1,6 @@
 /** REQ subscription runtime: exclusive one-shot, live coalescing, dispatch, reconnect replay. */
 import type { Event } from "../core/event.ts";
+import { invokeSafely } from "../core/report.ts";
 import { filterFingerprint, type Filter } from "../core/filter.ts";
 import type { ClientMessage, SubscriptionId } from "../core/message.ts";
 import { RelayConnectionError } from "./error.ts";
@@ -26,21 +27,6 @@ export type LiveCtx = {
   acceptEvent: (event: Event) => boolean;
   armEoseTimeout: (sub: Subscription, ms: number) => void;
 };
-
-// Independent live attachments must not abort sibling delivery or skip watermark.
-export function captureListenerError(errors: unknown[], fn: () => void): void {
-  try {
-    fn();
-  } catch (err) {
-    errors.push(err);
-  }
-}
-
-export function flushListenerErrors(errors: unknown[]): void {
-  if (errors.length === 0) return;
-  if (errors.length === 1) throw errors[0];
-  throw new AggregateError(errors);
-}
 
 export function openExclusive(
   ctx: LiveCtx,
@@ -118,7 +104,7 @@ export function subscribeLive(
     queueMicrotask(() => {
       if (handle.closed || handle.eosed) return;
       handle.eosed = true;
-      handle.handlers.oneose?.();
+      invokeSafely(() => handle.handlers.oneose?.());
     });
   }
 
@@ -158,82 +144,66 @@ export function endLiveGroup(
       // ignore
     }
   }
-  const errors: unknown[] = [];
   for (const att of remaining) {
-    captureListenerError(errors, () => {
+    invokeSafely(() => {
       att.close(opts.reason);
     });
   }
-  flushListenerErrors(errors);
 }
 
 export function deliverLiveEvent(ctx: LiveCtx, group: LiveGroup, event: Event): void {
   const sub = group.sub;
   const attachments = [...group.attachments];
-  const errors: unknown[] = [];
   for (const att of attachments) {
-    captureListenerError(errors, () => {
+    invokeSafely(() => {
       att.handlers.receivedEvent?.(event.id);
     });
   }
-  if (sub.idsAtWatermark.has(event.id)) {
-    flushListenerErrors(errors);
-    return;
-  }
+  if (sub.idsAtWatermark.has(event.id)) return;
 
   const recipients: Subscription[] = [];
   for (const att of attachments) {
     if (att.closed) continue;
     let skip = false;
-    captureListenerError(errors, () => {
+    invokeSafely(() => {
       skip = Boolean(att.handlers.alreadyHaveEvent?.(event.id));
     });
     if (!skip) recipients.push(att);
   }
-  if (recipients.length === 0) {
-    flushListenerErrors(errors);
-    return;
-  }
-  if (!ctx.acceptEvent(event)) {
-    flushListenerErrors(errors);
-    return;
-  }
+  if (recipients.length === 0) return;
+  if (!ctx.acceptEvent(event)) return;
 
   sub.noteVerified(event);
   for (const att of recipients) att.noteVerified(event);
   for (const att of recipients) {
-    captureListenerError(errors, () => {
+    invokeSafely(() => {
       att.handlers.onevent?.(event);
     });
   }
-  flushListenerErrors(errors);
 }
 
 export function deliverLiveEose(group: LiveGroup): void {
   const attachments = Array.from(group.attachments);
-  const errors: unknown[] = [];
   for (const att of attachments) {
     if (att.closed || att.eosed) continue;
     att.eosed = true;
-    captureListenerError(errors, () => {
+    invokeSafely(() => {
       att.handlers.oneose?.();
     });
   }
-  flushListenerErrors(errors);
 }
 
 export function closeAllSubscriptions(ctx: LiveCtx, reason: string): void {
-  const errors: unknown[] = [];
   const fps = Array.from(ctx.liveByFp.keys());
   for (const fp of fps) {
-    captureListenerError(errors, () => {
+    invokeSafely(() => {
       endLiveGroup(ctx, fp, { sendClose: false, reason });
     });
   }
   for (const sub of ctx.subs.values()) {
     if (!sub.closed) {
       sub.closed = true;
-      captureListenerError(errors, () => {
+      invokeSafely(() => {
         sub.handlers.onclose?.(reason);
       });
     }
@@ -241,7 +211,6 @@ export function closeAllSubscriptions(ctx: LiveCtx, reason: string): void {
   ctx.subs.clear();
   ctx.liveByFp.clear();
   ctx.liveBySubId.clear();
-  flushListenerErrors(errors);
 }
 
 export function dropSubscription(ctx: LiveCtx, sub: Subscription, reason: string): void {
@@ -252,7 +221,9 @@ export function dropSubscription(ctx: LiveCtx, sub: Subscription, reason: string
   }
   ctx.subs.delete(sub.id);
   sub.closed = true;
-  sub.handlers.onclose?.(reason);
+  invokeSafely(() => {
+    sub.handlers.onclose?.(reason);
+  });
 }
 
 export function onSubEvent(ctx: LiveCtx, subId: string, event: Event): void {
@@ -263,12 +234,20 @@ export function onSubEvent(ctx: LiveCtx, subId: string, event: Event): void {
     deliverLiveEvent(ctx, group, event);
     return;
   }
-  sub.handlers.receivedEvent?.(event.id);
+  invokeSafely(() => {
+    sub.handlers.receivedEvent?.(event.id);
+  });
   if (sub.idsAtWatermark.has(event.id)) return;
-  if (sub.handlers.alreadyHaveEvent?.(event.id)) return;
+  let have = false;
+  invokeSafely(() => {
+    have = Boolean(sub.handlers.alreadyHaveEvent?.(event.id));
+  });
+  if (have) return;
   if (!ctx.acceptEvent(event)) return;
   sub.noteVerified(event);
-  sub.handlers.onevent?.(event);
+  invokeSafely(() => {
+    sub.handlers.onevent?.(event);
+  });
 }
 
 export function onSubEose(ctx: LiveCtx, subId: string): void {
@@ -280,7 +259,9 @@ export function onSubEose(ctx: LiveCtx, subId: string): void {
   if (group) {
     deliverLiveEose(group);
   } else {
-    sub.handlers.oneose?.();
+    invokeSafely(() => {
+      sub.handlers.oneose?.();
+    });
     if (sub.closeOnEose) sub.close("eose");
   }
 }
@@ -366,7 +347,9 @@ export function armEoseTimeout(sub: Subscription, eoseTimeoutMs: number): void {
   const timer = setTimeout(() => {
     if (sub.eosed || sub.closed) return;
     sub.eosed = true;
-    sub.handlers.oneose?.();
+    invokeSafely(() => {
+      sub.handlers.oneose?.();
+    });
   }, eoseTimeoutMs);
   const prevClose = sub.handlers.onclose;
   sub.handlers.onclose = (reason) => {

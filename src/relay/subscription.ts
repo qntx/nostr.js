@@ -1,6 +1,7 @@
 import type { Event } from "../core/event.ts";
 import type { Filter } from "../core/filter.ts";
 import { createSubscriptionId } from "../core/message.ts";
+import { invokeSafely } from "../core/report.ts";
 import { RelayClosedError } from "./error.ts";
 
 export type SubscriptionHandlers = {
@@ -78,7 +79,7 @@ export class Subscription {
     this.closed = true;
     this.#abort?.();
     this.sendClose(this.id);
-    this.handlers.onclose?.(reason);
+    invokeSafely(() => this.handlers.onclose?.(reason));
   }
 
   /** Advance the reconnect watermark after a verified EVENT. */

@@ -64,7 +64,11 @@ export class Client {
 
   constructor(opts: ClientOptions = {}) {
     this.#signer = opts.signer;
-    this.#relays = [...(opts.relays ?? [])];
+    this.#relays = [];
+    for (const raw of opts.relays ?? []) {
+      const url = normalizeURL(raw);
+      if (!this.#relays.includes(url)) this.#relays.push(url);
+    }
     this.gossip = opts.gossip ?? new Gossip();
     this.storage = opts.storage ?? new MemoryEventStore();
     this.index = opts.index ?? new ReactiveEventStore();
@@ -121,19 +125,23 @@ export class Client {
 
   setSigner(signer: NostrSigner | undefined): void {
     this.#signer = signer;
+    // Re-arm relays whose AUTH challenge was ignored or rejected.
+    this.pool.resetAuth();
   }
 
   addRelay(url: string): void {
-    if (!this.#relays.includes(url)) {
-      this.#relays.push(url);
-      this.loaders.context.addRelay(url);
+    const normalized = normalizeURL(url);
+    if (!this.#relays.includes(normalized)) {
+      this.#relays.push(normalized);
+      this.loaders.context.addRelay(normalized);
     }
   }
 
   removeRelay(url: string): void {
-    this.#relays = this.#relays.filter((r) => r !== url);
-    this.loaders.context.removeRelay(url);
-    this.pool.close([url]);
+    const normalized = normalizeURL(url);
+    this.#relays = this.#relays.filter((r) => r !== normalized);
+    this.loaders.context.removeRelay(normalized);
+    this.pool.close([normalized]);
   }
 
   /** Connect all configured relays (best-effort; failures are ignored). */

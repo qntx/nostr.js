@@ -4,6 +4,7 @@ import { fetchRouted } from "../src/relay/fan-in.ts";
 import type { Event } from "../src/core/event.ts";
 import { normalizeURL } from "../src/core/util.ts";
 import { createFakeRelayNetwork, type FakeRelayNetwork } from "../src/testing/index.ts";
+import { stubReportError } from "./helpers/report-error.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
 
@@ -138,5 +139,112 @@ describe("relay URL callbacks", () => {
 
     closer.close();
     await client.shutdown();
+  });
+});
+
+describe("issue #125", () => {
+  let net: FakeRelayNetwork;
+
+  beforeEach(() => {
+    net = createFakeRelayNetwork();
+  });
+
+  afterEach(() => {
+    net.close();
+  });
+
+  test("#1 throwing onevent does not drop events from a fetch batch", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const older = EventBuilder.textNote("older").createdAt(1).signWithKeys(keys);
+    const newer = EventBuilder.textNote("newer").createdAt(2).signWithKeys(keys);
+    net.relay("wss://a.example").seed([older, newer]);
+    const throwOnOlder = (event: Event): void => {
+      if (event.id === older.id) throw new Error("boom");
+    };
+
+    const pool = new Pool({
+      websocketImplementation: net.websocketImplementation,
+      enableReconnect: false,
+    });
+    const { reported, restore } = stubReportError();
+    try {
+      const routed = await fetchRouted(
+        pool,
+        [{ urls: ["wss://a.example"], filters: [{ kinds: [1] }] }],
+        { onevent: (event) => throwOnOlder(event) },
+      );
+      expect(routed.map((e) => e.id).sort()).toEqual([older.id, newer.id].sort());
+
+      const pooled = await pool.fetch(["wss://a.example"], [{ kinds: [1] }], {
+        onevent: (event) => throwOnOlder(event),
+      });
+      expect(pooled.map((e) => e.id).sort()).toEqual([older.id, newer.id].sort());
+      pool.close();
+
+      const client = Client.builder()
+        .relays(["wss://a.example"])
+        .websocketImplementation(net.websocketImplementation)
+        .enableReconnect(false)
+        .build();
+      const fetched = await client.fetchEvents(
+        { kinds: [1] },
+        { onevent: (event) => throwOnOlder(event), timeoutMs: 2000 },
+      );
+      expect(fetched.map((e) => e.id).sort()).toEqual([older.id, newer.id].sort());
+      // persistence is a microtask-coalesced flush; poll until it lands
+      let stored: Event[] = [];
+      for (let i = 0; i < 200 && stored.length < 2; i += 1) {
+        stored = await client.storage.query([{ kinds: [1] }]);
+        if (stored.length < 2) await sleep(5);
+      }
+      expect(stored.map((e) => e.id).sort()).toEqual([older.id, newer.id].sort());
+      await client.shutdown();
+    } finally {
+      restore();
+    }
+    expect(reported).toHaveLength(3);
+    for (const err of reported) {
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toBe("boom");
+    }
+  });
+
+  test("#2 canonical relay URLs dedupe subscribe callbacks and addRelay", async () => {
+    const keys = Keys.fromSecretKey(SK);
+    const note = EventBuilder.textNote("dup-url").createdAt(1).signWithKeys(keys);
+    net.relay("wss://a.example").seed([note]);
+
+    const client = Client.builder()
+      .relays(["wss://a.example", "wss://a.example/"])
+      .websocketImplementation(net.websocketImplementation)
+      .enableReconnect(false)
+      .build();
+
+    const events: Event[] = [];
+    const received: string[] = [];
+    const closer = client.subscribe(
+      { kinds: [1] },
+      {
+        onevent: (event) => events.push(event),
+        receivedEvent: (id) => received.push(id),
+      },
+    );
+    await waitUntil(() => received.length > 0);
+    await sleep(50);
+    expect(events).toHaveLength(1);
+    expect(received).toHaveLength(1);
+    closer.close();
+
+    const single = Client.builder()
+      .relays(["wss://a.example"])
+      .websocketImplementation(net.websocketImplementation)
+      .enableReconnect(false)
+      .build();
+    single.addRelay("wss://a.example/");
+    expect(single.relays).toHaveLength(1);
+    expect(client.relays).toHaveLength(1);
+
+    await client.shutdown();
+    await single.shutdown();
   });
 });

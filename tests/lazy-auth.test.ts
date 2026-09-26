@@ -1,5 +1,13 @@
 import { describe, expect, test } from "vite-plus/test";
-import { Client, EventBuilder, Keys, KeysSigner, Pool } from "../src/index.ts";
+import {
+  Client,
+  EventBuilder,
+  Keys,
+  KeysSigner,
+  Pool,
+  finalizeEvent,
+  type NostrSigner,
+} from "../src/index.ts";
 import { createFakeRelayNetwork } from "../src/testing/index.ts";
 
 const SK = "d217c1ff2f8a65c3e3a1740db3b9f58b8c848bb45e26d00ed4714e4a0f4ceecf";
@@ -25,7 +33,7 @@ function authFrames(net: ReturnType<typeof createFakeRelayNetwork>, url: string)
     .filter((m) => Array.isArray(m) && m[0] === "AUTH");
 }
 
-function gatedClient(net: ReturnType<typeof createFakeRelayNetwork>, signer?: KeysSigner): Client {
+function gatedClient(net: ReturnType<typeof createFakeRelayNetwork>, signer?: NostrSigner): Client {
   const builder = Client.builder()
     .relays([GATED])
     .websocketImplementation(net.websocketImplementation)
@@ -167,6 +175,49 @@ describe("lazy NIP-42 AUTH", () => {
       } finally {
         pool.close();
       }
+    } finally {
+      net.close();
+    }
+  });
+
+  test("setSigner re-arms a relay whose AUTH was rejected", async () => {
+    const net = createFakeRelayNetwork();
+    try {
+      net.relay(GATED, { auth: { challenge: "c1", writes: true } });
+      const keys = Keys.fromSecretKey(SK);
+      // A signer whose AUTH tags the wrong relay URL: the relay answers OK false.
+      const wrongRelaySigner: NostrSigner = {
+        getPublicKey: () => Promise.resolve(keys.publicKey),
+        signEvent: (unsigned) => {
+          const challenge = unsigned.tags.find((t) => t[0] === "challenge")?.[1] ?? "";
+          return Promise.resolve(
+            finalizeEvent(
+              {
+                ...unsigned,
+                tags: [
+                  ["relay", "wss://elsewhere.example"],
+                  ["challenge", challenge],
+                ],
+              },
+              keys.secretKey,
+            ),
+          );
+        },
+      };
+      const client = gatedClient(net, wrongRelaySigner);
+      await client.connect();
+      await waitUntil(() => authFrames(net, GATED).length === 1);
+      await sleep(20);
+
+      const note = EventBuilder.textNote("gated").createdAt(13).signWithKeys(keys);
+      const rejected = await client.publish(note);
+      expect(rejected[0]?.result?.ok).toBe(false);
+
+      client.setSigner(new KeysSigner(keys));
+      await waitUntil(() => authFrames(net, GATED).length === 2);
+      expect((await client.publish(note))[0]?.result?.ok).toBe(true);
+
+      await client.shutdown();
     } finally {
       net.close();
     }
