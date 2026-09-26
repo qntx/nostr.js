@@ -1,4 +1,4 @@
-import { itemCompare, sortEvents, type Event } from "../core/event.ts";
+import { compareEventsDesc, itemCompare, sortEvents, type Event } from "../core/event.ts";
 import { matchFilter, type Filter } from "../core/filter.ts";
 import { Kind } from "../core/kind.ts";
 import { eventAddress, formatEventAddress, parseEventAddress } from "../core/tag.ts";
@@ -120,15 +120,6 @@ function rowToEvent(row: EventRow): Event {
     id: row.id,
     sig: row.sig,
   };
-}
-
-/** Newest-first ordering; identical to the `sortEvents` comparator. */
-function byNewest(
-  a: { created_at: number; id: string },
-  b: { created_at: number; id: string },
-): number {
-  if (a.created_at !== b.created_at) return b.created_at - a.created_at;
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
 function chunkValues<T>(values: readonly T[]): T[][] {
@@ -335,15 +326,15 @@ export class SqliteEventStore implements EventStore {
         if (!addressList.includes(key)) addressList.push(key);
       }
     }
-    if (addressList.length > 0) {
+    for (const chunk of chunkValues(addressList)) {
       const rows = await tx.all<{
         address: string;
         id: string;
         created_at: number;
       }>(
         `SELECT address, id, created_at FROM events
-         WHERE ${inClause("address", addressList.length)}`,
-        addressList,
+         WHERE ${inClause("address", chunk.length)}`,
+        chunk,
       );
       for (const row of rows) {
         byAddress.set(row.address, { id: row.id, created_at: row.created_at });
@@ -579,7 +570,7 @@ export class SqliteEventStore implements EventStore {
         )),
       );
     }
-    rows.sort(byNewest);
+    rows.sort(compareEventsDesc);
     const seen = new Set<string>();
     const merged: typeof rows = [];
     for (const row of rows) {
