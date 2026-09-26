@@ -1076,3 +1076,34 @@ describe("Negentropy session timeout", () => {
     await client.shutdown();
   });
 });
+
+describe("issue #125", () => {
+  let net: FakeRelayNetwork;
+
+  beforeEach(() => {
+    net = createFakeRelayNetwork();
+  });
+
+  afterEach(() => {
+    net.close();
+  });
+
+  test("#4 NEG-OPEN honors the filter limit", async () => {
+    const notes = [note(SK_A, "n1", 1), note(SK_A, "n2", 2), note(SK_A, "n3", 3)];
+    net.relay("wss://neg-limit.example").seed(notes);
+    const client = Client.builder()
+      .storage(new MemoryEventStore())
+      .relays(["wss://neg-limit.example"])
+      .websocketImplementation(net.websocketImplementation)
+      .enableReconnect(false)
+      .build();
+    await client.connect();
+    const summary = await client.sync(
+      { kinds: [1], limit: 1 },
+      { direction: SyncDirection.Down, timeoutMs: 2000 },
+    );
+    expect(summary.remote).toEqual([notes[2]!.id]);
+    expect(summary.received).toEqual([notes[2]!.id]);
+    await client.shutdown();
+  });
+});
