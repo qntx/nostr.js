@@ -234,7 +234,7 @@
     "typescript": "^7.0.2",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3",
     "vite-plus": "0.3.3",
-    "whatwg-url": "7.1.0",
+    "whatwg-url": "17.1.2",
     "ws": "8.22.0"
   },
   "peerDependencies": {
